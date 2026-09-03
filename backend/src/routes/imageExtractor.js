@@ -16,6 +16,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS image_leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_image TEXT DEFAULT '',
+    extraction_group_id TEXT DEFAULT '',
     business_name TEXT DEFAULT '',
     phone_numbers TEXT DEFAULT '[]',
     emails TEXT DEFAULT '[]',
@@ -30,6 +31,7 @@ db.exec(`
     social_links TEXT DEFAULT '[]',
     raw_text TEXT DEFAULT '',
     duplicate_status TEXT DEFAULT '',
+    review_status TEXT DEFAULT 'pending_review',
     confidence REAL DEFAULT 0,
     processing_status TEXT DEFAULT 'completed',
     created_at TEXT DEFAULT (datetime('now')),
@@ -37,29 +39,47 @@ db.exec(`
   )
 `);
 
+for (const column of [
+  'extraction_group_id TEXT DEFAULT \'\'',
+  'review_status TEXT DEFAULT \'pending_review\'',
+]) {
+  try { db.exec(`ALTER TABLE image_leads ADD COLUMN ${column}`); } catch (error) {
+    if (!error.message.includes('duplicate column')) throw error;
+  }
+}
+
 function parseJson(value, fallback = []) {
   try { return JSON.parse(value || JSON.stringify(fallback)); } catch { return fallback; }
 }
 
 function cleanField(value) {
-  return String(value || '').trim().replace(/[.,;:!?]+\s*$/, '').trim();
+  const normalized = String(value || '').trim().replace(/[.,;:!?]+\s*$/, '').trim();
+  return /^(not available|n\/a|na|none|null)$/i.test(normalized) ? '' : normalized;
 }
 
-function asLead(value, sourceImage) {
+function compactUnique(values) {
+  return [...new Set((Array.isArray(values) ? values : [values]).map(cleanField).filter(Boolean))];
+}
+
+function readArrayLead(lead, field) {
+  return compactUnique(Array.isArray(lead[field]) ? lead[field] : lead[field] ? [lead[field]] : []);
+}
+
+function cleanContactArray(values) {
+  return compactUnique(values).filter((value) => !/^(not available|n\/a|na|none|null)$/i.test(value));
+}
+
+function asLead(value, sourceImage, extractionGroupId = '') {
   const lead = value && typeof value === 'object' ? value : {};
-  const array = (field) => {
-    const values = Array.isArray(lead[field]) ? lead[field] : lead[field] ? [lead[field]] : [];
-    return [...new Set(values.map(cleanField).filter(Boolean))];
-  };
   const address = cleanField(lead.address);
   const postalCode = cleanField(lead.postal_code) || address.match(/\b\d{5,6}\b/)?.[0] || '';
   const rawText = String(lead.raw_text || lead.extracted_text || '');
-  const contactPerson = cleanField(lead.contact_person) || rawText.match(/\b(?:call|contact|attn\.?)\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2})\b/i)?.[1] || '';
   return {
     source_image: sourceImage,
+    extraction_group_id: extractionGroupId,
     business_name: cleanField(lead.business_name),
-    phone_numbers: array('phone_numbers'),
-    emails: array('emails'),
+    phone_numbers: cleanContactArray(readArrayLead(lead, 'phone_numbers')),
+    emails: cleanContactArray(readArrayLead(lead, 'emails')),
     website: cleanField(lead.website),
     address,
     city: cleanField(lead.city),
@@ -67,10 +87,11 @@ function asLead(value, sourceImage) {
     country: cleanField(lead.country),
     postal_code: postalCode,
     business_category: cleanField(lead.business_category),
-    contact_person: contactPerson,
-    social_links: array('social_links'),
+    contact_person: cleanField(lead.contact_person),
+    social_links: cleanContactArray(readArrayLead(lead, 'social_links')),
     raw_text: rawText,
     confidence: Number(lead.confidence) || 0,
+    review_status: cleanField(lead.review_status) || 'pending_review',
   };
 }
 
@@ -96,14 +117,32 @@ function normalizeResponse(content) {
     : content?.text || content;
   const fenced = String(normalizedContent || '').match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || normalizedContent;
   const text = String(fenced || '').trim();
-  try { return JSON.parse(text); } catch {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) {
-      try { return JSON.parse(text.slice(start, end + 1)); } catch { return recoverLeadObject(text.slice(start, end + 1)); }
-    }
-    throw new Error('The vision model did not return structured lead data.');
+
+  const parseJsonBlock = (input) => {
+    try { return JSON.parse(input); } catch { return null; }
+  };
+
+  const parsed = parseJsonBlock(text);
+  if (parsed !== null) return parsed;
+
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start >= 0 && end > start) {
+    const arrayText = text.slice(start, end + 1);
+    const arrayParsed = parseJsonBlock(arrayText);
+    if (arrayParsed !== null) return arrayParsed;
   }
+
+  const objectStart = text.indexOf('{');
+  const objectEnd = text.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    const objectText = text.slice(objectStart, objectEnd + 1);
+    const objectParsed = parseJsonBlock(objectText);
+    if (objectParsed !== null) return objectParsed;
+    return recoverLeadObject(objectText);
+  }
+
+  throw new Error('The vision model did not return structured lead data.');
 }
 
 function recoverLeadObject(text) {
@@ -119,7 +158,7 @@ function recoverLeadObject(text) {
       return match[1].split(',').map(value => value.replace(/[\\[\\]"']/g, '').trim()).filter(Boolean);
     }
   };
-  const lead = {
+  return {
     business_name: readString('business_name'),
     phone_numbers: readArray('phone_numbers'),
     emails: readArray('emails'),
@@ -135,8 +174,29 @@ function recoverLeadObject(text) {
     raw_text: readString('raw_text'),
     confidence: Number(text.match(/"confidence"\\s*:\\s*([0-9.]+)/)?.[1]) || 0,
   };
-  if (!lead.business_name && !lead.raw_text && !lead.phone_numbers.length && !lead.emails.length) throw new Error('The vision model returned malformed lead data.');
-  return lead;
+}
+
+function normalizeLeadList(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return [value];
+  return [];
+}
+
+function coerceLeadArray(value) {
+  return normalizeLeadList(value)
+    .map((entry) => {
+      const lead = entry && typeof entry === 'object' ? entry : {};
+      return {
+        ...lead,
+        raw_text: String(lead.raw_text || lead.extracted_text || ''),
+      };
+    })
+    .filter((lead) => {
+      const hasName = cleanField(lead.business_name);
+      const hasContact = cleanContactArray([...(lead.phone_numbers || []), ...(lead.emails || []), lead.website]).length > 0;
+      const hasRawText = String(lead.raw_text || '').trim().length > 0;
+      return hasName || hasContact || hasRawText;
+    });
 }
 
 function enrichFromText(lead, text) {
@@ -178,7 +238,21 @@ async function extractWithNvidia(file) {
     console.warn(`Nemotron OCR unavailable: ${error.response?.status || error.message}`);
   }
 
-  const prompt = `Convert this OCR transcription into lead data. Preserve every readable word in raw_text, including text that does not fit a field. Extract all visible phone numbers, email addresses, websites, names, addresses, ratings, labels, codes, and opening hours. Never invent or infer missing values. Your entire response MUST be one valid JSON object and nothing else. Always return this exact shape: {"business_name":"","phone_numbers":[],"emails":[],"website":"","address":"","city":"","state":"","country":"","postal_code":"","business_category":"","contact_person":"","social_links":[],"raw_text":"","confidence":0}. Use empty values only when unavailable. confidence must be a number from 0 to 1.\n\nOCR transcription:\n${rawText}`;
+  const prompt = `You are extracting business leads from an image. Return JSON only.
+- If the image shows multiple distinct businesses/entities, return an ARRAY of lead objects.
+- If it shows one business/entity, you may return a single lead object for backward compatibility.
+- Only include an entity if a business name or a contact method is clearly visible.
+- Do not infer additional businesses that are not explicitly visible.
+- Do not merge unrelated businesses into one object.
+- If a block is raw or unstructured text and you cannot confidently identify a business_name, keep business_name empty/null and still preserve any raw_text, phone numbers, emails, websites, or addresses you can read.
+- Preserve every readable word in raw_text for each lead.
+- Never invent missing values.
+
+Return each lead using this exact shape:
+{"business_name":"","phone_numbers":[],"emails":[],"website":"","address":"","city":"","state":"","country":"","postal_code":"","business_category":"","contact_person":"","social_links":[],"raw_text":"","confidence":0}
+
+OCR transcription:
+${rawText}`;
   const payload = {
     model,
     stream: false,
@@ -186,7 +260,7 @@ async function extractWithNvidia(file) {
     frequency_penalty: 0,
     presence_penalty: 0,
     temperature: 0.1,
-    max_tokens: 1200,
+    max_tokens: 1600,
     top_p: 1,
     messages: [{ role: 'user', content: rawText.trim()
       ? prompt
@@ -194,18 +268,25 @@ async function extractWithNvidia(file) {
   };
   const response = await axios.post(`${baseURL}/chat/completions`, payload, requestConfig);
   try {
-    return enrichFromText(normalizeResponse(response.data?.choices?.[0]?.message?.content), rawText);
+    const normalized = normalizeResponse(response.data?.choices?.[0]?.message?.content);
+    return { leads: coerceLeadArray(normalized).map((lead) => enrichFromText(lead, rawText)), rawResponse: response.data?.choices?.[0]?.message?.content };
   } catch {
     payload.response_format = undefined;
-    payload.messages[0].content = [{ type: 'text', text: 'Read every visible word and value in this image. Reply with ONLY one JSON object, no markdown and no explanation. Use exactly these keys: business_name, phone_numbers, emails, website, address, city, state, country, postal_code, business_category, contact_person, social_links, raw_text, confidence. Put the complete readable transcription in raw_text and use empty values only when unavailable.' }];
+    payload.messages[0].content = [{ type: 'text', text: 'Extract all visible business leads. Return JSON only. Output either one lead object or an array of lead objects using the exact keys: business_name, phone_numbers, emails, website, address, city, state, country, postal_code, business_category, contact_person, social_links, raw_text, confidence.' }];
     if (!rawText.trim()) payload.messages[0].content.push({ type: 'image_url', image_url: { url: imageUrl } });
     const retry = await axios.post(`${baseURL}/chat/completions`, payload, requestConfig);
-    return enrichFromText(normalizeResponse(retry.data?.choices?.[0]?.message?.content), rawText);
+    const normalized = normalizeResponse(retry.data?.choices?.[0]?.message?.content);
+    return { leads: coerceLeadArray(normalized).map((lead) => enrichFromText(lead, rawText)), rawResponse: retry.data?.choices?.[0]?.message?.content };
   }
 }
 
 function serializeLead(lead) {
-  return { ...lead, phone_numbers: parseJson(lead.phone_numbers), emails: parseJson(lead.emails), social_links: parseJson(lead.social_links) };
+  return {
+    ...lead,
+    phone_numbers: parseJson(lead.phone_numbers),
+    emails: parseJson(lead.emails),
+    social_links: parseJson(lead.social_links),
+  };
 }
 
 router.get('/stats', (_req, res) => {
@@ -213,19 +294,57 @@ router.get('/stats', (_req, res) => {
   const phones = db.prepare("SELECT COUNT(*) count FROM image_leads WHERE phone_numbers != '[]'").get().count;
   const emails = db.prepare("SELECT COUNT(*) count FROM image_leads WHERE emails != '[]'").get().count;
   const duplicates = db.prepare("SELECT COUNT(*) count FROM image_leads WHERE duplicate_status = 'Possible Duplicate'").get().count;
-  res.json({ images_processed: total, leads_extracted: total, valid_phones: phones, emails_found: emails, possible_duplicates: duplicates });
+  res.json({ images_processed: db.prepare('SELECT COUNT(DISTINCT source_image || ":" || extraction_group_id) count FROM image_leads').get().count, leads_extracted: total, valid_phones: phones, emails_found: emails, possible_duplicates: duplicates });
 });
 
 router.get('/leads', (_req, res) => res.json(db.prepare('SELECT * FROM image_leads ORDER BY id DESC').all().map(serializeLead)));
 
 async function processFile(file) {
+  const extractionGroupId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
-    const lead = asLead(await extractWithNvidia(file), file.originalname);
-    const result = db.prepare(`INSERT INTO image_leads
-      (source_image, business_name, phone_numbers, emails, website, address, city, state, country, postal_code, business_category, contact_person, social_links, raw_text, confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(lead.source_image, lead.business_name, JSON.stringify(lead.phone_numbers), JSON.stringify(lead.emails), lead.website, lead.address, lead.city, lead.state, lead.country, lead.postal_code, lead.business_category, lead.contact_person, JSON.stringify(lead.social_links), lead.raw_text, lead.confidence);
-    return { ...lead, id: Number(result.lastInsertRowid), processing_status: 'completed' };
+    const result = await extractWithNvidia(file);
+    const leads = (result.leads || []).map((lead) => asLead(lead, file.originalname, extractionGroupId));
+    const insert = db.prepare(`INSERT INTO image_leads
+      (source_image, extraction_group_id, business_name, phone_numbers, emails, website, address, city, state, country, postal_code, business_category, contact_person, social_links, raw_text, review_status, confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const items = leads.length ? leads : [asLead({ raw_text: '', business_name: '', phone_numbers: [], emails: [], social_links: [] }, file.originalname, extractionGroupId)];
+    db.exec('BEGIN');
+    const rows = [];
+    try {
+      for (const lead of items) {
+        const row = insert.run(
+          lead.source_image,
+          lead.extraction_group_id,
+          lead.business_name,
+          JSON.stringify(lead.phone_numbers),
+          JSON.stringify(lead.emails),
+          lead.website,
+          lead.address,
+          lead.city,
+          lead.state,
+          lead.country,
+          lead.postal_code,
+          lead.business_category,
+          lead.contact_person,
+          JSON.stringify(lead.social_links),
+          lead.raw_text,
+          'pending_review',
+          lead.confidence,
+        );
+        rows.push({ ...lead, id: Number(row.lastInsertRowid), processing_status: 'completed', review_status: 'pending_review' });
+      }
+      db.exec('COMMIT');
+    } catch (transactionError) {
+      try { db.exec('ROLLBACK'); } catch {}
+      throw transactionError;
+    }
+    return {
+      source_image: file.originalname,
+      extraction_group_id: extractionGroupId,
+      processing_status: 'completed',
+      raw_response: result.rawResponse,
+      leads: rows,
+    };
   } catch (error) {
     return { source_image: file.originalname, processing_status: 'failed', error: error.response?.data?.detail || error.message };
   }
@@ -246,11 +365,21 @@ router.post('/process-batch', upload.array('images', 20), async (req, res) => {
 });
 
 router.put('/leads/:id', (req, res) => {
-  const lead = asLead(req.body, req.body.source_image || '');
-  const result = db.prepare(`UPDATE image_leads SET business_name=?, phone_numbers=?, emails=?, website=?, address=?, city=?, state=?, country=?, postal_code=?, business_category=?, contact_person=?, social_links=?, raw_text=?, updated_at=datetime('now') WHERE id=?`)
-    .run(lead.business_name, JSON.stringify(lead.phone_numbers), JSON.stringify(lead.emails), lead.website, lead.address, lead.city, lead.state, lead.country, lead.postal_code, lead.business_category, lead.contact_person, JSON.stringify(lead.social_links), lead.raw_text, req.params.id);
+  const lead = asLead(req.body, req.body.source_image || '', req.body.extraction_group_id || '');
+  const result = db.prepare(`UPDATE image_leads SET business_name=?, phone_numbers=?, emails=?, website=?, address=?, city=?, state=?, country=?, postal_code=?, business_category=?, contact_person=?, social_links=?, raw_text=?, review_status=COALESCE(?, review_status), updated_at=datetime('now') WHERE id=?`)
+    .run(lead.business_name, JSON.stringify(lead.phone_numbers), JSON.stringify(lead.emails), lead.website, lead.address, lead.city, lead.state, lead.country, lead.postal_code, lead.business_category, lead.contact_person, JSON.stringify(lead.social_links), lead.raw_text, cleanField(req.body.review_status) || null, req.params.id);
   if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
   markDuplicates();
+  res.json(serializeLead(db.prepare('SELECT * FROM image_leads WHERE id=?').get(req.params.id)));
+});
+
+router.post('/leads/:id/review', (req, res) => {
+  const reviewStatus = cleanField(req.body.review_status || req.body.status);
+  if (!['confirmed', 'rejected', 'pending_review'].includes(reviewStatus)) {
+    return res.status(400).json({ error: 'review_status must be confirmed, rejected, or pending_review.' });
+  }
+  const result = db.prepare(`UPDATE image_leads SET review_status=?, updated_at=datetime('now') WHERE id=?`).run(reviewStatus, req.params.id);
+  if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
   res.json(serializeLead(db.prepare('SELECT * FROM image_leads WHERE id=?').get(req.params.id)));
 });
 
@@ -270,7 +399,7 @@ router.post('/leads/bulk-delete', (req, res) => {
 });
 
 function exportRows() {
-  return db.prepare('SELECT * FROM image_leads ORDER BY id DESC').all().map(lead => ({
+  return db.prepare("SELECT * FROM image_leads WHERE review_status = 'confirmed' ORDER BY id DESC").all().map(lead => ({
     'Business Name': lead.business_name,
     'Phone Number': parseJson(lead.phone_numbers).join(', '),
     'Email': parseJson(lead.emails).join(', '),
@@ -286,6 +415,7 @@ function exportRows() {
     'Extracted Text': lead.raw_text,
     'Source Image': lead.source_image,
     Confidence: lead.confidence,
+    'Review Status': lead.review_status,
   }));
 }
 

@@ -13,6 +13,16 @@ const listValue = (value) => Array.isArray(value) ? value.join(', ') : value || 
 const MAX_FILES = 100
 const WORKERS = 3
 
+const groupLeads = (leads) => {
+  const groups = new Map()
+  for (const lead of leads) {
+    const key = lead.extraction_group_id || `${lead.source_image}-${lead.created_at}`
+    if (!groups.has(key)) groups.set(key, { id: key, source_image: lead.source_image, leads: [] })
+    groups.get(key).leads.push(lead)
+  }
+  return [...groups.values()]
+}
+
 export default function ImageExtractorView() {
   const [files, setFiles] = useState([])
   const [leads, setLeads] = useState([])
@@ -126,6 +136,52 @@ export default function ImageExtractorView() {
           </div>
         </div>
 
+        {groupLeads(leads).map((group) => (
+          <div key={group.id} className="panel" style={{ marginBottom: '16px', background: 'rgba(255,255,255,0.65)' }}>
+            <div className="panel-header">
+              <h3>{group.leads.length} lead{group.leads.length === 1 ? '' : 's'} found in this image</h3>
+              <small className="file-note">{group.source_image}</small>
+            </div>
+            <div className="campaign-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Business</th>
+                    <th>Phone</th>
+                    <th>Email</th>
+                    <th>Website</th>
+                    <th>Address</th>
+                    <th>All visible text</th>
+                    <th>Confidence</th>
+                    <th>Review</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.leads.map(lead => (
+                    <tr key={lead.id}>
+                      <td><strong>{lead.business_name || '(no business name visible)'}</strong><small>{lead.source_image}</small></td>
+                      <td>{listValue(lead.phone_numbers)}</td>
+                      <td>{listValue(lead.emails)}</td>
+                      <td>{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
+                      <td>{lead.address || '-'}</td>
+                      <td><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
+                      <td>{Math.round((lead.confidence || 0) * 100)}%</td>
+                      <td>{lead.review_status || 'pending_review'}</td>
+                      <td>
+                        <div className="button-row">
+                          <button className="secondary-btn" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'confirmed' }) }); await load() }}>Confirm</button>
+                          <button className="secondary-btn" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'rejected' }) }); await load() }}>Reject</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+
         <div className="campaign-table-wrap">
           <table>
             <thead>
@@ -151,7 +207,7 @@ export default function ImageExtractorView() {
                   <td>{lead.address || '-'}</td>
                   <td><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
                   <td>{Math.round((lead.confidence || 0) * 100)}%</td>
-                  <td>{lead.duplicate_status || 'Ready'}</td>
+                  <td>{lead.review_status || 'pending_review'}</td>
                   <td><button className="danger-btn" onClick={() => remove(lead.id)}>Delete</button></td>
                 </tr>
               ))}
