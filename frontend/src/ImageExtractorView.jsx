@@ -65,6 +65,10 @@ export default function ImageExtractorView() {
   const bulkReview = async (reviewStatus) => {
     const ids = [...selectedIds]
     if (!ids.length) return
+    if (reviewStatus === 'confirmed' && ids.length > 3) {
+      const message = `You're about to confirm ${ids.length} leads without individually reviewing each one. This data came from AI extraction and may contain errors. Proceed?`
+      if (!window.confirm(message)) return
+    }
     setBulkBusy(true)
     try {
       const result = await request('/leads/bulk-review', {
