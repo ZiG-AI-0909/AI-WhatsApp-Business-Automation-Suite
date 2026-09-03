@@ -26,14 +26,61 @@ const groupLeads = (leads) => {
 export default function ImageExtractorView() {
   const [files, setFiles] = useState([])
   const [leads, setLeads] = useState([])
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [notice, setNotice] = useState({ type: '', text: '' })
 
   const load = async () => {
-    try { setLeads(await request('/leads')) } catch (error) { setNotice({ type: 'error', text: error.message }) }
+    try {
+      const nextLeads = await request('/leads')
+      setLeads(nextLeads)
+      setSelectedIds(current => {
+        const pendingIds = new Set(nextLeads
+          .filter(lead => (lead.review_status || 'pending_review') === 'pending_review')
+          .map(lead => lead.id))
+        const nextSelected = new Set([...current].filter(id => pendingIds.has(id)))
+        return nextSelected.size === current.size ? current : nextSelected
+      })
+    } catch (error) { setNotice({ type: 'error', text: error.message }) }
   }
 
   useEffect(() => { load() }, [])
+
+  const pendingLeads = leads.filter(lead => (lead.review_status || 'pending_review') === 'pending_review')
+  const allPendingSelected = pendingLeads.length > 0 && pendingLeads.every(lead => selectedIds.has(lead.id))
+
+  const toggleSelection = (id) => setSelectedIds(current => {
+    const next = new Set(current)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
+
+  const toggleSelectAll = () => setSelectedIds(current => {
+    if (allPendingSelected) return new Set()
+    return new Set(pendingLeads.map(lead => lead.id))
+  })
+
+  const bulkReview = async (reviewStatus) => {
+    const ids = [...selectedIds]
+    if (!ids.length) return
+    setBulkBusy(true)
+    try {
+      const result = await request('/leads/bulk-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, review_status: reviewStatus }),
+      })
+      setSelectedIds(new Set())
+      await load()
+      setNotice({ type: 'success', text: `${result.updated_count} lead(s) marked ${reviewStatus}.` })
+    } catch (error) {
+      setNotice({ type: 'error', text: error.message })
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   const addFiles = (incoming) => setFiles(current => [...current, ...Array.from(incoming)
     .filter(file => /image\/(jpeg|png|webp)/i.test(file.type))
@@ -131,6 +178,12 @@ export default function ImageExtractorView() {
         <div className="panel-header">
           <h2>Extracted data ({leads.length})</h2>
           <div className="button-row">
+            <label className="checkbox-label">
+              <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAll} disabled={!pendingLeads.length || bulkBusy} />
+              Select All ({pendingLeads.length} pending)
+            </label>
+            <button className="secondary-btn" onClick={() => bulkReview('confirmed')} disabled={!selectedIds.size || bulkBusy}>Confirm Selected</button>
+            <button className="secondary-btn" onClick={() => bulkReview('rejected')} disabled={!selectedIds.size || bulkBusy}>Reject Selected</button>
             <button className="secondary-btn" onClick={() => window.location.href = `${API}/export/excel`}>Export Excel</button>
             <button className="secondary-btn" onClick={() => window.location.href = `${API}/export/csv`}>Export CSV</button>
           </div>
@@ -146,6 +199,7 @@ export default function ImageExtractorView() {
               <table>
                 <thead>
                   <tr>
+                    <th>Select</th>
                     <th>Business</th>
                     <th>Phone</th>
                     <th>Email</th>
@@ -160,6 +214,17 @@ export default function ImageExtractorView() {
                 <tbody>
                   {group.leads.map(lead => (
                     <tr key={lead.id}>
+                      <td>
+                        {(lead.review_status || 'pending_review') === 'pending_review' && (
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${lead.business_name || `lead ${lead.id}`}`}
+                            checked={selectedIds.has(lead.id)}
+                            onChange={() => toggleSelection(lead.id)}
+                            disabled={bulkBusy}
+                          />
+                        )}
+                      </td>
                       <td><strong>{lead.business_name || '(no business name visible)'}</strong><small>{lead.source_image}</small></td>
                       <td>{listValue(lead.phone_numbers)}</td>
                       <td>{listValue(lead.emails)}</td>

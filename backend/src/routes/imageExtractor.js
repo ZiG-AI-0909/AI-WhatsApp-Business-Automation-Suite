@@ -383,6 +383,32 @@ router.post('/leads/:id/review', (req, res) => {
   res.json(serializeLead(db.prepare('SELECT * FROM image_leads WHERE id=?').get(req.params.id)));
 });
 
+router.post('/leads/bulk-review', (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body.ids) ? req.body.ids : [])
+    .map(value => Number(value))
+    .filter(Number.isInteger))];
+  const reviewStatus = cleanField(req.body.review_status || req.body.status);
+  if (!ids.length) return res.status(400).json({ error: 'ids must contain at least one lead ID.' });
+  if (!['confirmed', 'rejected'].includes(reviewStatus)) {
+    return res.status(400).json({ error: 'review_status must be confirmed or rejected.' });
+  }
+
+  const placeholders = ids.map(() => '?').join(',');
+  const update = db.prepare(`UPDATE image_leads
+    SET review_status=?, updated_at=datetime('now')
+    WHERE review_status='pending_review' AND id IN (${placeholders})`);
+  let updatedCount = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    updatedCount = Number(update.run(reviewStatus, ...ids).changes || 0);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw error;
+  }
+  res.json({ review_status: reviewStatus, requested_ids: ids, updated_count: updatedCount });
+});
+
 router.delete('/leads/:id', (req, res) => {
   const result = db.prepare('DELETE FROM image_leads WHERE id=?').run(req.params.id);
   if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
