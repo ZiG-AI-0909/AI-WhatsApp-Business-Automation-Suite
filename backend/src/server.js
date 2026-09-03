@@ -59,6 +59,7 @@ app.use('/api/knowledge', requireAuth, require('./routes/knowledge'));
 app.use('/api/analytics', requireAuth, require('./routes/analytics'));
 app.use('/api/settings', requireAuth, require('./routes/settings'));
 app.use('/api/schedules', requireAuth, require('./routes/schedules'));
+app.use('/api/image-extractor', requireAuth, require('./routes/imageExtractor'));
 
 app.use('/api', requireAuth, (req, res) => {
   res.status(404).json({ error: 'Route not found' });

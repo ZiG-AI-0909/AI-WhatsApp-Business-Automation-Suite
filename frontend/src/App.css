@@ -201,6 +201,11 @@
 .upload-divider::before, .upload-divider::after { content: ''; height: 1px; flex: 1; background: var(--border-subtle); }
 .upload-dropzone { display: grid; place-items: center; min-height: 92px; padding: 16px; border: 1px dashed var(--accent-border); border-radius: 10px; color: var(--accent-hover); background: var(--accent-bg); text-align: center; cursor: pointer; }
 .upload-dropzone input { display: none; }
+.image-queue-item { display: inline-flex; align-items: center; gap: 6px; }
+.image-queue-item small { opacity: .72; text-transform: uppercase; font-size: 10px; }
+.image-queue-item.processing { border-color: var(--accent); }
+.image-queue-item.completed { border-color: var(--success-border); }
+.image-queue-item.failed { border-color: var(--danger-border); color: var(--danger); }
 .analytics-stats { grid-template-columns: repeat(4, minmax(150px, 1fr)); margin-bottom: 0; }
 .analytics-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); gap: 18px; }
 .trend-chart { height: 220px; display: flex; align-items: stretch; justify-content: space-around; gap: 10px; padding: 16px 8px 0; border-bottom: 1px solid var(--border-subtle); }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { io } from 'socket.io-client'
 import './App.css'
+import ImageExtractorView from './ImageExtractorView.jsx'
 
 const API_URL = 'http://localhost:3000/api'
 
@@ -24,6 +25,7 @@ const navItems = [
   'Knowledge Base',
   'Analytics',
   'Settings',
+  'Image Extractor',
 ]
 
 const defaultTemplate = `Hello {{name}} 👋\n\nThis is Sudarshan Pipes.\nWe wanted to know if {{company}} currently has any requirements for {{product}} in {{city}}.\n\nPlease let us know your required quantity.`
@@ -776,6 +778,7 @@ function App() {
     if (activeView === 'Knowledge Base') return <KnowledgeBaseView />
     if (activeView === 'Analytics') return <AnalyticsView />
     if (activeView === 'Settings') return <SettingsView />
+    if (activeView === 'Image Extractor') return <ImageExtractorView />
     if (activeView === 'Dashboard') {
       if (!dashboard || !recentConversations) {
         return <div className="panel empty-preview">{dashboardError || 'Loading dashboard...'}</div>
