@@ -134,6 +134,27 @@ export default function ImageExtractorView() {
     try { await request(`/leads/${id}`, { method: 'DELETE' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) }
   }
 
+  const deleteAll = async () => {
+    if (!leads.length) return
+    const confirmed = window.confirm(`Are you sure you want to delete all ${leads.length} lead(s)? This action cannot be undone.`)
+    if (!confirmed) return
+    setBulkBusy(true)
+    try {
+      await request('/leads/all', { method: 'DELETE' })
+      setSelectedIds(new Set())
+      await load()
+      setNotice({ type: 'success', text: 'All extracted leads have been deleted.' })
+    } catch (error) {
+      setNotice({ type: 'error', text: error.message || 'Failed to delete all leads.' })
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const exportData = (format, all = true) => {
+    window.location.href = `${API}/export/${format}${all ? '?all=true' : ''}`
+  }
+
   const pasteImage = (event) => {
     const images = Array.from(event.clipboardData?.files || [])
     if (images.length) {
@@ -186,15 +207,16 @@ export default function ImageExtractorView() {
       <section className="panel">
         <div className="panel-header">
           <h2>Extracted data ({leads.length})</h2>
-          <div className="button-row">
+          <div className="button-row" style={{ flexWrap: 'wrap', gap: '8px' }}>
             <label className="checkbox-label">
               <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAll} disabled={!pendingLeads.length || bulkBusy} />
               Select All ({pendingLeads.length} pending)
             </label>
             <Button variant="secondary" onClick={() => bulkReview('confirmed')} disabled={!selectedIds.size || bulkBusy}>Confirm Selected</Button>
             <Button variant="secondary" onClick={() => bulkReview('rejected')} disabled={!selectedIds.size || bulkBusy}>Reject Selected</Button>
-            <Button variant="secondary" onClick={() => window.location.href = `${API}/export/excel`}>Export Excel</Button>
-            <Button variant="secondary" onClick={() => window.location.href = `${API}/export/csv`}>Export CSV</Button>
+            <Button variant="secondary" onClick={() => exportData('excel', true)} disabled={!leads.length}>Export All (Excel)</Button>
+            <Button variant="secondary" onClick={() => exportData('csv', true)} disabled={!leads.length}>Export All (CSV)</Button>
+            <Button variant="danger" onClick={deleteAll} disabled={!leads.length || bulkBusy}>Delete All</Button>
           </div>
         </div>
 

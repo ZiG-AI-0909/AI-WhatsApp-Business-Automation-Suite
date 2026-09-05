@@ -409,6 +409,16 @@ router.post('/leads/bulk-review', (req, res) => {
   res.json({ review_status: reviewStatus, requested_ids: ids, updated_count: updatedCount });
 });
 
+router.delete('/leads/all', (_req, res) => {
+  const result = db.prepare('DELETE FROM image_leads').run();
+  res.json({ ok: true, deleted_count: result.changes });
+});
+
+router.post('/leads/delete-all', (_req, res) => {
+  const result = db.prepare('DELETE FROM image_leads').run();
+  res.json({ ok: true, deleted_count: result.changes });
+});
+
 router.delete('/leads/:id', (req, res) => {
   const result = db.prepare('DELETE FROM image_leads WHERE id=?').run(req.params.id);
   if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
@@ -424,8 +434,11 @@ router.post('/leads/bulk-delete', (req, res) => {
   res.json({ ok: true });
 });
 
-function exportRows() {
-  return db.prepare("SELECT * FROM image_leads WHERE review_status = 'confirmed' ORDER BY id DESC").all().map(lead => ({
+function exportRows(includeAll = false) {
+  const query = includeAll
+    ? "SELECT * FROM image_leads ORDER BY id DESC"
+    : "SELECT * FROM image_leads WHERE review_status = 'confirmed' ORDER BY id DESC";
+  return db.prepare(query).all().map(lead => ({
     'Business Name': lead.business_name,
     'Phone Number': parseJson(lead.phone_numbers).join(', '),
     'Email': parseJson(lead.emails).join(', '),
@@ -445,17 +458,25 @@ function exportRows() {
   }));
 }
 
-router.get('/export/csv', (_req, res) => {
-  const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(exportRows()));
-  res.setHeader('Content-Disposition', 'attachment; filename="lead-image-extractor.csv"');
+router.get('/export/csv', (req, res) => {
+  const isAll = req.query.all === 'true' || req.query.scope === 'all';
+  const rows = exportRows(isAll);
+  const data = rows.length ? rows : [{ Message: 'No leads found' }];
+  const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(data));
+  const filename = isAll ? 'all-leads.csv' : 'lead-image-extractor.csv';
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.type('text/csv').send(csv);
 });
 
-router.get('/export/excel', (_req, res) => {
+router.get('/export/excel', (req, res) => {
+  const isAll = req.query.all === 'true' || req.query.scope === 'all';
+  const rows = exportRows(isAll);
+  const data = rows.length ? rows : [{ Message: 'No leads found' }];
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportRows()), 'Leads');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Leads');
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Disposition', 'attachment; filename="lead-image-extractor.xlsx"');
+  const filename = isAll ? 'all-leads.xlsx' : 'lead-image-extractor.xlsx';
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(buffer);
 });
 
