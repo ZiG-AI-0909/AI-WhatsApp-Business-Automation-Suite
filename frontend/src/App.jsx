@@ -6,7 +6,8 @@ import WelcomeAuthPage from './WelcomeAuthPage.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
 const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
-const API_URL = `${BACKEND_URL}/api`
+// If the backend URL matches the current origin (e.g., when the app is hosted on Vercel together with the API), use a relative path to avoid cross‑origin requests.
+const API_URL = BACKEND_URL === window.location.origin ? '/api' : `${BACKEND_URL}/api`
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
