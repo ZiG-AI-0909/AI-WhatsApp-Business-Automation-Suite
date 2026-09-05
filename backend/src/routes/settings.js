@@ -21,7 +21,7 @@ function getSettings() {
             baseURL: process.env.AI_BASE_URL || '',
         },
         business: {
-            name: process.env.BUSINESS_NAME || 'Bhavesh Pipes',
+            name: process.env.BUSINESS_NAME || "Bhavesh's Project",
             tagline: process.env.BUSINESS_TAGLINE || '',
         },
     };

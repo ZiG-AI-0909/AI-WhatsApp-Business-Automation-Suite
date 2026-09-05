@@ -18,7 +18,7 @@ class WhatsAppService {
         this._reconnectPromise = null;
         this._reconnectTimer = null;
         this._baileys = null;
-        this.businessName = process.env.BUSINESS_NAME || 'Bhavesh Pipes';
+        this.businessName = process.env.BUSINESS_NAME || "Bhavesh's Project";
     }
 
     setIO(io) { this._io = io; }
@@ -56,7 +56,7 @@ class WhatsAppService {
             version,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: ['Bhavesh Pipes', 'Chrome', '1.0.0'],
+            browser: ["Bhavesh's Project", 'Chrome', '1.0.0'],
         });
         this.client = socket;
 

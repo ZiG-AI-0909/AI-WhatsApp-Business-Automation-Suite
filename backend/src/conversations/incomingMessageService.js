@@ -67,7 +67,7 @@ class IncomingMessageService {
         }
         try {
             if (/^(hi|hello|hey)\b[!. ]*$/i.test(incoming.text)) {
-                await this._reply(conversation.id, incoming, `Hello! Welcome to Bhavesh Pipes. How can I help you today?`, sendMessage, io);
+                await this._reply(conversation.id, incoming, `Hello! Welcome to Bhavesh's Project. How can I help you today?`, sendMessage, io);
                 return true;
             }
             const context = knowledgeBase.getRelevantContext(incoming.text, 4);
@@ -92,7 +92,7 @@ class IncomingMessageService {
     }
 
     _buildSystemPrompt(knowledgeContext) {
-        const businessName = process.env.BUSINESS_NAME || 'Bhavesh Pipes';
+        const businessName = process.env.BUSINESS_NAME || "Bhavesh's Project";
         return `You are a professional AI assistant for ${businessName}. Be concise, friendly, and truthful. Never invent prices, availability, specifications, delivery dates, certifications, discounts, or warranties. If information is unavailable, say you will connect the customer with the sales team. Help with product enquiries and collect product, size, quantity, delivery location, company, and project details for quotations. Do not pretend to be human. Keep replies to 2-4 sentences.\n\n${knowledgeContext ? `COMPANY KNOWLEDGE:\n${knowledgeContext}\nUse only this company information for factual answers.` : ''}`;
     }
 }

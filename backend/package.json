@@ -1,7 +1,7 @@
 {
   "name": "Bhavesh-whatsapp",
   "version": "1.0.0",
-  "description": "WhatsApp AI Assistant & Campaign Manager for Bhavesh Pipes",
+  "description": "WhatsApp AI Assistant & Campaign Manager for Bhavesh's Project",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -30,6 +30,6 @@
     "campaign",
     "automation"
   ],
-  "author": "Bhavesh Pipes",
+  "author": "Bhavesh's Project",
   "license": "ISC"
 }
