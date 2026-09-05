@@ -73,7 +73,7 @@ if (require('fs').existsSync(FRONTEND_DIST)) {
 } else {
   app.get('/', (_req, res) => {
     res.json({
-      app: 'Sudarshan WhatsApp AI Assistant',
+      app: 'Bhavesh WhatsApp AI Assistant',
       message: 'Frontend build not generated yet. Run the Vite app separately or build the frontend.',
     });
   });
@@ -101,7 +101,7 @@ async function startServer() {
     messageQueue.resumeInterrupted(whatsappService, io);
     schedulerService.startPolling(io);
     server.listen(PORT, () => {
-      console.log(`🚀 Sudarshan WhatsApp API started on http://localhost:${PORT}`);
+      console.log(`🚀 Bhavesh WhatsApp API started on http://localhost:${PORT}`);
       console.log(`📱 WhatsApp status: ${whatsappService.getStatus()}`);
     });
   } catch (error) {

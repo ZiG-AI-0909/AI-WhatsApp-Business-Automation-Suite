@@ -1,7 +1,7 @@
 {
-  "name": "sudarshan-whatsapp",
+  "name": "Bhavesh-whatsapp",
   "version": "1.0.0",
-  "description": "WhatsApp AI Assistant & Campaign Manager for Sudarshan Pipes",
+  "description": "WhatsApp AI Assistant & Campaign Manager for Bhavesh Pipes",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -30,6 +30,6 @@
     "campaign",
     "automation"
   ],
-  "author": "Sudarshan Pipes",
+  "author": "Bhavesh Pipes",
   "license": "ISC"
 }

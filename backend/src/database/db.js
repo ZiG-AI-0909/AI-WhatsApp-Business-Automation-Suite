@@ -7,7 +7,7 @@ const fs = require('fs');
 const DATA_DIR = path.join(__dirname, '..', '..', '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const DB_PATH = path.join(DATA_DIR, 'sudarshan.db');
+const DB_PATH = path.join(DATA_DIR, 'Bhavesh.db');
 const db = new DatabaseSync(DB_PATH);
 
 // Enable WAL mode and foreign keys
