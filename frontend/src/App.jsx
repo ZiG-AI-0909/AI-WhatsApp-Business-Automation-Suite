@@ -3,7 +3,8 @@ import { io } from 'socket.io-client'
 import './App.css'
 import ImageExtractorView from './ImageExtractorView.jsx'
 
-const API_URL = 'http://localhost:3000/api'
+const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
+const API_URL = `${BACKEND_URL}/api`
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
@@ -129,7 +130,7 @@ function CampaignsView() {
   useEffect(() => {
     loadSchedules()
     const interval = window.setInterval(loadSchedules, 30000)
-    const socket = io('http://localhost:3000', { transports: ['websocket', 'polling'] })
+    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'] })
 
     // Handle schedule:failed events
     const scheduleFailed = (event) => { setMessage({ type: 'error', text: `Schedule "${event.name}" failed: ${event.error}` }); loadSchedules() }
@@ -541,7 +542,7 @@ function InboxView() {
 
   useEffect(() => {
     loadConversations()
-    const socket = io('http://localhost:3000', { transports: ['websocket', 'polling'] })
+    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'] })
     const refresh = () => { loadConversations(); loadSelected() }
     const aiError = (event) => setNotice(event.error || 'AI provider unavailable. Check the AI configuration.')
     socket.on('message:new', refresh)
@@ -761,7 +762,7 @@ function App() {
   useEffect(() => {
     const loadStatus = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/health')
+        const response = await fetch(`${BACKEND_URL}/api/health`)
         if (!response.ok) throw new Error('Unavailable')
         const data = await response.json()
         setBackendStatus(data.whatsapp || 'connected')

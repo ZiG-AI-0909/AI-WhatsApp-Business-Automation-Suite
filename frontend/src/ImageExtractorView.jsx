@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react';
+import Card from './components/Card';
+import Button from './components/Button';
+import Badge from './components/Badge';
 
-const API = 'http://localhost:3000/api/image-extractor'
+const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
+const API = `${BACKEND_URL}/api/image-extractor`
 
 async function request(path, options = {}) {
   const response = await fetch(`${API}${path}`, options)
@@ -39,7 +43,8 @@ export default function ImageExtractorView() {
         const pendingIds = new Set(nextLeads
           .filter(lead => (lead.review_status || 'pending_review') === 'pending_review')
           .map(lead => lead.id))
-        const nextSelected = new Set([...current].filter(id => pendingIds.has(id)))
+        const nextSelected = new Set([...current].filter(id => pendingIds.has(id)));
+
         return nextSelected.size === current.size ? current : nextSelected
       })
     } catch (error) { setNotice({ type: 'error', text: error.message }) }
@@ -172,7 +177,7 @@ export default function ImageExtractorView() {
                   {!busy && <button type="button" onClick={() => setFiles(current => current.filter((_, itemIndex) => itemIndex !== index))}>x</button>}
                 </span>
               ))}
-              <button className="primary-btn" onClick={process} disabled={busy || !files.some(item => item.status === 'queued' || item.status === 'failed')}>{busy ? 'Processing queue...' : 'Process queue'}</button>
+              <Button variant="primary" onClick={process} disabled={busy || !files.some(item => item.status === 'queued' || item.status === 'failed')}>{busy ? 'Processing queue...' : 'Process queue'}</Button>
             </div>
           </>
         )}
@@ -186,19 +191,20 @@ export default function ImageExtractorView() {
               <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAll} disabled={!pendingLeads.length || bulkBusy} />
               Select All ({pendingLeads.length} pending)
             </label>
-            <button className="secondary-btn" onClick={() => bulkReview('confirmed')} disabled={!selectedIds.size || bulkBusy}>Confirm Selected</button>
-            <button className="secondary-btn" onClick={() => bulkReview('rejected')} disabled={!selectedIds.size || bulkBusy}>Reject Selected</button>
-            <button className="secondary-btn" onClick={() => window.location.href = `${API}/export/excel`}>Export Excel</button>
-            <button className="secondary-btn" onClick={() => window.location.href = `${API}/export/csv`}>Export CSV</button>
+            <Button variant="secondary" onClick={() => bulkReview('confirmed')} disabled={!selectedIds.size || bulkBusy}>Confirm Selected</Button>
+            <Button variant="secondary" onClick={() => bulkReview('rejected')} disabled={!selectedIds.size || bulkBusy}>Reject Selected</Button>
+            <Button variant="secondary" onClick={() => window.location.href = `${API}/export/excel`}>Export Excel</Button>
+            <Button variant="secondary" onClick={() => window.location.href = `${API}/export/csv`}>Export CSV</Button>
           </div>
         </div>
 
         {groupLeads(leads).map((group) => (
-          <div key={group.id} className="panel" style={{ marginBottom: '16px', background: 'rgba(255,255,255,0.65)' }}>
+          <Card key={group.id} className="mb-4" style={{ background: 'rgba(255,255,255,0.65)' }}>
             <div className="panel-header">
               <h3>{group.leads.length} lead{group.leads.length === 1 ? '' : 's'} found in this image</h3>
               <small className="file-note">{group.source_image}</small>
             </div>
+
             <div className="campaign-table-wrap">
               <table>
                 <thead>
@@ -212,7 +218,7 @@ export default function ImageExtractorView() {
                     <th>All visible text</th>
                     <th>Confidence</th>
                     <th>Review</th>
-                    <th />
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -236,11 +242,11 @@ export default function ImageExtractorView() {
                       <td>{lead.address || '-'}</td>
                       <td><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
                       <td>{Math.round((lead.confidence || 0) * 100)}%</td>
-                      <td>{lead.review_status || 'pending_review'}</td>
+                      <td><Badge tone={lead.review_status === 'confirmed' ? 'success' : lead.review_status === 'rejected' ? 'danger' : 'neutral'}>{lead.review_status || 'pending_review'}</Badge></td>
                       <td>
                         <div className="button-row">
-                          <button className="secondary-btn" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'confirmed' }) }); await load() }}>Confirm</button>
-                          <button className="secondary-btn" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'rejected' }) }); await load() }}>Reject</button>
+                          <Button variant="secondary" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'confirmed' }) }); await load() }}>Confirm</Button>
+                          <Button variant="secondary" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'rejected' }) }); await load() }}>Reject</Button>
                         </div>
                       </td>
                     </tr>
@@ -248,7 +254,7 @@ export default function ImageExtractorView() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </Card>
         ))}
 
         <div className="campaign-table-wrap">
@@ -277,7 +283,7 @@ export default function ImageExtractorView() {
                   <td><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
                   <td>{Math.round((lead.confidence || 0) * 100)}%</td>
                   <td>{lead.review_status || 'pending_review'}</td>
-                  <td><button className="danger-btn" onClick={() => remove(lead.id)}>Delete</button></td>
+                  <td><Button variant="danger" onClick={() => remove(lead.id)}>Delete</Button></td>
                 </tr>
               ))}
             </tbody>
