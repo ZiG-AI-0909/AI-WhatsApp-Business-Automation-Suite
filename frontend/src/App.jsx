@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { io } from 'socket.io-client'
 import './App.css'
 import ImageExtractorView from './ImageExtractorView.jsx'
+import WelcomeAuthPage from './WelcomeAuthPage.jsx'
+import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
 const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
 const API_URL = `${BACKEND_URL}/api`
@@ -752,12 +754,42 @@ function SettingsView() {
 }
 
 function App() {
+  const [session, setSession] = useState(null)
+  const [authChecking, setAuthChecking] = useState(true)
   const [activeView, setActiveView] = useState('Dashboard')
   const [backendStatus, setBackendStatus] = useState('Checking...')
   const [isConnected, setIsConnected] = useState(false)
   const [dashboard, setDashboard] = useState(null)
   const [recentConversations, setRecentConversations] = useState(null)
   const [dashboardError, setDashboardError] = useState('')
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthChecking(false)
+      return
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setAuthChecking(false)
+    }).catch(() => {
+      setAuthChecking(false)
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+      setAuthChecking(false)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const handleSignOut = async () => {
+    if (supabase) {
+      await supabase.auth.signOut()
+    }
+    setSession(null)
+  }
 
   useEffect(() => {
     const loadStatus = async () => {
@@ -891,6 +923,19 @@ function App() {
     )
   }
 
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 font-sans">
+        <div className="w-10 h-10 border-4 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin mb-4" />
+        <p className="text-sm font-medium tracking-wide text-slate-400">Loading Bhavesh's AI Sales Suite...</p>
+      </div>
+    )
+  }
+
+  if (!session) {
+    return <WelcomeAuthPage onAuthSuccess={(newSession) => setSession(newSession)} />
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -907,6 +952,29 @@ function App() {
             </button>
           ))}
         </nav>
+
+        <div className="sidebar-footer" style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid var(--border-subtle)' }}>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={session?.user?.email}>
+            👤 {session?.user?.email || 'Logged In'}
+          </div>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            style={{
+              width: '100%',
+              padding: '7px 12px',
+              fontSize: '12px',
+              fontWeight: 500,
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer'
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
       </aside>
 
       <main className="main-panel">
@@ -915,8 +983,26 @@ function App() {
             <p className="eyebrow">Good afternoon</p>
             <h1>{activeView}</h1>
           </div>
-          <div className={`status-pill ${isConnected ? 'online' : 'offline'}`}>
-            {isConnected ? '🟢 WhatsApp Connected' : '🔴 WhatsApp Offline'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className={`status-pill ${isConnected ? 'online' : 'offline'}`}>
+              {isConnected ? '🟢 WhatsApp Connected' : '🔴 WhatsApp Offline'}
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              style={{
+                fontSize: '12px',
+                padding: '4px 10px',
+                background: 'var(--surface-subtle)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                color: 'var(--text-secondary)'
+              }}
+              title={`Signed in as ${session?.user?.email}`}
+            >
+              Sign Out
+            </button>
           </div>
         </header>
 
