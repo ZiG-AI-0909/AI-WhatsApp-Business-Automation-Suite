@@ -12,20 +12,42 @@ const API_URL = BACKEND_URL === window.location.origin ? '/api' : `${BACKEND_URL
 async function apiFetch(path, options = {}) {
   // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
   let authHeader = {}
+
   if (supabase) {
     try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      if (sessionData?.session?.access_token) {
-        authHeader = { Authorization: `Bearer ${sessionData.session.access_token}` }
+      const {
+        data: { session },
+        error,
+      } = await supabase.auth.getSession()
+
+      if (error) {
+        console.error('Supabase session error:', error)
       }
-    } catch { /* session not available — proceed without token */ }
+
+      if (session?.access_token) {
+        authHeader = {
+          Authorization: `Bearer ${session.access_token}`,
+        }
+      }
+    } catch (error) {
+      console.error('Failed to get Supabase session:', error)
+    }
   }
+
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: { ...authHeader, ...(options.headers || {}) },
+    headers: {
+      ...authHeader,
+      ...(options.headers || {}),
+    },
   })
+
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || 'Request failed')
+
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed (${response.status})`)
+  }
+
   return data
 }
 
@@ -83,7 +105,7 @@ function MockInbox() {
 
 const defaultTemplate = `Hello {{name}} 👋\n\nThis is Bhavesh's AI Sales Suite.\nWe wanted to know if {{company}} currently has any requirements for {{product}} in {{city}}.\n\nPlease let us know your required quantity.`
 
-function CampaignsView() {
+function CampaignsView({ onNavigate }) {
   const [campaignList, setCampaignList] = useState([])
   const [schedules, setSchedules] = useState([])
   const [selectedScheduleIds, setSelectedScheduleIds] = useState([])
@@ -399,7 +421,7 @@ function CampaignsView() {
         <section className="panel campaign-builder">
           <div className="panel-header"><h2>1. Build campaign</h2><span className="file-note">{file?.name || 'No file selected'}</span></div>
           <form onSubmit={createCampaign}>
-            {(whatsappStatus.provider === 'WhatsApp Web' || whatsappStatus.provider === 'web') && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => setActiveView('WhatsApp Connection')}>Open Connection</button></div>}
+            {(whatsappStatus.provider === 'WhatsApp Web' || whatsappStatus.provider === 'web') && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
             <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
             <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Now</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
             {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
@@ -783,6 +805,7 @@ function App() {
 
     // Detect initial session (handles page refresh, OAuth callback, recovery link)
     supabase.auth.getSession().then(({ data: { session } }) => {
+      console.log('[initial getSession]', !!session, session?.user?.email)
       setSession(session)
       setAuthChecking(false)
     }).catch(() => {
@@ -790,6 +813,7 @@ function App() {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log('[auth event]', event, !!session, session?.user?.email)
       if (event === 'PASSWORD_RECOVERY') {
         // Supabase has exchanged the recovery token — show reset-password UI
         setResetPasswordMode(true)
@@ -869,7 +893,7 @@ function App() {
 
   const renderView = () => {
     if (activeView === 'WhatsApp Connection') return <ConnectionView />
-    if (activeView === 'Campaigns') return <CampaignsView />
+    if (activeView === 'Campaigns') return <CampaignsView onNavigate={setActiveView} />
     if (activeView === 'Inbox') return <InboxView />
     if (activeView === 'Contacts') return <ContactsView />
     if (activeView === 'Templates') return <TemplatesView />
