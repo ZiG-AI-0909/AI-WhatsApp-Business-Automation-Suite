@@ -10,9 +10,19 @@ const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').re
 const API_URL = BACKEND_URL === window.location.origin ? '/api' : `${BACKEND_URL}/api`
 
 async function apiFetch(path, options = {}) {
+  // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
+  let authHeader = {}
+  if (supabase) {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (sessionData?.session?.access_token) {
+        authHeader = { Authorization: `Bearer ${sessionData.session.access_token}` }
+      }
+    } catch { /* session not available — proceed without token */ }
+  }
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: { ...(options.headers || {}) },
+    headers: { ...authHeader, ...(options.headers || {}) },
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || 'Request failed')
@@ -757,6 +767,7 @@ function SettingsView() {
 function App() {
   const [session, setSession] = useState(null)
   const [authChecking, setAuthChecking] = useState(true)
+  const [resetPasswordMode, setResetPasswordMode] = useState(false)
   const [activeView, setActiveView] = useState('Dashboard')
   const [backendStatus, setBackendStatus] = useState('Checking...')
   const [isConnected, setIsConnected] = useState(false)
@@ -770,6 +781,7 @@ function App() {
       return
     }
 
+    // Detect initial session (handles page refresh, OAuth callback, recovery link)
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
       setAuthChecking(false)
@@ -777,7 +789,20 @@ function App() {
       setAuthChecking(false)
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        // Supabase has exchanged the recovery token — show reset-password UI
+        setResetPasswordMode(true)
+        setSession(session)
+        setAuthChecking(false)
+        return
+      }
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        setResetPasswordMode(false)
+      }
+      if (event === 'SIGNED_OUT') {
+        setResetPasswordMode(false)
+      }
       setSession(session)
       setAuthChecking(false)
     })
@@ -933,8 +958,13 @@ function App() {
     )
   }
 
-  if (!session) {
-    return <WelcomeAuthPage onAuthSuccess={(newSession) => setSession(newSession)} />
+  if (!session || resetPasswordMode) {
+    return (
+      <WelcomeAuthPage
+        onAuthSuccess={(newSession) => { setSession(newSession); setResetPasswordMode(false) }}
+        initialMode={resetPasswordMode ? 'reset-password' : undefined}
+      />
+    )
   }
 
   return (
