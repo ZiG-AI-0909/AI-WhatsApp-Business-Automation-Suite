@@ -26,18 +26,21 @@ alter table public.profiles enable row level security;
 -- Each user can only view, insert, and update their own row.
 
 -- SELECT: users can read only their own profile
+drop policy if exists "profiles: users can view own profile" on public.profiles;
 create policy "profiles: users can view own profile"
   on public.profiles
   for select
   using (auth.uid() = id);
 
 -- INSERT: users can create only their own profile
+drop policy if exists "profiles: users can insert own profile" on public.profiles;
 create policy "profiles: users can insert own profile"
   on public.profiles
   for insert
   with check (auth.uid() = id);
 
 -- UPDATE: users can update only their own profile
+drop policy if exists "profiles: users can update own profile" on public.profiles;
 create policy "profiles: users can update own profile"
   on public.profiles
   for update
@@ -75,6 +78,19 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row
   execute procedure public.handle_new_user();
+
+-- Backfill profiles for users created before this migration was installed.
+insert into public.profiles (id, full_name, email, avatar_url)
+select
+  id,
+  coalesce(raw_user_meta_data->>'full_name', raw_user_meta_data->>'name', ''),
+  coalesce(email, ''),
+  coalesce(raw_user_meta_data->>'avatar_url', raw_user_meta_data->>'picture', '')
+from auth.users
+on conflict (id) do update set
+  full_name = case when public.profiles.full_name = '' then excluded.full_name else public.profiles.full_name end,
+  email = case when public.profiles.email = '' then excluded.email else public.profiles.email end,
+  avatar_url = case when public.profiles.avatar_url = '' then excluded.avatar_url else public.profiles.avatar_url end;
 
 -- ─── 5. Auto-update `updated_at` timestamp ──────────────────
 create or replace function public.set_updated_at()

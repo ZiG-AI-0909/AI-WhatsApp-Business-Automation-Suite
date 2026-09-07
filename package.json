@@ -4,6 +4,7 @@
   "private": true,
   "description": "Bhavesh's Project WhatsApp assistant and campaign manager",
   "scripts": {
+    "start": "npm run dev",
     "dev": "node scripts/dev.js",
     "dev:backend": "npm --prefix backend run dev",
     "dev:frontend": "npm --prefix frontend run dev",
