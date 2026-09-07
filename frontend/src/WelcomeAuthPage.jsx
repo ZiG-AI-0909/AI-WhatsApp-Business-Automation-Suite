@@ -227,11 +227,14 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
     clearNotice();
     try {
       // redirectTo uses the current origin — works on localhost, Vercel preview, and production.
-      const redirectTo = `${window.location.origin}/auth/callback`;
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: { redirectTo },
-      });
+     const redirectTo = window.location.origin;
+
+const { error } = await supabase.auth.signInWithOAuth({
+  provider: 'google',
+  options: {
+    redirectTo,
+  },
+});
       if (error) throw error;
       // Browser will redirect — no further action needed here.
     } catch (err) {

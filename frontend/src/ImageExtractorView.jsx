@@ -9,9 +9,14 @@ const API = `${BACKEND_URL}/api/image-extractor`
 async function request(path, options = {}) {
   const response = await fetch(`${API}${path}`, options)
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error || 'Request failed')
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed (${response.status})`)
+  }
+
   return data
 }
+
+const navItems = []
 
 const listValue = (value) => Array.isArray(value) ? value.join(', ') : value || '-'
 const MAX_FILES = 100
