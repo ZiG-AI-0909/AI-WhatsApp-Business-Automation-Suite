@@ -18,7 +18,15 @@ class WhatsAppService {
         this._reconnectPromise = null;
         this._reconnectTimer = null;
         this._baileys = null;
-        this.businessName = process.env.BUSINESS_NAME || "Bhavesh's Project";
+        const SETTINGS_PATH = path.join(__dirname, '..', '..', 'data', 'settings.json');
+        let businessName = process.env.BUSINESS_NAME || "Bhavesh's Project";
+        if (fs.existsSync(SETTINGS_PATH)) {
+            try {
+                const stored = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+                if (typeof stored.BUSINESS_NAME === 'string' && stored.BUSINESS_NAME.trim()) businessName = stored.BUSINESS_NAME.trim();
+            } catch {}
+        }
+        this.businessName = businessName;
     }
 
     setIO(io) { this._io = io; }

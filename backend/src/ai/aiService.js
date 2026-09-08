@@ -1,9 +1,26 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '..', '.env') });
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
+
+// On startup, read any AI settings that were persisted to settings.json by the
+// Settings UI. These take precedence over process.env so a user's in-app
+// changes survive restarts. If settings.json doesn't exist yet, fall back to
+// the platform environment variables.
+(function applyPersistedSettings() {
+    const SETTINGS_PATH = path.join(__dirname, '..', '..', 'data', 'settings.json');
+    if (!fs.existsSync(SETTINGS_PATH)) return;
+    try {
+        const stored = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+        if (typeof stored.AI_API_KEY === 'string' && stored.AI_API_KEY.trim()) process.env.AI_API_KEY = stored.AI_API_KEY.trim();
+        if (typeof stored.AI_BASE_URL === 'string' && stored.AI_BASE_URL.trim()) process.env.AI_BASE_URL = stored.AI_BASE_URL.trim();
+        if (typeof stored.AI_MODEL === 'string' && stored.AI_MODEL.trim()) process.env.AI_MODEL = stored.AI_MODEL.trim();
+    } catch {}
+})();
 
 /**
  * AIService — Provider-agnostic AI abstraction.
- * Reads AI_API_KEY, AI_BASE_URL, AI_MODEL from environment.
+ * Reads AI_API_KEY, AI_BASE_URL, AI_MODEL from environment (or settings.json).
  * Uses OpenAI-compatible chat completions API.
  */
 class AIService {
