@@ -67,7 +67,10 @@ async function select(table, columns = '*', where = '', params = [], orderBy = '
     }
 
     if (orderBy) {
-        query = query.order(orderBy.split(' ')[0], orderBy.split(' ')[1] || 'asc');
+        const orderParts = orderBy.trim().split(/\s+/);
+        const orderCol = orderParts[0].replace(/^\w+\./, ''); // strip table alias
+        const ascending = (orderParts[1] || 'asc').toLowerCase() !== 'desc';
+        query = query.order(orderCol, { ascending });
     }
 
     if (limit !== null) {
@@ -75,7 +78,7 @@ async function select(table, columns = '*', where = '', params = [], orderBy = '
     }
 
     if (offset !== null) {
-        query = query.range(offset, offset + (limit || 100) - 1);
+        query = query.range(offset, offset + (limit || 1000) - 1);
     }
 
     const { data, error } = await query;
@@ -84,66 +87,173 @@ async function select(table, columns = '*', where = '', params = [], orderBy = '
 }
 
 /**
+ * Split a WHERE string on top-level AND operators (ignoring AND inside parens).
+ */
+function splitTopLevelAnd(str) {
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (depth === 0 && str.slice(i, i + 5).toUpperCase() === ' AND ') {
+            parts.push(str.slice(start, i).trim());
+            i += 4;
+            start = i + 1;
+        }
+    }
+    parts.push(str.slice(start).trim());
+    return parts.filter(Boolean);
+}
+
+/**
+ * Parse a single condition (e.g. "id = ?", "status IN ('a','b')", "x IS NULL").
+ * Returns { column, operator, needsParam, literal? } or null if unsupported.
+ * Table aliases (e.g. "cc.status") are allowed and stripped later.
+ */
+function parseSimpleCondition(condition) {
+    let m;
+
+    // column IS NULL / IS NOT NULL
+    m = condition.match(/^([\w.]+)\s+IS\s+(NOT\s+)?NULL$/i);
+    if (m) return { column: m[1], operator: m[2] ? 'notnull' : 'isnull', needsParam: false };
+
+    // column IN (...)
+    m = condition.match(/^([\w.]+)\s+IN\s*\(([^)]*)\)$/i);
+    if (m) {
+        const inner = m[2].trim();
+        if (inner === '?') return { column: m[1], operator: 'in', needsParam: true };
+        const items = inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
+        return { column: m[1], operator: 'in', needsParam: false, literal: items };
+    }
+
+    // column LIKE ?
+    m = condition.match(/^([\w.]+)\s+LIKE\s*\?$/i);
+    if (m) return { column: m[1], operator: 'like', needsParam: true };
+
+    // column OP ?   ( = != <> >= <= > < )
+    m = condition.match(/^([\w.]+)\s*(>=|<=|<>|!=|>|<|=)\s*\?$/i);
+    if (m) return { column: m[1], operator: m[2], needsParam: true };
+
+    return null;
+}
+
+/**
+ * Normalize a parameter value for PostgREST:
+ * Dates -> ISO strings (PostgREST cannot serialize Date objects).
+ */
+function normalizeParam(value) {
+    if (value instanceof Date) return value.toISOString();
+    return value;
+}
+
+/**
+ * Apply a parsed operator to the query builder.
+ */
+function applyOperator(query, column, operator, param, literal) {
+    const col = column.replace(/^\w+\./, ''); // strip table alias
+    switch (operator) {
+        case '=': {
+            if (typeof param === 'string' && param.includes('%')) return query.like(col, param);
+            return query.eq(col, param);
+        }
+        case '!=':
+        case '<>': return query.neq(col, param);
+        case '>=': return query.gte(col, param);
+        case '<=': return query.lte(col, param);
+        case '>': return query.gt(col, param);
+        case '<': return query.lt(col, param);
+        case 'like': return query.like(col, param);
+        case 'in': return query.in(col, param !== undefined ? param : literal);
+        case 'isnull': return query.is(col, null);
+        case 'notnull': return query.not(col, 'is', null);
+        default: throw new Error(`[db] Unsupported operator: ${operator}`);
+    }
+}
+
+/**
+ * Format a value for use inside a PostgREST .or() filter string.
+ */
+function postgrestValue(v) {
+    if (v === null || v === undefined) return 'null';
+    if (v instanceof Date) return v.toISOString();
+    if (typeof v === 'boolean') return String(v);
+    if (typeof v === 'number') return String(v);
+    const s = String(v);
+    // Quote values containing PostgREST delimiters.
+    if (/[,"()\s]/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
+    return s;
+}
+
+/**
+ * Translate a parenthesized OR group (e.g. "(a = ? OR b = ?)") into a
+ * PostgREST .or() filter, consuming params in order.
+ */
+function applyOrGroup(query, inner, params) {
+    const orParts = inner.split(/\s+OR\s+/i).map(p => p.trim());
+    const filters = [];
+    for (const part of orParts) {
+        const parsed = parseSimpleCondition(part);
+        if (!parsed) throw new Error(`[db] Unsupported OR condition: "${part}"`);
+        const col = parsed.column.replace(/^\w+\./, '');
+        const op = parsed.operator;
+        if (op === 'isnull') { filters.push(`${col}.is.null`); continue; }
+        if (op === 'notnull') { filters.push(`${col}.not.is.null`); continue; }
+        if (parsed.needsParam) {
+            if (!params.length) throw new Error(`[db] Missing parameter for OR condition: "${part}"`);
+            const param = params.shift();
+            switch (op) {
+                case '=': filters.push(`${col}.eq.${postgrestValue(param)}`); break;
+                case '!=':
+                case '<>': filters.push(`${col}.neq.${postgrestValue(param)}`); break;
+                case '>=': filters.push(`${col}.gte.${postgrestValue(param)}`); break;
+                case '<=': filters.push(`${col}.lte.${postgrestValue(param)}`); break;
+                case '>': filters.push(`${col}.gt.${postgrestValue(param)}`); break;
+                case '<': filters.push(`${col}.lt.${postgrestValue(param)}`); break;
+                case 'like': filters.push(`${col}.like.${postgrestValue(String(param).replace(/%/g, '*'))}`); break;
+                case 'in': filters.push(`${col}.in.(${Array.isArray(param) ? param.map(postgrestValue).join(',') : postgrestValue(param)})`); break;
+                default: throw new Error(`[db] Unsupported OR operator: ${op}`);
+            }
+        } else if (op === 'in') {
+            filters.push(`${col}.in.(${parsed.literal.map(postgrestValue).join(',')})`);
+        } else {
+            throw new Error(`[db] Unsupported OR condition: "${part}"`);
+        }
+    }
+    return query.or(filters.join(','));
+}
+
+/**
  * Apply WHERE conditions using Supabase filter methods.
- * Supports simple equality and LIKE conditions.
- * For complex queries, use raw SQL via rpc().
+ * Supports ?, IN literals, IS NULL, comparison ops, LIKE and OR groups.
+ * Throws on unsupported conditions rather than silently dropping filters.
  */
 function applyWhere(query, table, where, params) {
-    // Parse simple WHERE clauses
-    // This handles common patterns used in the codebase
-    const conditions = where.replace(/^WHERE\s+/i, '').split(/\s+AND\s+/i);
+    const cleaned = where.replace(/^WHERE\s+/i, '');
+    const conditions = splitTopLevelAnd(cleaned);
 
-    for (const condition of conditions) {
-        condition = condition.trim();
+    for (const rawCondition of conditions) {
+        const condition = rawCondition.trim();
+        if (!condition) continue;
+        if (/^1\s*=\s*1$/i.test(condition)) continue; // always-true no-op
 
-        // Pattern: column = ?
-        const eqMatch = condition.match(/^(\w+)\s*=\s*$/);
-        if (eqMatch && params.length > 0) {
-            const param = params.shift();
-            // Check if it's a string with LIKE
-            if (typeof param === 'string' && param.includes('%')) {
-                query = query.like(eqMatch[1], param);
-            } else {
-                query = query.eq(eqMatch[1], param);
-            }
+        // Parenthesized OR group: (A OR B)
+        const orGroup = condition.match(/^\(([\s\S]*)\)$/);
+        if (orGroup) {
+            query = applyOrGroup(query, orGroup[1], params);
             continue;
         }
 
-        // Pattern: column IS NOT NULL / IS NULL
-        const isNullMatch = condition.match(/^(\w+)\s+IS\s+(NOT\s+)?NULL$/i);
-        if (isNullMatch) {
-            if (isNullMatch[2]) {
-                query = query.is(isNullMatch[1], false);
-            } else {
-                query = query.is(isNullMatch[1], true);
-            }
-            continue;
-        }
+        const parsed = parseSimpleCondition(condition);
+        if (!parsed) throw new Error(`[db] Unsupported WHERE condition: "${condition}"`);
 
-        // Pattern: column > / < / >= / <= ?
-        const cmpMatch = condition.match(/^(\w+)\s*(>=|<=|>|<)\s*$/);
-        if (cmpMatch && params.length > 0) {
-            const param = params.shift();
-            const opMap = { '>=': 'gte', '<=': 'lte', '>': 'gt', '<': 'lt' };
-            query = query[opMap[cmpMatch[2]]](cmpMatch[1], param);
-            continue;
-        }
-
-        // Pattern: column LIKE ?
-        const likeMatch = condition.match(/^(\w+)\s+LIKE\s*$/);
-        if (likeMatch && params.length > 0) {
-            query = query.like(likeMatch[1], params.shift());
-            continue;
-        }
-
-        // Pattern: column IN (?)
-        const inMatch = condition.match(/^(\w+)\s+IN\s*$/);
-        if (inMatch && params.length > 0) {
-            const param = params.shift();
-            if (Array.isArray(param)) {
-                query = query.in(inMatch[1], param);
-            }
-            continue;
+        if (parsed.needsParam) {
+            if (!params.length) throw new Error(`[db] Missing parameter for condition: "${condition}"`);
+            const param = normalizeParam(params.shift());
+            query = applyOperator(query, parsed.column, parsed.operator, param);
+        } else {
+            query = applyOperator(query, parsed.column, parsed.operator, undefined, parsed.literal);
         }
     }
 
@@ -299,7 +409,7 @@ async function paginate(table, where = '', params = [], orderBy = 'created_at', 
         query = applyWhere(query, table, where, [...params]);
     }
 
-    query = query.order(orderBy, order).range(offset, offset + limit - 1);
+    query = query.order(orderBy, { ascending: String(order).toLowerCase() !== 'desc' }).range(offset, offset + limit - 1);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -354,8 +464,8 @@ function exec(sql) {
  */
 function prepare(sql) {
     // For compatibility, return an object with run/get/all methods
-    // that execute the query via Supabase
-    return {
+    // that execute the query via Supabase.
+    const stmt = {
         run: async (...params) => {
             // Parse the SQL to determine operation type
             const trimmed = sql.trim().toUpperCase();
@@ -422,18 +532,19 @@ function prepare(sql) {
             throw new Error(`Unsupported SQL: ${sql.substring(0, 100)}`);
         },
         get: async (...params) => {
-            const result = await this.run(...params);
+            const result = await stmt.run(...params);
             if (Array.isArray(result) && result.length > 0) return result[0];
             if (result && typeof result === 'object' && result.data) return result.data;
             return result;
         },
         all: async (...params) => {
-            const result = await this.run(...params);
+            const result = await stmt.run(...params);
             if (Array.isArray(result)) return result;
             if (result && Array.isArray(result.data)) return result.data;
             return result;
         },
     };
+    return stmt;
 }
 
 /**
@@ -514,4 +625,9 @@ module.exports = {
     // Helper
     parseRow,
     parseRows,
+
+    // Query builder internals (exported for testing)
+    applyWhere,
+    splitTopLevelAnd,
+    parseSimpleCondition,
 };
