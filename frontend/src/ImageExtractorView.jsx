@@ -2,12 +2,39 @@ import { useEffect, useState } from 'react';
 import Card from './components/Card';
 import Button from './components/Button';
 import Badge from './components/Badge';
+import { supabase } from './supabaseClient.js'
 
 const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
 const API = `${BACKEND_URL}/api/image-extractor`
 
+// Attach the Supabase session JWT the same way App.jsx's apiFetch does, so
+// the backend requireAuth middleware can verify these requests. Without it
+// every call returns 401 "Authentication required.".
+async function authHeaders() {
+  if (!supabase) return {}
+  try {
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession()
+    if (error) console.error('Supabase session error:', error)
+    if (session?.access_token) {
+      return { Authorization: `Bearer ${session.access_token}` }
+    }
+  } catch (error) {
+    console.error('Failed to get Supabase session:', error)
+  }
+  return {}
+}
+
 async function request(path, options = {}) {
-  const response = await fetch(`${API}${path}`, options)
+  const response = await fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      ...(await authHeaders()),
+      ...(options.headers || {}),
+    },
+  })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     throw new Error(data.error || `Request failed (${response.status})`)
@@ -156,8 +183,27 @@ export default function ImageExtractorView() {
     }
   }
 
-  const exportData = (format, all = true) => {
-    window.location.href = `${API}/export/${format}${all ? '?all=true' : ''}`
+  // Fetch the export with the auth header and trigger a download from the
+  // response blob — window.location.href cannot carry an Authorization header.
+  const exportData = async (format, all = true) => {
+    try {
+      const response = await fetch(`${API}/export/${format}${all ? '?all=true' : ''}`, { headers: await authHeaders() })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || `Export failed (${response.status})`)
+      }
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `leads.${format === 'excel' ? 'xlsx' : 'csv'}`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setNotice({ type: 'error', text: error.message })
+    }
   }
 
   const pasteImage = (event) => {
