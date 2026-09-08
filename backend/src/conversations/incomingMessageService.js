@@ -70,7 +70,7 @@ class IncomingMessageService {
                 await this._reply(conversation.id, incoming, `Hello! Welcome to Bhavesh's Project. How can I help you today?`, sendMessage, io);
                 return true;
             }
-            const context = knowledgeBase.getRelevantContext(incoming.text, 4);
+            const context = await knowledgeBase.getRelevantContext(incoming.text, 4);
             const reply = await aiService.generateReply(this._buildSystemPrompt(context), await conversationService.getHistory(conversation.id, 15));
             await this._reply(conversation.id, incoming, reply, sendMessage, io);
         } catch (error) {
