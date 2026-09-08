@@ -1,7 +1,7 @@
 const db = require('../database/db');
 
 class AnalyticsService {
-    async getDashboard() {
+    async getDashboard(userId) {
         // Counts use db.count() (PostgREST head/count option), which the
         // Supabase client supports natively. SQL aggregate syntax like
         // "COUNT(*) as total" is not valid PostgREST select syntax.
@@ -18,29 +18,29 @@ class AnalyticsService {
             totalCampaigns,
             activeCampaigns,
         ] = await Promise.all([
-            db.count('contacts'),
-            db.count('contacts', 'marketing_opt_in = ?', [0]),
-            db.count('conversations'),
-            db.count('conversations', 'status = ?', ['open']),
-            db.count('conversations', 'status = ?', ['human_takeover']),
-            db.count('conversations', 'status = ?', ['resolved']),
-            db.count('messages'),
-            db.count('messages', 'direction = ?', ['inbound']),
-            db.count('messages', 'direction = ?', ['outbound']),
-            db.count('campaigns'),
-            db.count('campaigns', 'status = ?', ['running']),
+            db.count('contacts', 'user_id = ?', [userId]),
+            db.count('contacts', 'user_id = ? AND marketing_opt_in = ?', [userId, 0]),
+            db.count('conversations', 'user_id = ?', [userId]),
+            db.count('conversations', 'user_id = ? AND status = ?', [userId, 'open']),
+            db.count('conversations', 'user_id = ? AND status = ?', [userId, 'human_takeover']),
+            db.count('conversations', 'user_id = ? AND status = ?', [userId, 'resolved']),
+            db.count('messages', 'user_id = ?', [userId]),
+            db.count('messages', 'user_id = ? AND direction = ?', [userId, 'inbound']),
+            db.count('messages', 'user_id = ? AND direction = ?', [userId, 'outbound']),
+            db.count('campaigns', 'user_id = ?', [userId]),
+            db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'running']),
         ]);
 
         // Campaign totals: sum numeric columns client-side. Campaigns are few,
         // and this avoids PostgREST aggregate syntax (may be disabled server-side).
-        const allCampaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', '', [], '', 1000, 0);
+        const allCampaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', 'user_id = ?', [userId], '', 1000, 0);
         const sum = (key) => allCampaigns.reduce((acc, c) => acc + (parseInt(c[key], 10) || 0), 0);
 
         const recentCampaigns = await db.select(
             'campaigns',
             'id, name, status, sent, failed, total_contacts, replies, opt_outs, created_at',
-            '',
-            [],
+            'user_id = ?',
+            [userId],
             'created_at',
             5,
             0
@@ -52,8 +52,8 @@ class AnalyticsService {
         const recentMessages = (await db.select(
             'messages',
             'body, direction, created_at, conversations(contacts(phone, name, is_lid))',
-            '1=1',
-            [],
+            'user_id = ?',
+            [userId],
             'created_at',
             10,
             0
@@ -96,8 +96,8 @@ class AnalyticsService {
         };
     }
 
-    async getCampaignAnalytics(campaignId) {
-        const campaign = await db.getById('campaigns', campaignId);
+    async getCampaignAnalytics(campaignId, userId) {
+        const campaign = await db.getById('campaigns', campaignId, userId);
         if (!campaign) return null;
 
         // Aggregate functions are disabled on the Supabase PostgREST server
@@ -106,7 +106,7 @@ class AnalyticsService {
         // client-side instead of using a "status, count()" group-by query.
         const STATUSES = ['pending', 'processing', 'sent', 'failed', 'opted_out', 'skipped'];
         const counts = await Promise.all(STATUSES.map((status) =>
-            db.count('campaign_contacts', 'campaign_id = ? AND status = ?', [campaignId, status])
+            db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, status])
         ));
         const statusBreakdown = STATUSES
             .map((status, i) => ({ status, count: counts[i] }))
@@ -117,14 +117,14 @@ class AnalyticsService {
         return { campaign, statusBreakdown };
     }
 
-    async getMessageTrend(days = 7) {
+    async getMessageTrend(userId, days = 7) {
         // Postgres date functions are different from SQLite
         // For now, return empty or implement client-side filtering
         const messages = await db.select(
             'messages',
             'body, direction, created_at',
-            'created_at >= ?',
-            [new Date(Date.now() - days * 24 * 60 * 60 * 1000)],
+            'user_id = ? AND created_at >= ?',
+            [userId, new Date(Date.now() - days * 24 * 60 * 60 * 1000)],
             'created_at',
             10000,
             0

@@ -20,10 +20,16 @@ for (const [envKey, fieldKey] of Object.entries(fieldKeys)) {
     fieldKeysReverse[fieldKey] = envKey;
 }
 
-async function loadSettings() {
+// Settings are now PER-USER (multi-tenant): app_settings rows are owned by
+// user_id, and the composite primary key is (user_id, key). Stored tenant
+// settings take precedence over process.env defaults. process.env is never
+// written from a tenant's PUT (that would leak one tenant's configuration
+// into every other tenant's GET fallback); applying per-tenant settings at
+// runtime (e.g. per-user AI keys) is Phase 3 work.
+async function loadSettings(userId) {
     if (!db.isAvailable()) return null;
     try {
-        const rows = await db.select('app_settings', '*', '', [], 'key', 100, 0);
+        const rows = await db.select('app_settings', '*', 'user_id = ?', [userId], 'key', 100, 0);
         const settings = {};
         for (const row of rows) {
             settings[row.key] = row.value;
@@ -35,28 +41,29 @@ async function loadSettings() {
     }
 }
 
-async function saveSetting(key, value) {
+async function saveSetting(userId, key, value) {
     if (!db.isAvailable()) {
         throw new Error('Supabase is not configured');
     }
     await db.insert('app_settings', {
         key,
         value,
+        user_id: userId,
         updated_at: new Date(),
     }).then(() => {
         // On conflict, update
     }).catch(() => {
-        // If insert fails (duplicate key), update instead
+        // If insert fails (duplicate (user_id, key)), update instead
         db.update('app_settings', {
             value,
             updated_at: new Date(),
-        }, 'key = ?', [key]);
+        }, 'user_id = ? AND key = ?', [userId, key]);
     });
 }
 
-async function mergedSetting(key) {
-    // Supabase settings take precedence over process.env
-    const stored = await loadSettings();
+async function mergedSetting(key, userId) {
+    // Stored (per-user) settings take precedence over process.env defaults
+    const stored = await loadSettings(userId);
     if (stored && typeof stored[key] === 'string' && stored[key].trim()) {
         return stored[key].trim();
     }
@@ -64,8 +71,8 @@ async function mergedSetting(key) {
 }
 
 // Shared response shape for GET / and PUT /
-async function getSettings() {
-    const stored = await loadSettings();
+async function getSettings(userId) {
+    const stored = await loadSettings(userId);
     return {
         ai: {
             available: aiService.isAvailable(),
@@ -82,7 +89,7 @@ async function getSettings() {
 // GET /api/settings
 router.get('/', async (req, res) => {
     try {
-        res.json(await getSettings());
+        res.json(await getSettings(req.user.id));
     } catch (error) {
         console.error('[settings] GET error:', error);
         res.status(500).json({ error: 'Failed to load settings' });
@@ -96,22 +103,20 @@ router.put('/', async (req, res) => {
             .filter(([, value]) => typeof value === 'string' && value.trim());
 
         if (!provided.length) {
-            return res.json(await getSettings());
+            return res.json(await getSettings(req.user.id));
         }
 
 
         for (const [key, value] of provided) {
             const trimmedValue = value.trim();
-            // Update Supabase
-            await saveSetting(key, trimmedValue);
-            // Also update process.env for immediate effect
-            process.env[key] = trimmedValue;
+            // Store per-user (multi-tenant isolation); do NOT write process.env
+            await saveSetting(req.user.id, key, trimmedValue);
         }
 
         aiService.reconfigure();
 
         // Return updated settings
-        res.json(await getSettings());
+        res.json(await getSettings(req.user.id));
     } catch (error) {
         console.error('[settings] PUT error:', error);
         res.status(500).json({ error: error.message });

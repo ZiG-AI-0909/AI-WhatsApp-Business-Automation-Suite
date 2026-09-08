@@ -336,16 +336,18 @@ async function del(table, where = '', params = []) {
 /**
  * Get a single row by ID
  */
-async function getById(table, id) {
+async function getById(table, id, userId = null) {
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured.');
     }
 
-    const { data, error } = await supabase
+    let query = supabase
         .from(table)
         .select('*')
-        .eq('id', id)
-        .single();
+        .eq('id', id);
+    if (userId) query = query.eq('user_id', userId); // tenant isolation
+
+    const { data, error } = await query.single();
 
     if (error) {
         if (error.code === 'PGRST116') return null; // No rows found
@@ -357,16 +359,18 @@ async function getById(table, id) {
 /**
  * Get a single row matching a condition
  */
-async function getOne(table, column, value) {
+async function getOne(table, column, value, userId = null) {
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured.');
     }
 
-    const { data, error } = await supabase
+    let query = supabase
         .from(table)
         .select('*')
-        .eq(column, value)
-        .maybeSingle();
+        .eq(column, value);
+    if (userId) query = query.eq('user_id', userId); // tenant isolation
+
+    const { data, error } = await query.maybeSingle();
 
     if (error) throw error;
     return parseRow(table, data);

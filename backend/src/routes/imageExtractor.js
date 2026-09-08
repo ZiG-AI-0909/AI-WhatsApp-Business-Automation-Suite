@@ -72,8 +72,8 @@ function asLead(value, sourceImage, extractionGroupId = '') {
   };
 }
 
-async function markDuplicates() {
-  const leads = await db.select('image_leads', '*', '', [], 'id', 10000, 0);
+async function markDuplicates(userId) {
+  const leads = await db.select('image_leads', '*', 'user_id = ?', [userId], 'id', 10000, 0);
   for (const lead of leads) {
     const phones = parseJson(lead.phone_numbers);
     const emails = parseJson(lead.emails);
@@ -86,7 +86,7 @@ async function markDuplicates() {
     await db.update('image_leads', {
       duplicate_status: duplicate ? 'Possible Duplicate' : '',
       updated_at: new Date(),
-    }, 'id = ?', [lead.id]);
+    }, 'id = ? AND user_id = ?', [lead.id, userId]);
   }
 }
 
@@ -268,12 +268,12 @@ function serializeLead(lead) {
   };
 }
 
-router.get('/stats', async (_req, res) => {
+router.get('/stats', async (req, res) => {
   try {
-    const total = await db.count('image_leads');
-    const phones = await db.count('image_leads', "phone_numbers != ?", ['[]']);
-    const emails = await db.count('image_leads', "emails != ?", ['[]']);
-    const duplicates = await db.count('image_leads', "duplicate_status = ?", ['Possible Duplicate']);
+    const total = await db.count('image_leads', 'user_id = ?', [req.user.id]);
+    const phones = await db.count('image_leads', "user_id = ? AND phone_numbers != ?", [req.user.id, '[]']);
+    const emails = await db.count('image_leads', "user_id = ? AND emails != ?", [req.user.id, '[]']);
+    const duplicates = await db.count('image_leads', "user_id = ? AND duplicate_status = ?", [req.user.id, 'Possible Duplicate']);
     
     // Distinct (source_image, extraction_group_id) pairs: SQL aggregate +
     // concat syntax is not valid PostgREST, so fetch the two columns (paged
@@ -281,7 +281,7 @@ router.get('/stats', async (_req, res) => {
     const pairs = [];
     let offset = 0;
     for (;;) {
-      const page = await db.select('image_leads', 'source_image, extraction_group_id', '', [], 'id', 1000, offset);
+      const page = await db.select('image_leads', 'source_image, extraction_group_id', 'user_id = ?', [req.user.id], 'id', 1000, offset);
       pairs.push(...page);
       if (page.length < 1000) break;
       offset += 1000;
@@ -300,16 +300,16 @@ router.get('/stats', async (_req, res) => {
   }
 });
 
-router.get('/leads', async (_req, res) => {
+router.get('/leads', async (req, res) => {
   try {
-    const leads = await db.select('image_leads', '*', '', [], 'id', 10000, 0);
+    const leads = await db.select('image_leads', '*', 'user_id = ?', [req.user.id], 'id', 10000, 0);
     res.json(leads.map(serializeLead).reverse());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-async function processFile(file) {
+async function processFile(file, userId) {
   const extractionGroupId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     const result = await extractWithNvidia(file);
@@ -338,6 +338,7 @@ async function processFile(file) {
         confidence: lead.confidence,
         processing_status: 'completed',
         updated_at: new Date(),
+        user_id: userId,
       });
       createdLeads.push({ ...lead, id: created.id, processing_status: 'completed', review_status: 'pending_review' });
     }
@@ -356,17 +357,17 @@ async function processFile(file) {
 
 router.post('/process-one', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Upload a JPG, PNG, or WEBP image.' });
-  const result = await processFile(req.file);
-  await markDuplicates();
-  const count = await db.count('image_leads');
+  const result = await processFile(req.file, req.user.id);
+  await markDuplicates(req.user.id);
+  const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
   res.json({ result, stats: { count } });
 });
 
 router.post('/process-batch', upload.array('images', 20), async (req, res) => {
   if (!req.files?.length) return res.status(400).json({ error: 'Upload at least one JPG, PNG, or WEBP image.' });
-  const results = await Promise.all(req.files.map(processFile));
-  await markDuplicates();
-  const count = await db.count('image_leads');
+  const results = await Promise.all(req.files.map(file => processFile(file, req.user.id)));
+  await markDuplicates(req.user.id);
+  const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
   res.json({ results, stats: { count } });
 });
 
@@ -389,12 +390,12 @@ router.put('/leads/:id', async (req, res) => {
       raw_text: lead.raw_text,
       review_status: cleanField(req.body.review_status) || null,
       updated_at: new Date(),
-    }, 'id = ?', [req.params.id]);
+    }, 'id = ? AND user_id = ?', [req.params.id, req.user.id]);
     
     if (!updated || updated.length === 0) return res.status(404).json({ error: 'Lead not found' });
     
-    await markDuplicates();
-    const freshLead = await db.getById('image_leads', req.params.id);
+    await markDuplicates(req.user.id);
+    const freshLead = await db.getById('image_leads', req.params.id, req.user.id);
     res.json(serializeLead(freshLead));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -410,11 +411,11 @@ router.post('/leads/:id/review', async (req, res) => {
     const updated = await db.update('image_leads', {
       review_status: reviewStatus,
       updated_at: new Date(),
-    }, 'id = ?', [req.params.id]);
+    }, 'id = ? AND user_id = ?', [req.params.id, req.user.id]);
     
     if (!updated || updated.length === 0) return res.status(404).json({ error: 'Lead not found' });
     
-    const freshLead = await db.getById('image_leads', req.params.id);
+    const freshLead = await db.getById('image_leads', req.params.id, req.user.id);
     res.json(serializeLead(freshLead));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -437,7 +438,7 @@ router.post('/leads/bulk-review', async (req, res) => {
       const result = await db.update('image_leads', {
         review_status: reviewStatus,
         updated_at: new Date(),
-      }, 'id = ? AND review_status = ?', [id, 'pending_review']);
+      }, 'id = ? AND user_id = ? AND review_status = ?', [id, req.user.id, 'pending_review']);
       if (result && result.length > 0) updatedCount++;
     }
 
@@ -447,18 +448,18 @@ router.post('/leads/bulk-review', async (req, res) => {
   }
 });
 
-router.delete('/leads/all', async (_req, res) => {
+router.delete('/leads/all', async (req, res) => {
   try {
-    const deleted = await db.del('image_leads');
+    const deleted = await db.del('image_leads', 'user_id = ?', [req.user.id]);
     res.json({ ok: true, deleted_count: deleted?.length || 0 });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.post('/leads/delete-all', async (_req, res) => {
+router.post('/leads/delete-all', async (req, res) => {
   try {
-    const deleted = await db.del('image_leads');
+    const deleted = await db.del('image_leads', 'user_id = ?', [req.user.id]);
     res.json({ ok: true, deleted_count: deleted?.length || 0 });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -467,9 +468,9 @@ router.post('/leads/delete-all', async (_req, res) => {
 
 router.delete('/leads/:id', async (req, res) => {
   try {
-    const deleted = await db.del('image_leads', 'id = ?', [req.params.id]);
+    const deleted = await db.del('image_leads', 'id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!deleted || deleted.length === 0) return res.status(404).json({ error: 'Lead not found' });
-    await markDuplicates();
+    await markDuplicates(req.user.id);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -480,22 +481,22 @@ router.post('/leads/bulk-delete', async (req, res) => {
   try {
     const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
     for (const id of ids) {
-      await db.del('image_leads', 'id = ?', [id]);
+      await db.del('image_leads', 'id = ? AND user_id = ?', [id, req.user.id]);
     }
-    await markDuplicates();
+    await markDuplicates(req.user.id);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-function exportRows(includeAll = false) {
+function exportRows(includeAll = false, userId) {
   // This is now async and returns a promise
   return db.select(
     'image_leads',
     '*',
-    includeAll ? '' : "review_status = ?",
-    includeAll ? [] : ['confirmed'],
+    includeAll ? 'user_id = ?' : "user_id = ? AND review_status = ?",
+    includeAll ? [userId] : [userId, 'confirmed'],
     'id',
     10000,
     0
@@ -522,7 +523,7 @@ function exportRows(includeAll = false) {
 router.get('/export/csv', async (req, res) => {
   try {
     const isAll = req.query.all === 'true' || req.query.scope === 'all';
-    const rows = await exportRows(isAll);
+    const rows = await exportRows(isAll, req.user.id);
     const data = rows.length ? rows : [{ Message: 'No leads found' }];
     const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(data));
     const filename = isAll ? 'all-leads.csv' : 'lead-image-extractor.csv';
@@ -536,7 +537,7 @@ router.get('/export/csv', async (req, res) => {
 router.get('/export/excel', async (req, res) => {
   try {
     const isAll = req.query.all === 'true' || req.query.scope === 'all';
-    const rows = await exportRows(isAll);
+    const rows = await exportRows(isAll, req.user.id);
     const data = rows.length ? rows : [{ Message: 'No leads found' }];
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Leads');

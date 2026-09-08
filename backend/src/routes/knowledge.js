@@ -18,7 +18,7 @@ function validIds(ids) {
 // GET /api/knowledge
 router.get('/', async (req, res) => {
     try {
-        res.json(await knowledgeBase.listDocuments());
+        res.json(await knowledgeBase.listDocuments(req.user.id));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -28,7 +28,7 @@ router.get('/', async (req, res) => {
 router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
     try {
-        await knowledgeBase.deleteMany(req.body.ids);
+        await knowledgeBase.deleteMany(req.body.ids, req.user.id);
         res.json({ deleted: req.body.ids.length });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -38,7 +38,7 @@ router.post('/bulk-delete', async (req, res) => {
 // GET /api/knowledge/:id
 router.get('/:id', async (req, res) => {
     try {
-        const doc = await knowledgeBase.getDocument(+req.params.id);
+        const doc = await knowledgeBase.getDocument(+req.params.id, req.user.id);
         if (!doc) return res.status(404).json({ error: 'Not found' });
         res.json(doc);
     } catch (err) {
@@ -53,8 +53,8 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Name and content required' });
     }
     try {
-        const id = await knowledgeBase.addDocument(name.trim(), category || 'general', content.trim());
-        res.status(201).json(await knowledgeBase.getDocument(id));
+        const id = await knowledgeBase.addDocument(req.user.id, name.trim(), category || 'general', content.trim());
+        res.status(201).json(await knowledgeBase.getDocument(id, req.user.id));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -79,8 +79,8 @@ router.post('/upload', uploadKnowledge.single('file'), async (req, res) => {
         const content = fileData.toString('utf8');
 
         const docName = name?.trim() || req.file.originalname;
-        const id = await knowledgeBase.addDocument(docName, category || 'general', content, stored.path);
-        const doc = await knowledgeBase.getDocument(id);
+        const id = await knowledgeBase.addDocument(req.user.id, docName, category || 'general', content, stored.path);
+        const doc = await knowledgeBase.getDocument(id, req.user.id);
         res.status(201).json(doc);
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -90,7 +90,7 @@ router.post('/upload', uploadKnowledge.single('file'), async (req, res) => {
 // PUT /api/knowledge/:id
 router.put('/:id', async (req, res) => {
     try {
-        const updated = await knowledgeBase.updateDocument(+req.params.id, req.body);
+        const updated = await knowledgeBase.updateDocument(+req.params.id, req.user.id, req.body);
         if (!updated) return res.status(404).json({ error: 'Not found' });
         res.json(updated);
     } catch (err) {
@@ -101,7 +101,7 @@ router.put('/:id', async (req, res) => {
 // DELETE /api/knowledge/:id
 router.delete('/:id', async (req, res) => {
     try {
-        await knowledgeBase.deleteDocument(+req.params.id);
+        await knowledgeBase.deleteDocument(+req.params.id, req.user.id);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

@@ -14,6 +14,7 @@ class MessageQueue {
         this._running = false;
         this._paused = false;
         this._campaignId = null;
+        this._ownerUserId = null; // tenant isolation: owner of the loaded campaign
         this._rateLimiter = null;
         this._io = null;
         this._whatsappService = null;
@@ -27,11 +28,12 @@ class MessageQueue {
     isPaused() { return this._paused; }
     getCurrentCampaignId() { return this._campaignId; }
 
-    async start(campaignId, settings = {}) {
+    async start(campaignId, settings = {}, userId = null) {
         if (this._running) throw new Error('A campaign is already running. Stop or pause it first.');
-        const campaign = await db.getById('campaigns', campaignId);
+        const campaign = await db.getById('campaigns', campaignId, userId);
         if (!campaign) throw new Error('Campaign not found');
         this._campaignId = campaignId;
+        this._ownerUserId = userId;
         this._running = true;
         this._paused = false;
         this._rateLimiter = new RateLimiter(settings);
@@ -39,11 +41,11 @@ class MessageQueue {
             status: 'running',
             started_at: campaign.started_at || new Date(),
             updated_at: new Date(),
-        }, 'id = ?', [campaignId]);
+        }, 'id = ? AND user_id = ?', [campaignId, userId]);
         this._emit('campaign:started', { campaignId, name: campaign.name });
         this._processPromise = this._process().catch(error => {
             console.error('Campaign processor error:', error);
-            db.update('campaigns', { status: 'failed', updated_at: new Date() }, 'id = ?', [campaignId]);
+            db.update('campaigns', { status: 'failed', updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
             this._emit('campaign:error', { campaignId, error: error.message });
         });
     }
@@ -51,26 +53,28 @@ class MessageQueue {
     pause() {
         if (!this._campaignId) return;
         this._paused = true;
-        db.update('campaigns', { status: 'paused', updated_at: new Date() }, 'id = ?', [this._campaignId]);
+        db.update('campaigns', { status: 'paused', updated_at: new Date() }, 'id = ? AND user_id = ?', [this._campaignId, this._ownerUserId]);
         this._emit('campaign:paused', { campaignId: this._campaignId });
     }
 
     resume() {
         if (!this._running) throw new Error('No campaign is loaded. Start first.');
         this._paused = false;
-        db.update('campaigns', { status: 'running', updated_at: new Date() }, 'id = ?', [this._campaignId]);
+        db.update('campaigns', { status: 'running', updated_at: new Date() }, 'id = ? AND user_id = ?', [this._campaignId, this._ownerUserId]);
         this._emit('campaign:resumed', { campaignId: this._campaignId });
     }
 
     stop() {
         if (!this._campaignId) return;
         const campaignId = this._campaignId;
+        const userId = this._ownerUserId;
         this._running = false;
         this._paused = false;
-        db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND status IN (\'pending\', \'processing\')', [campaignId]);
-        db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ?', [campaignId]);
+        db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+        db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
         this._emit('campaign:stopped', { campaignId });
         this._campaignId = null;
+        this._ownerUserId = null;
     }
 
     async _process() {
@@ -85,25 +89,27 @@ class MessageQueue {
             if (!limitCheck.allowed) { await this._sleep(60000); continue; }
 
             const campaignId = this._campaignId;
-            db.update('campaign_contacts', { status: 'pending' }, 'campaign_id = ? AND status = ?', [campaignId, 'processing']);
+            const userId = this._ownerUserId;
+            db.update('campaign_contacts', { status: 'pending' }, 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing']);
 
             const item = await db.select(
                 'campaign_contacts',
                 '*, contacts(phone), campaigns(media_path, media_type, media_filename, media_mimetype, buttons)',
-                'campaign_id = ? AND status = ? AND (retry_at IS NULL OR retry_at <= ?)',
-                [campaignId, 'pending', new Date()],
+                'campaign_id = ? AND user_id = ? AND status = ? AND (retry_at IS NULL OR retry_at <= ?)',
+                [campaignId, userId, 'pending', new Date()],
                 'id',
                 1,
                 0
             );
 
             if (!item || item.length === 0) {
-                const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND status IN (\'pending\', \'processing\')', [campaignId]);
+                const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
                 if (remaining > 0) { await this._sleep(1000); continue; }
-                db.update('campaigns', { status: 'completed', completed_at: new Date(), updated_at: new Date() }, 'id = ?', [campaignId]);
+                db.update('campaigns', { status: 'completed', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._emit('campaign:completed', { campaignId });
                 this._running = false;
                 this._campaignId = null;
+                this._ownerUserId = null;
                 break;
             }
 
@@ -129,15 +135,16 @@ class MessageQueue {
                 media_mimetype: rawItem.campaigns?.media_mimetype || null,
                 buttons: rawItem.campaigns?.buttons || '[]',
             };
-            const contact = contactService.findByPhone(contactItem.phone);
+            const contact = contactService.findByPhone(contactItem.phone, userId);
             if (contact && !contact.marketing_opt_in) {
-                db.update('campaign_contacts', { status: 'opted_out' }, 'id = ?', [contactItem.id]);
-                db.update('campaigns', { processed: (parseInt((await db.getById('campaigns', campaignId)).processed) || 0) + 1, opt_outs: (parseInt((await db.getById('campaigns', campaignId)).opt_outs) || 0) + 1, updated_at: new Date() }, 'id = ?', [campaignId]);
+                db.update('campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                const campaignRow = await db.getById('campaigns', campaignId, userId);
+                db.update('campaigns', { processed: (parseInt(campaignRow?.processed) || 0) + 1, opt_outs: (parseInt(campaignRow?.opt_outs) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._emitProgress(campaignId);
                 continue;
             }
 
-            db.update('campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND status = ?', [contactItem.id, 'pending']);
+            db.update('campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
             try {
                 if (!this._whatsappService || this._whatsappService.getStatus() !== 'connected') throw new Error('WhatsApp provider is not connected');
                 let buttons = [];
@@ -145,18 +152,20 @@ class MessageQueue {
                 const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
                 const result = await this._whatsappService.sendMessage(contactItem.phone, contactItem.rendered_message, null, media, buttons);
                 const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
-                db.update('campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ?', [contactItem.id]);
-                db.update('campaigns', { processed: (parseInt((await db.getById('campaigns', campaignId)).processed) || 0) + 1, sent: (parseInt((await db.getById('campaigns', campaignId)).sent) || 0) + 1, updated_at: new Date() }, 'id = ?', [campaignId]);
+                db.update('campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                const sentRow = await db.getById('campaigns', campaignId, userId);
+                db.update('campaigns', { processed: (parseInt(sentRow?.processed) || 0) + 1, sent: (parseInt(sentRow?.sent) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._rateLimiter?.recordSent();
             } catch (error) {
                 const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
                 const attempts = (parseInt(contactItem.attempts) || 0) + 1;
                 if (attempts <= maxAttempts) {
                     const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
-                    db.update('campaign_contacts', { status: 'pending', last_error: error.message, retry_at: new Date(Date.now() + retryDelay) }, 'id = ?', [contactItem.id]);
+                    db.update('campaign_contacts', { status: 'pending', last_error: error.message, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 } else {
-                    db.update('campaign_contacts', { status: 'failed', last_error: error.message, retry_at: null }, 'id = ?', [contactItem.id]);
-                    db.update('campaigns', { processed: (parseInt((await db.getById('campaigns', campaignId)).processed) || 0) + 1, failed: (parseInt((await db.getById('campaigns', campaignId)).failed) || 0) + 1, updated_at: new Date() }, 'id = ?', [campaignId]);
+                    db.update('campaign_contacts', { status: 'failed', last_error: error.message, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    const failedRow = await db.getById('campaigns', campaignId, userId);
+                    db.update('campaigns', { processed: (parseInt(failedRow?.processed) || 0) + 1, failed: (parseInt(failedRow?.failed) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 }
             }
             this._emitProgress(campaignId);
@@ -165,7 +174,7 @@ class MessageQueue {
     }
 
     _emitProgress(campaignId) {
-        db.getById('campaigns', campaignId).then(campaign => {
+        db.getById('campaigns', campaignId, this._ownerUserId).then(campaign => {
             if (campaign) this._emit('campaign:progress', campaign);
         });
     }
@@ -179,6 +188,7 @@ class MessageQueue {
         if (!campaign || campaign.length === 0) return;
         const activeCampaign = campaign[0];
         this._campaignId = activeCampaign.id;
+        this._ownerUserId = activeCampaign.user_id || null;
         this._running = true;
         this._paused = activeCampaign.status === 'paused';
         this._rateLimiter = new RateLimiter(JSON.parse(activeCampaign.settings || '{}'));
@@ -188,4 +198,4 @@ class MessageQueue {
     static isOptOut(message) { return OPT_OUT_PATTERNS.some(pattern => pattern.test(message)); }
 }
 
-module.exports = new MessageQueue();
+module.exports = new MessageQueue();

@@ -2,9 +2,10 @@ const db = require('../database/db');
 const { supabase, isAvailable } = require('../database/supabaseClient');
 
 class ContactService {
-    async upsert(phone, data = {}) {
+    // userId is optional for the webhook (no request context); route calls always pass it.
+    async upsert(phone, data = {}, userId = null) {
         const clean = this._cleanPhone(phone);
-        const existing = await db.getOne('contacts', 'phone', clean);
+        const existing = await db.getOne('contacts', 'phone', clean, userId);
 
         if (existing) {
             const updates = {};
@@ -21,9 +22,9 @@ class ContactService {
             if (data.is_lid !== undefined) updates.is_lid = data.is_lid ? 1 : 0;
 
             if (Object.keys(updates).length > 0) {
-                const updated = await db.update('contacts', updates, 'phone = ?', [clean]);
+                const updated = await db.update('contacts', updates, 'phone = ? AND user_id = ?', [clean, userId]);
                 // Get fresh data with parsed JSON
-                const fresh = await db.getOne('contacts', 'phone', clean);
+                const fresh = await db.getOne('contacts', 'phone', clean, userId);
                 return this._parse(fresh);
             }
             return this._parse(existing);
@@ -38,29 +39,30 @@ class ContactService {
                 marketing_opt_in: data.marketing_opt_in !== false ? 1 : 0,
                 jid: data.jid || null,
                 is_lid: data.is_lid ? 1 : 0,
+                user_id: userId,
             });
             return this._parse(newContact);
         }
     }
 
-    findByPhone(phone) {
-        return db.getOne('contacts', 'phone', this._cleanPhone(phone));
+    findByPhone(phone, userId = null) {
+        return db.getOne('contacts', 'phone', this._cleanPhone(phone), userId);
     }
 
-    findById(id) {
-        return db.getById('contacts', id);
+    findById(id, userId = null) {
+        return db.getById('contacts', id, userId);
     }
 
-    async list({ search = '', page = 1, limit = 50, optIn } = {}) {
-        let where = '';
-        const params = [];
+    async list(userId, { search = '', page = 1, limit = 50, optIn } = {}) {
+        let where = 'user_id = ?';
+        const params = [userId];
         if (search) {
-            where = `(phone LIKE ? OR name LIKE ? OR company LIKE ? OR city LIKE ?)`;
+            where += ` AND (phone LIKE ? OR name LIKE ? OR company LIKE ? OR city LIKE ?)`;
             const s = `%${search}%`;
             params.push(s, s, s, s);
         }
         if (optIn !== undefined) {
-            where = where ? `${where} AND marketing_opt_in = ?` : 'marketing_opt_in = ?';
+            where += ' AND marketing_opt_in = ?';
             params.push(optIn ? 1 : 0);
         }
         const offset = (page - 1) * limit;
@@ -74,8 +76,8 @@ class ContactService {
         };
     }
 
-    async update(id, data) {
-        const contact = await db.getById('contacts', id);
+    async update(id, data, userId) {
+        const contact = await db.getById('contacts', id, userId);
         if (!contact) return null;
 
         const updates = { updated_at: new Date() };
@@ -86,30 +88,32 @@ class ContactService {
         if (data.notes !== undefined) updates.notes = data.notes;
         if (data.marketing_opt_in !== undefined) updates.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
 
-        await db.update('contacts', updates, 'id = ?', [id]);
-        const updated = await db.getById('contacts', id);
+        await db.update('contacts', updates, 'id = ? AND user_id = ?', [id, userId]);
+        const updated = await db.getById('contacts', id, userId);
         return this._parse(updated);
     }
 
-    async delete(id) {
-        await db.del('contacts', 'id = ?', [id]);
+    async delete(id, userId) {
+        await db.del('contacts', 'id = ? AND user_id = ?', [id, userId]);
     }
 
-    async deleteMany(ids) {
+    async deleteMany(ids, userId) {
         for (const id of ids) {
-            await db.del('contacts', 'id = ?', [id]);
+            await this.delete(id, userId);
         }
     }
 
-    async setOptOut(phone) {
+    async setOptOut(phone, userId = null) {
         const clean = this._cleanPhone(phone);
+        const where = userId ? 'phone = ? AND user_id = ?' : 'phone = ?';
+        const params = userId ? [clean, userId] : [clean];
         await db.update('contacts', {
             marketing_opt_in: 0,
             updated_at: new Date(),
-        }, 'phone = ?', [clean]);
+        }, where, params);
     }
 
-    importFromArray(rows) {
+    importFromArray(rows, userId) {
         const results = { added: 0, updated: 0, invalid: 0, duplicates: 0 };
         const seen = new Set();
 
@@ -120,8 +124,8 @@ class ContactService {
             if (!clean || clean.length < 10 || clean.length > 15) { results.invalid++; return; }
             if (seen.has(clean)) { results.duplicates++; return; }
             seen.add(clean);
-            const existing = await db.getOne('contacts', 'phone', clean);
-            await this.upsert(clean, { name: row.name, company: row.company, city: row.city });
+            const existing = await db.getOne('contacts', 'phone', clean, userId);
+            await this.upsert(clean, { name: row.name, company: row.company, city: row.city }, userId);
             if (existing) results.updated++;
             else results.added++;
         };
@@ -129,9 +133,9 @@ class ContactService {
         return Promise.all(rows.map(syncUpsert)).then(() => results);
     }
 
-    async stats() {
-        const total = await db.count('contacts');
-        const optedOut = await db.count('contacts', 'marketing_opt_in = ?', [0]);
+    async stats(userId) {
+        const total = await db.count('contacts', 'user_id = ?', [userId]);
+        const optedOut = await db.count('contacts', 'user_id = ? AND marketing_opt_in = ?', [userId, 0]);
         return { total, optedIn: total - optedOut, optedOut };
     }
 

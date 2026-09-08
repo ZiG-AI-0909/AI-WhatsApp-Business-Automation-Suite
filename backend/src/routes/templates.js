@@ -9,7 +9,7 @@ function validIds(ids) {
 
 router.get('/', async (req, res) => {
     try {
-        res.json(await templateService.list());
+        res.json(await templateService.list(req.user.id));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -18,7 +18,7 @@ router.get('/', async (req, res) => {
 router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
     try {
-        await templateService.deleteMany(req.body.ids);
+        await templateService.deleteMany(req.body.ids, req.user.id);
         res.json({ deleted: req.body.ids.length });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -27,7 +27,7 @@ router.post('/bulk-delete', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
     try {
-        const t = await templateService.get(+req.params.id);
+        const t = await templateService.get(+req.params.id, req.user.id);
         if (!t) return res.status(404).json({ error: 'Not found' });
         res.json(t);
     } catch (err) {
@@ -39,7 +39,7 @@ router.post('/', async (req, res) => {
     const { name, content } = req.body;
     if (!name?.trim() || !content?.trim()) return res.status(400).json({ error: 'Name and content required' });
     try {
-        res.status(201).json(await templateService.create(name, content));
+        res.status(201).json(await templateService.create(req.user.id, name, content));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -49,7 +49,7 @@ router.put('/:id', async (req, res) => {
     const { name, content } = req.body;
     if (!name?.trim() || !content?.trim()) return res.status(400).json({ error: 'Name and content required' });
     try {
-        const t = await templateService.update(+req.params.id, name, content);
+        const t = await templateService.update(+req.params.id, name, content, req.user.id);
         if (!t) return res.status(404).json({ error: 'Not found' });
         res.json(t);
     } catch (err) {
@@ -59,7 +59,7 @@ router.put('/:id', async (req, res) => {
 
 router.post('/:id/duplicate', async (req, res) => {
     try {
-        const t = await templateService.duplicate(+req.params.id);
+        const t = await templateService.duplicate(+req.params.id, req.user.id);
         if (!t) return res.status(404).json({ error: 'Not found' });
         res.status(201).json(t);
     } catch (err) {
@@ -69,7 +69,7 @@ router.post('/:id/duplicate', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
     try {
-        await templateService.delete(+req.params.id);
+        await templateService.delete(+req.params.id, req.user.id);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

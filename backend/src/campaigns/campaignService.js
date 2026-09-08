@@ -26,14 +26,14 @@ class CampaignService {
         return campaign;
     }
 
-    async list({ page = 1, limit = 20 } = {}) {
-        const result = await db.paginate('campaigns', '', [], 'created_at', 'desc', limit, (page - 1) * limit);
+    async list(userId, { page = 1, limit = 20 } = {}) {
+        const result = await db.paginate('campaigns', 'user_id = ?', [userId], 'created_at', 'desc', limit, (page - 1) * limit);
         const data = await Promise.all(result.data.map(c => this._parseCampaign(c)));
         return { total: result.total, page, limit, data };
     }
 
-    async get(id) {
-        const campaign = await db.getById('campaigns', id);
+    async get(id, userId) {
+        const campaign = await db.getById('campaigns', id, userId);
         return this._parseCampaign(campaign);
     }
 
@@ -95,7 +95,7 @@ class CampaignService {
         };
     }
 
-    async create({ name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [] }) {
+    async create(userId, { name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [] }) {
         const source = await this._resolveExcelSource(filePath);
         const result = excelParser.parse(source);
         const validRows = excelParser.getValidRows(result);
@@ -128,6 +128,7 @@ class CampaignService {
             media_mimetype: mediaMimetype,
             buttons: JSON.stringify(safeButtons),
             updated_at: new Date(),
+            user_id: userId,
         });
 
         const campaignId = campaign.id;
@@ -139,7 +140,7 @@ class CampaignService {
                 name: row.name || row.Name || '',
                 company: row.company || row.Company || '',
                 city: row.city || row.City || '',
-            });
+            }, userId);
 
             // Check opt-out
             if (!contact.marketing_opt_in) {
@@ -148,6 +149,7 @@ class CampaignService {
                     contact_id: contact.id,
                     rendered_message: null,
                     status: 'opted_out',
+                    user_id: userId,
                 });
                 continue;
             }
@@ -158,15 +160,16 @@ class CampaignService {
                 contact_id: contact.id,
                 rendered_message: rendered,
                 status: 'pending',
+                user_id: userId,
             });
         }
 
-        const created = await db.getById('campaigns', campaignId);
+        const created = await db.getById('campaigns', campaignId, userId);
         return this._parseCampaign(created);
     }
 
-    async start(campaignId, whatsappService, io) {
-        const campaign = await this.get(campaignId);
+    async start(campaignId, whatsappService, io, userId) {
+        const campaign = await this.get(campaignId, userId);
         if (!campaign) throw new Error('Campaign not found');
         if (!['draft', 'stopped', 'paused'].includes(campaign.status)) {
             throw new Error(`Cannot start campaign in status: ${campaign.status}`);
@@ -181,7 +184,7 @@ class CampaignService {
         if (campaign.provider && campaign.provider !== whatsappService.activeName) {
             throw new Error(`Campaign is locked to the ${campaign.provider} provider. Switch providers before starting it.`);
         }
-        await messageQueue.start(campaignId, settings);
+        await messageQueue.start(campaignId, settings, userId);
     }
 
     pause(campaignId) {
@@ -191,8 +194,8 @@ class CampaignService {
         messageQueue.pause();
     }
 
-    async resume(campaignId, whatsappService, io) {
-        const campaign = await this.get(campaignId);
+    async resume(campaignId, whatsappService, io, userId) {
+        const campaign = await this.get(campaignId, userId);
         if (!campaign) throw new Error('Campaign not found');
         if (campaign.status !== 'paused') {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
@@ -208,31 +211,31 @@ class CampaignService {
         messageQueue.resume();
     }
 
-    stop(campaignId) {
+    stop(campaignId, userId) {
         if (messageQueue.getCurrentCampaignId() !== campaignId) {
             // Force-stop from DB even if queue doesn't match
-            db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND status IN (\'pending\', \'processing\')', [campaignId]);
-            db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ?', [campaignId]);
+            db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+            db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
             return;
         }
         messageQueue.stop();
     }
 
-    async delete(id) {
-        this.stop(id);
-        await db.del('campaigns', 'id = ?', [id]);
+    async delete(id, userId) {
+        this.stop(id, userId);
+        await db.del('campaigns', 'id = ? AND user_id = ?', [id, userId]);
     }
 
-    async deleteMany(ids) {
+    async deleteMany(ids, userId) {
         for (const id of ids) {
-            this.stop(id);
-            await db.del('campaigns', 'id = ?', [id]);
+            this.stop(id, userId);
+            await db.del('campaigns', 'id = ? AND user_id = ?', [id, userId]);
         }
     }
 
-    async getContacts(campaignId, { page = 1, limit = 50, status } = {}) {
-        let where = 'campaign_id = ?';
-        const params = [campaignId];
+    async getContacts(campaignId, userId, { page = 1, limit = 50, status } = {}) {
+        let where = 'campaign_id = ? AND user_id = ?';
+        const params = [campaignId, userId];
         if (status) {
             where += ' AND status = ?';
             params.push(status);
@@ -242,7 +245,7 @@ class CampaignService {
         
         // Fetch contact details for each row
         const data = await Promise.all(result.data.map(async (cc) => {
-            const contact = await db.getById('contacts', cc.contact_id);
+            const contact = await db.getById('contacts', cc.contact_id, userId);
             return {
                 ...cc,
                 phone: contact?.phone || '',
@@ -255,10 +258,10 @@ class CampaignService {
         return { total: result.total, page, limit, data };
     }
 
-    async stats() {
-        const total = await db.count('campaigns');
-        const active = await db.count('campaigns', "status = ?", ['running']);
-        const campaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', '', [], '', 1000, 0);
+    async stats(userId) {
+        const total = await db.count('campaigns', 'user_id = ?', [userId]);
+        const active = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'running']);
+        const campaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', 'user_id = ?', [userId], '', 1000, 0);
         
         const totalSent = campaigns.reduce((sum, c) => sum + (parseInt(c.sent) || 0), 0);
         const totalFailed = campaigns.reduce((sum, c) => sum + (parseInt(c.failed) || 0), 0);

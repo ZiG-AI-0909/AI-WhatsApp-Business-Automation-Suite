@@ -20,7 +20,7 @@ function validIds(ids) {
 // GET /api/campaigns
 router.get('/', async (req, res) => {
     try {
-        res.json(await campaignService.list({ page: +req.query.page || 1, limit: +req.query.limit || 20 }));
+        res.json(await campaignService.list(req.user.id, { page: +req.query.page || 1, limit: +req.query.limit || 20 }));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -29,7 +29,7 @@ router.get('/', async (req, res) => {
 // GET /api/campaigns/stats
 router.get('/stats', async (req, res) => {
     try {
-        res.json(await campaignService.stats());
+        res.json(await campaignService.stats(req.user.id));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -44,7 +44,7 @@ router.get('/queue-status', (req, res) => {
 router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
     try {
-        await campaignService.deleteMany(req.body.ids);
+        await campaignService.deleteMany(req.body.ids, req.user.id);
         res.json({ deleted: req.body.ids.length });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -54,7 +54,7 @@ router.post('/bulk-delete', async (req, res) => {
 // GET /api/campaigns/:id
 router.get('/:id', async (req, res) => {
     try {
-        const c = await campaignService.get(+req.params.id);
+        const c = await campaignService.get(+req.params.id, req.user.id);
         if (!c) return res.status(404).json({ error: 'Not found' });
         res.json(c);
     } catch (err) {
@@ -65,7 +65,7 @@ router.get('/:id', async (req, res) => {
 // GET /api/campaigns/:id/contacts
 router.get('/:id/contacts', async (req, res) => {
     try {
-        res.json(await campaignService.getContacts(+req.params.id, {
+        res.json(await campaignService.getContacts(+req.params.id, req.user.id, {
             page: +req.query.page || 1,
             limit: +req.query.limit || 50,
             status: req.query.status,
@@ -145,7 +145,7 @@ router.post('/', async (req, res) => {
         const resolvedFilePath = filePath;
         const resolvedMediaPath = mediaPath || null;
 
-        const campaign = await campaignService.create({ name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons });
+        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons });
         res.status(201).json(campaign);
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -155,7 +155,7 @@ router.post('/', async (req, res) => {
 // POST /api/campaigns/:id/start
 router.post('/:id/start', async (req, res) => {
     try {
-        await campaignService.start(+req.params.id, whatsappService, req.app.get('io'));
+        await campaignService.start(+req.params.id, whatsappService, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign started' });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -175,7 +175,7 @@ router.post('/:id/pause', async (req, res) => {
 // POST /api/campaigns/:id/resume
 router.post('/:id/resume', async (req, res) => {
     try {
-        await campaignService.resume(+req.params.id, whatsappService, req.app.get('io'));
+        await campaignService.resume(+req.params.id, whatsappService, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign resumed' });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -185,7 +185,7 @@ router.post('/:id/resume', async (req, res) => {
 // POST /api/campaigns/:id/stop
 router.post('/:id/stop', async (req, res) => {
     try {
-        await campaignService.stop(+req.params.id);
+        await campaignService.stop(+req.params.id, req.user.id);
         res.json({ success: true, message: 'Campaign stopped' });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -195,7 +195,7 @@ router.post('/:id/stop', async (req, res) => {
 // DELETE /api/campaigns/:id
 router.delete('/:id', async (req, res) => {
     try {
-        await campaignService.delete(+req.params.id);
+        await campaignService.delete(+req.params.id, req.user.id);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

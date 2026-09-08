@@ -27,16 +27,16 @@ router.post('/', async (req, res) => {
     const error = validateSchedule(req.body || {});
     if (error) return res.status(400).json({ error });
     try {
-        const schedule = await schedulerService.create({ ...req.body, filePath: req.body.filePath, mediaPath: req.body.mediaPath || null });
+        const schedule = await schedulerService.create(req.user.id, { ...req.body, filePath: req.body.filePath, mediaPath: req.body.mediaPath || null });
         res.status(201).json(schedule);
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
 });
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
     try {
-        res.json(await schedulerService.list());
+        res.json(await schedulerService.list(req.user.id));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -45,7 +45,7 @@ router.get('/', async (_req, res) => {
 router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
     try {
-        await schedulerService.deleteMany(req.body.ids);
+        await schedulerService.deleteMany(req.body.ids, req.user.id);
         res.json({ deleted: req.body.ids.length });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -54,7 +54,7 @@ router.post('/bulk-delete', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
     try {
-        const schedule = await schedulerService.get(+req.params.id);
+        const schedule = await schedulerService.get(+req.params.id, req.user.id);
         if (!schedule) return res.status(404).json({ error: 'Not found' });
         res.json(schedule);
     } catch (err) {
@@ -63,24 +63,24 @@ router.get('/:id', async (req, res) => {
 });
 
 router.patch('/:id/pause', async (req, res) => {
-    try { res.json(await schedulerService.pause(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+    try { res.json(await schedulerService.pause(+req.params.id, req.user.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.patch('/:id/resume', async (req, res) => {
-    try { res.json(await schedulerService.resume(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+    try { res.json(await schedulerService.resume(+req.params.id, req.user.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.patch('/:id/retry', async (req, res) => {
-    try { res.json(await schedulerService.retry(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+    try { res.json(await schedulerService.retry(+req.params.id, req.user.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.post('/:id/cancel', async (req, res) => {
-    try { res.json(await schedulerService.cancel(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+    try { res.json(await schedulerService.cancel(+req.params.id, req.user.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.delete('/:id', async (req, res) => {
     try {
-        await schedulerService.delete(+req.params.id);
+        await schedulerService.delete(+req.params.id, req.user.id);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

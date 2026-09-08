@@ -57,8 +57,8 @@ class KnowledgeBase {
         }
     }
 
-    async addDocument(name, category, content, filePath = null) {
-        const existing = await db.getOne('knowledge_documents', 'name', name);
+    async addDocument(userId, name, category, content, filePath = null) {
+        const existing = await db.getOne('knowledge_documents', 'name', name, userId);
 
         let docId;
         if (existing) {
@@ -67,8 +67,8 @@ class KnowledgeBase {
                 content,
                 file_path: filePath,
                 status: 'active',
-            }, 'id = ?', [existing.id]);
-            await db.del('knowledge_chunks', 'document_id = ?', [existing.id]);
+            }, 'id = ? AND user_id = ?', [existing.id, userId]);
+            await db.del('knowledge_chunks', 'document_id = ? AND user_id = ?', [existing.id, userId]);
             docId = existing.id;
         } else {
             const result = await db.insert('knowledge_documents', {
@@ -76,6 +76,7 @@ class KnowledgeBase {
                 category,
                 content,
                 file_path: filePath,
+                user_id: userId,
             });
             docId = result.id;
         }
@@ -86,6 +87,7 @@ class KnowledgeBase {
             document_id: docId,
             content: chunk,
             chunk_index: i,
+            user_id: userId,
         }));
         await db.insertMany('knowledge_chunks', chunkData);
 
@@ -109,12 +111,12 @@ class KnowledgeBase {
         return chunks.length ? chunks : [text];
     }
 
-    async listDocuments() {
+    async listDocuments(userId) {
         const docs = await db.select(
             'knowledge_documents',
             'id, name, category, status, created_at',
-            '',
-            [],
+            'user_id = ?',
+            [userId],
             'created_at',
             1000,
             0
@@ -125,22 +127,22 @@ class KnowledgeBase {
         }));
     }
 
-    async deleteDocument(id) {
-        await db.del('knowledge_documents', 'id = ?', [id]);
+    async deleteDocument(id, userId) {
+        await db.del('knowledge_documents', 'id = ? AND user_id = ?', [id, userId]);
     }
 
-    async deleteMany(ids) {
+    async deleteMany(ids, userId) {
         for (const id of ids) {
-            await this.deleteDocument(id);
+            await this.deleteDocument(id, userId);
         }
     }
 
-    async getDocument(id) {
-        return db.getById('knowledge_documents', id);
+    async getDocument(id, userId) {
+        return db.getById('knowledge_documents', id, userId);
     }
 
-    async updateDocument(id, updates) {
-        const doc = await this.getDocument(id);
+    async updateDocument(id, userId, updates) {
+        const doc = await this.getDocument(id, userId);
         if (!doc) return null;
         const name = updates.name ?? doc.name;
         const category = updates.category ?? doc.category;
@@ -150,18 +152,19 @@ class KnowledgeBase {
             name,
             category,
             content,
-        }, 'id = ?', [id]);
+        }, 'id = ? AND user_id = ?', [id, userId]);
 
         // Re-chunk
-        await db.del('knowledge_chunks', 'document_id = ?', [id]);
+        await db.del('knowledge_chunks', 'document_id = ? AND user_id = ?', [id, userId]);
         const chunks = this._chunkText(content, 500);
         const chunkData = chunks.map((chunk, i) => ({
             document_id: id,
             content: chunk,
             chunk_index: i,
+            user_id: userId,
         }));
         await db.insertMany('knowledge_chunks', chunkData);
-        return this.getDocument(id);
+        return this.getDocument(id, userId);
     }
 }
 
