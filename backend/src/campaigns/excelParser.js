@@ -1,5 +1,4 @@
 const xlsx = require('xlsx');
-const path = require('path');
 
 /**
  * Parse an Excel/CSV file and dynamically detect all columns.
@@ -8,11 +7,13 @@ const path = require('path');
 class ExcelParser {
     /**
      * Parse an uploaded Excel file.
-     * @param {string} filePath - Absolute path to the uploaded .xlsx file
+     * @param {string|Buffer} source - Absolute path to the uploaded .xlsx file, or a Buffer of the file contents
      * @returns {object} { columns, rows, validation }
      */
-    parse(filePath) {
-        const workbook = xlsx.readFile(filePath);
+    parse(source) {
+        const workbook = Buffer.isBuffer(source)
+            ? xlsx.read(source, { type: 'buffer' })
+            : xlsx.readFile(source);
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const rawRows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
@@ -111,6 +112,13 @@ class ExcelParser {
      */
     getValidRows(parsedResult) {
         return parsedResult.rows.filter(r => r._valid);
+    }
+
+    /**
+     * Parse from an in-memory Buffer (e.g. a file downloaded from Supabase Storage).
+     */
+    parseBuffer(buffer) {
+        return this.parse(buffer);
     }
 
     /**

@@ -1,6 +1,7 @@
 const db = require('../database/db');
 const contactService = require('../contacts/contactService');
 const excelParser = require('./excelParser');
+const { downloadFromStorage, isRemotePath } = require('../middleware/upload');
 const fieldRenderer = require('./fieldRenderer');
 const messageQueue = require('./messageQueue');
 const providerManager = require('../whatsapp/providerManager');
@@ -36,6 +37,17 @@ class CampaignService {
         return this._parseCampaign(campaign);
     }
 
+    /**
+     * Resolve a file source (local path or Supabase Storage URL) into a Buffer
+     * so the Excel parser can work without a local file path.
+     */
+    async _resolveExcelSource(filePath) {
+        if (isRemotePath(filePath)) {
+            return downloadFromStorage('campaign-excel-uploads', filePath);
+        }
+        return filePath; // local path during transition
+    }
+
     validateExcel(filePath) {
         const result = excelParser.parse(filePath);
         const validRows = excelParser.getValidRows(result);
@@ -53,8 +65,26 @@ class CampaignService {
         };
     }
 
-    previewMessages(filePath, template, previewCount = 5) {
-        const result = excelParser.parse(filePath);
+    validateExcelBuffer(fileBuffer) {
+        const result = excelParser.parseBuffer(fileBuffer);
+        const validRows = excelParser.getValidRows(result);
+        const dynamicFields = excelParser.getDynamicFields(result);
+        return {
+            ...result.validation,
+            dynamicFields,
+            phoneColumn: result.phoneColumn,
+            previewRows: validRows.slice(0, 3).map(r => {
+                const preview = { ...r };
+                delete preview._rowIndex;
+                delete preview._valid;
+                return preview;
+            }),
+        };
+    }
+
+    async previewMessages(filePath, template, previewCount = 5) {
+        const source = await this._resolveExcelSource(filePath);
+        const result = excelParser.parse(source);
         const validRows = excelParser.getValidRows(result);
         const requiredFields = fieldRenderer.extractFields(template);
         return {
@@ -66,7 +96,8 @@ class CampaignService {
     }
 
     async create({ name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [] }) {
-        const result = excelParser.parse(filePath);
+        const source = await this._resolveExcelSource(filePath);
+        const result = excelParser.parse(source);
         const validRows = excelParser.getValidRows(result);
 
         if (validRows.length === 0) {

@@ -1,13 +1,16 @@
 // =============================================================
 // Upload Middleware — Supabase Storage Backend
-// Replaces local disk storage (uploads/, campaign-media/, knowledge/)
-// with Supabase Storage buckets for Render free tier compatibility.
+// Multer parses multipart uploads into an in-memory buffer, then each
+// route handler explicitly uploads req.file.buffer to the correct
+// Supabase Storage bucket. This replaces the previous custom multer
+// storage engine, which was fragile and hard to debug.
 // =============================================================
+const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || '';
 
 // Storage bucket names (create these in Supabase dashboard if not auto-created)
 const BUCKETS = {
@@ -16,10 +19,10 @@ const BUCKETS = {
     campaignMedia: 'campaign-media',
 };
 
-// Initialize Supabase client for storage operations (using anon key for storage, not service role)
-// Storage operations can use the anon key with proper bucket policies
-const supabaseStorage = (SUPABASE_URL && SUPABASE_ANON_KEY)
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+// Initialize Supabase client for storage operations using the secret
+// (service-role) key — required for writes to private/RLS-protected buckets.
+const supabaseStorage = (SUPABASE_URL && SUPABASE_SECRET_KEY)
+    ? createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
           auth: { persistSession: false, autoRefreshToken: false },
       })
     : null;
@@ -29,11 +32,11 @@ function isStorageAvailable() {
 }
 
 /**
- * Upload a file to Supabase Storage and return the public URL
+ * Upload a file buffer to Supabase Storage and return the public URL
  */
 async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentType) {
     if (!isStorageAvailable()) {
-        throw new Error('Supabase Storage is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY.');
+        throw new Error('Supabase Storage is not configured. Set SUPABASE_URL and SUPABASE_SECRET_KEY.');
     }
 
     const uniqueFileName = `${Date.now()}_${fileName}`;
@@ -113,61 +116,23 @@ async function deleteFromStorage(bucket, filePath) {
 }
 
 /**
- * Multer-like storage engine that uploads to Supabase instead of local disk
- * Returns a compatible interface for existing code that expects req.file
+ * Build a real multer instance using in-memory storage. The route handler
+ * is responsible for uploading req.file.buffer to the given bucket.
  */
-function createStorageEngine(bucket, filenamePrefix = '') {
-    return {
-        _bucket: bucket,
-        _prefix: filenamePrefix,
-
-        _handleFile(req, file, cb) {
-            const originalName = file.originalname || 'unknown';
-            const ext = path.extname(originalName);
-            const baseName = path.basename(originalName, ext);
-            const fileName = `${filenamePrefix}${Date.now()}_${baseName}${ext}`;
-
-            // Convert buffer to Uint8Array if needed
-            const buffer = file.buffer instanceof Uint8Array
-                ? file.buffer
-                : Buffer.from(file.buffer);
-
-            uploadToStorage(bucket, fileName, buffer, originalName, file.mimetype)
-                .then(result => {
-                    // Create a file-like object compatible with existing code
-                    cb(null, {
-                        path: result.path,
-                        filename: result.filename,
-                        bucket: result.bucket,
-                        originalname: originalName,
-                        mimetype: file.mimetype,
-                        size: file.size,
-                        // For backward compatibility with code that uses .path for local files
-                        _localPath: null, // No local path since we're in cloud storage
-                        _isRemote: true,
-                    });
-                })
-                .catch(err => cb(err));
+function createMulterUpload(config) {
+    return multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: config.maxSize },
+        fileFilter: (_req, file, cb) => {
+            const ext = path.extname(file.originalname || '').toLowerCase();
+            if (config.acceptedTypes.includes(ext)) return cb(null, true);
+            cb(new Error(`Invalid file type. Accepted: ${config.acceptedTypes.join(', ')}`));
         },
-
-        _removeFile(req, file, cb) {
-            if (file && file._isRemote && file.bucket && file.filename) {
-                deleteFromStorage(file.bucket, file.filename)
-                    .then(() => cb())
-                    .catch(err => cb(err));
-            } else {
-                cb();
-            }
-        },
-    };
+    });
 }
-
-// Multer-like configuration for different upload types
-// Note: We're not using multer directly anymore, but providing compatible configurations
 
 /**
  * Upload Excel files to Supabase Storage
- * Returns middleware-compatible configuration
  */
 const excelStorageConfig = {
     bucket: BUCKETS.excel,
@@ -195,6 +160,11 @@ const campaignMediaStorageConfig = {
     acceptedTypes: ['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx'],
     maxSize: 16 * 1024 * 1024, // 16MB
 };
+
+// Actual multer middleware instances — parse uploads into memory.
+const uploadExcel = createMulterUpload(excelStorageConfig);
+const uploadKnowledge = createMulterUpload(knowledgeStorageConfig);
+const uploadCampaignMedia = createMulterUpload(campaignMediaStorageConfig);
 
 /**
  * Check if a file path is from Supabase Storage (remote) or local
@@ -233,7 +203,10 @@ function getBucketForPath(filePath, type) {
 }
 
 module.exports = {
-    // Storage configs (for reference, actual handling done in route handlers)
+    // Multer middleware instances (memory storage) + their storage configs
+    uploadExcel,
+    uploadKnowledge,
+    uploadCampaignMedia,
     excelStorageConfig,
     knowledgeStorageConfig,
     campaignMediaStorageConfig,
@@ -243,9 +216,6 @@ module.exports = {
     downloadFromStorage,
     deleteFromStorage,
 
-    // Storage engine for multer-like usage
-    createStorageEngine,
-
     // Utility functions
     isStorageAvailable,
     isRemotePath,
@@ -254,10 +224,4 @@ module.exports = {
 
     // Bucket names (need to be created in Supabase dashboard)
     BUCKETS,
-
-    // Legacy directory constants (kept for reference, no longer used for storage)
-    // These are now pointing to Supabase Storage URLs
-    UPLOAD_DIR: 'supabase://campaign-excel-uploads',
-    KNOWLEDGE_DIR: 'supabase://knowledge-documents',
-    CAMPAIGN_MEDIA_DIR: 'supabase://campaign-media',
 };

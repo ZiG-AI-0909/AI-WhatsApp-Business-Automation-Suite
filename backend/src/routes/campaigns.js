@@ -1,32 +1,38 @@
 const express = require('express');
-const router = express.Router();
-const path = require('path');
-const fs = require('fs');
 const campaignService = require('../campaigns/campaignService');
 const whatsappService = require('../whatsapp/providerManager');
-const { uploadExcel, uploadCampaignMedia, UPLOAD_DIR, CAMPAIGN_MEDIA_DIR, isRemotePath, getFileNameFromPath, getBucketForPath, downloadFromStorage, BUCKETS } = require('../middleware/upload');
+const {
+    uploadExcel,
+    uploadCampaignMedia,
+    excelStorageConfig,
+    campaignMediaStorageConfig,
+    uploadToStorage,
+    downloadFromStorage,
+    BUCKETS,
+} = require('../middleware/upload');
 
-// File paths are now Supabase Storage URLs, no local path validation needed
-function uploadedFilePath(filePath) {
-    return filePath;
-}
-
-function uploadedMediaPath(filePath) {
-    return filePath;
-}
+const router = express.Router();
 
 function validIds(ids) {
     return Array.isArray(ids) && ids.length > 0 && ids.every(id => Number.isInteger(id));
 }
 
 // GET /api/campaigns
-router.get('/', (req, res) => {
-    res.json(campaignService.list({ page: +req.query.page || 1, limit: +req.query.limit || 20 }));
+router.get('/', async (req, res) => {
+    try {
+        res.json(await campaignService.list({ page: +req.query.page || 1, limit: +req.query.limit || 20 }));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/campaigns/stats
-router.get('/stats', (req, res) => {
-    res.json(campaignService.stats());
+router.get('/stats', async (req, res) => {
+    try {
+        res.json(await campaignService.stats());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/campaigns/queue-status
@@ -35,52 +41,86 @@ router.get('/queue-status', (req, res) => {
 });
 
 // POST /api/campaigns/bulk-delete
-router.post('/bulk-delete', (req, res) => {
+router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
-    campaignService.deleteMany(req.body.ids);
-    res.json({ deleted: req.body.ids.length });
+    try {
+        await campaignService.deleteMany(req.body.ids);
+        res.json({ deleted: req.body.ids.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/campaigns/:id
-router.get('/:id', (req, res) => {
-    const c = campaignService.get(+req.params.id);
-    if (!c) return res.status(404).json({ error: 'Not found' });
-    res.json(c);
+router.get('/:id', async (req, res) => {
+    try {
+        const c = await campaignService.get(+req.params.id);
+        if (!c) return res.status(404).json({ error: 'Not found' });
+        res.json(c);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/campaigns/:id/contacts
-router.get('/:id/contacts', (req, res) => {
-    res.json(campaignService.getContacts(+req.params.id, {
-        page: +req.query.page || 1,
-        limit: +req.query.limit || 50,
-        status: req.query.status,
-    }));
+router.get('/:id/contacts', async (req, res) => {
+    try {
+        res.json(await campaignService.getContacts(+req.params.id, {
+            page: +req.query.page || 1,
+            limit: +req.query.limit || 50,
+            status: req.query.status,
+        }));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // POST /api/campaigns/validate-excel
 router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     try {
-        // For Excel files, we need to download from Supabase to validate
-        const filePath = isRemotePath(req.file.path) ? req.file.path : req.file.path;
-        const result = campaignService.validateExcel(filePath);
-        res.json({ filePath, filename: req.file.filename, ...result });
+        // Multer parsed the file into memory — upload it to Supabase Storage.
+        const stored = await uploadToStorage(
+            excelStorageConfig.bucket,
+            `${excelStorageConfig.prefix}${Date.now()}_${req.file.originalname}`,
+            req.file.buffer,
+            req.file.originalname,
+            req.file.mimetype,
+        );
+
+        // Download the stored file and parse it to validate the contact columns.
+        const fileData = await downloadFromStorage(excelStorageConfig.bucket, stored.filename);
+        const result = campaignService.validateExcelBuffer(fileData);
+        res.json({ filePath: stored.path, filename: stored.filename, ...result });
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
 });
 
 // POST /api/campaigns/media
-router.post('/media', uploadCampaignMedia.single('file'), (req, res) => {
+router.post('/media', uploadCampaignMedia.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    
-    // Determine media type based on mimetype
-    let mediaType = 'image';
-    if (['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'].includes(req.file.mimetype)) {
-        mediaType = 'document';
+
+    try {
+        // Multer parsed the file into memory — upload it to Supabase Storage.
+        const stored = await uploadToStorage(
+            campaignMediaStorageConfig.bucket,
+            `${campaignMediaStorageConfig.prefix}${Date.now()}_${req.file.originalname}`,
+            req.file.buffer,
+            req.file.originalname,
+            req.file.mimetype,
+        );
+
+        // Determine media type based on mimetype
+        let mediaType = 'image';
+        if (['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'].includes(req.file.mimetype)) {
+            mediaType = 'document';
+        }
+
+        res.json({ mediaPath: stored.path, filename: stored.filename, mediaType, mimetype: req.file.mimetype });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    
-    res.json({ mediaPath: req.file.path, filename: req.file.filename, mediaType, mimetype: req.file.mimetype });
 });
 
 // POST /api/campaigns/preview
@@ -88,8 +128,7 @@ router.post('/preview', async (req, res) => {
     const { filePath, template, count = 5 } = req.body;
     if (!filePath || !template) return res.status(400).json({ error: 'filePath and template required' });
     try {
-        // If it's a remote file, we need to handle it differently
-        res.json(campaignService.previewMessages(filePath, template, +count));
+        res.json(await campaignService.previewMessages(filePath, template, +count));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -103,10 +142,9 @@ router.post('/', async (req, res) => {
     }
     try {
         // For remote files (Supabase Storage), pass the URL directly
-        // For local files (during transition), resolve the path
-        const resolvedFilePath = isRemotePath(filePath) ? filePath : filePath;
-        const resolvedMediaPath = mediaPath ? (isRemotePath(mediaPath) ? mediaPath : mediaPath) : null;
-        
+        const resolvedFilePath = filePath;
+        const resolvedMediaPath = mediaPath || null;
+
         const campaign = await campaignService.create({ name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons });
         res.status(201).json(campaign);
     } catch (err) {
@@ -125,9 +163,9 @@ router.post('/:id/start', async (req, res) => {
 });
 
 // POST /api/campaigns/:id/pause
-router.post('/:id/pause', (req, res) => {
+router.post('/:id/pause', async (req, res) => {
     try {
-        campaignService.pause(+req.params.id);
+        await campaignService.pause(+req.params.id);
         res.json({ success: true, message: 'Campaign paused' });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -135,9 +173,9 @@ router.post('/:id/pause', (req, res) => {
 });
 
 // POST /api/campaigns/:id/resume
-router.post('/:id/resume', (req, res) => {
+router.post('/:id/resume', async (req, res) => {
     try {
-        campaignService.resume(+req.params.id, whatsappService, req.app.get('io'));
+        await campaignService.resume(+req.params.id, whatsappService, req.app.get('io'));
         res.json({ success: true, message: 'Campaign resumed' });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -145,15 +183,23 @@ router.post('/:id/resume', (req, res) => {
 });
 
 // POST /api/campaigns/:id/stop
-router.post('/:id/stop', (req, res) => {
-    campaignService.stop(+req.params.id);
-    res.json({ success: true, message: 'Campaign stopped' });
+router.post('/:id/stop', async (req, res) => {
+    try {
+        await campaignService.stop(+req.params.id);
+        res.json({ success: true, message: 'Campaign stopped' });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
 });
 
 // DELETE /api/campaigns/:id
-router.delete('/:id', (req, res) => {
-    campaignService.delete(+req.params.id);
-    res.json({ success: true });
+router.delete('/:id', async (req, res) => {
+    try {
+        await campaignService.delete(+req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 module.exports = router;

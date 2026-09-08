@@ -38,7 +38,7 @@ class IncomingMessageService {
         const { conversation, contact } = await conversationService.getOrCreate(incoming.from, incoming.jid, incoming.phoneKnown, incoming.contact.name);
         const saved = await conversationService.saveMessage(conversation.id, 'inbound', incoming.text, incoming.messageId, 'received', {
             provider: incoming.provider, sender: incoming.from, timestamp: incoming.timestamp,
-        };
+        });
         if (!saved) return false;
         this._emit(io, 'message:new', { conversationId: conversation.id, ...incoming, name: contact.name || incoming.contact.name || incoming.from, direction: 'inbound', body: incoming.text });
 

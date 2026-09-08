@@ -1,19 +1,32 @@
 const express = require('express');
-const router = express.Router();
 const analyticsService = require('../analytics/analyticsService');
 
-router.get('/dashboard', (req, res) => {
-    res.json(analyticsService.getDashboard());
+const router = express.Router();
+
+router.get('/dashboard', async (req, res) => {
+    try {
+        res.json(await analyticsService.getDashboard());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-router.get('/campaigns/:id', (req, res) => {
-    const data = analyticsService.getCampaignAnalytics(+req.params.id);
-    if (!data) return res.status(404).json({ error: 'Not found' });
-    res.json(data);
+router.get('/campaigns/:id', async (req, res) => {
+    try {
+        const data = await analyticsService.getCampaignAnalytics(+req.params.id);
+        if (!data) return res.status(404).json({ error: 'Not found' });
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-router.get('/messages/trend', (req, res) => {
-    res.json(analyticsService.getMessageTrend(+req.query.days || 7));
+router.get('/messages/trend', async (req, res) => {
+    try {
+        res.json(await analyticsService.getMessageTrend(+req.query.days || 7));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 module.exports = router;

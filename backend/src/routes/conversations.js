@@ -1,45 +1,70 @@
 const express = require('express');
-const router = express.Router();
 const conversationService = require('../conversations/conversationService');
 const whatsappService = require('../whatsapp/providerManager');
+
+const router = express.Router();
 
 function validIds(ids) {
     return Array.isArray(ids) && ids.length > 0 && ids.every(id => Number.isInteger(id));
 }
 
 // GET /api/conversations
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     const { page, limit, search } = req.query;
-    res.json(conversationService.listConversations({ page: +page || 1, limit: +limit || 30, search }));
+    try {
+        res.json(await conversationService.listConversations({ page: +page || 1, limit: +limit || 30, search }));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/conversations/stats/overview
-router.get('/stats/overview', (req, res) => {
-    res.json(conversationService.stats());
+router.get('/stats/overview', async (req, res) => {
+    try {
+        res.json(await conversationService.stats());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-router.post('/bulk-delete', (req, res) => {
+router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
-    conversationService.deleteMany(req.body.ids);
-    res.json({ deleted: req.body.ids.length });
+    try {
+        await conversationService.deleteMany(req.body.ids);
+        res.json({ deleted: req.body.ids.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-router.delete('/:id', (req, res) => {
-    conversationService.delete(+req.params.id);
-    res.json({ success: true });
+router.delete('/:id', async (req, res) => {
+    try {
+        await conversationService.delete(+req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/conversations/:id
-router.get('/:id', (req, res) => {
-    const conv = conversationService.getConversation(+req.params.id);
-    if (!conv) return res.status(404).json({ error: 'Not found' });
-    res.json(conv);
+router.get('/:id', async (req, res) => {
+    try {
+        const conv = await conversationService.getConversation(+req.params.id);
+        if (!conv) return res.status(404).json({ error: 'Not found' });
+        res.json(conv);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // GET /api/conversations/:id/messages
-router.get('/:id/messages', (req, res) => {
-    const msgs = conversationService.getMessages(+req.params.id, +req.query.limit || 50);
-    res.json(msgs);
+router.get('/:id/messages', async (req, res) => {
+    try {
+        const msgs = await conversationService.getMessages(+req.params.id, +req.query.limit || 50);
+        res.json(msgs);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // POST /api/conversations/:id/send
@@ -47,12 +72,12 @@ router.post('/:id/send', async (req, res) => {
     const { body } = req.body;
     if (!body?.trim()) return res.status(400).json({ error: 'Message body required' });
 
-    const conv = conversationService.getConversation(+req.params.id);
-    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
-
     try {
+        const conv = await conversationService.getConversation(+req.params.id);
+        if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
         await whatsappService.sendMessage(conv.phone, body.trim(), conv.jid);
-        conversationService.saveMessage(+req.params.id, 'outbound', body.trim());
+        await conversationService.saveMessage(+req.params.id, 'outbound', body.trim());
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -60,25 +85,37 @@ router.post('/:id/send', async (req, res) => {
 });
 
 // PATCH /api/conversations/:id/ai
-router.patch('/:id/ai', (req, res) => {
+router.patch('/:id/ai', async (req, res) => {
     const { enabled } = req.body;
-    conversationService.setAIEnabled(+req.params.id, !!enabled);
-    res.json({ success: true, ai_enabled: !!enabled });
+    try {
+        await conversationService.setAIEnabled(+req.params.id, !!enabled);
+        res.json({ success: true, ai_enabled: !!enabled });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // PATCH /api/conversations/:id/status
-router.patch('/:id/status', (req, res) => {
+router.patch('/:id/status', async (req, res) => {
     const { status } = req.body;
     const valid = ['open', 'resolved', 'human_takeover'];
     if (!valid.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    conversationService.setStatus(+req.params.id, status);
-    res.json({ success: true, status });
+    try {
+        await conversationService.setStatus(+req.params.id, status);
+        res.json({ success: true, status });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // POST /api/conversations/:id/read
-router.post('/:id/read', (req, res) => {
-    conversationService.markRead(+req.params.id);
-    res.json({ success: true });
+router.post('/:id/read', async (req, res) => {
+    try {
+        await conversationService.markRead(+req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 module.exports = router;

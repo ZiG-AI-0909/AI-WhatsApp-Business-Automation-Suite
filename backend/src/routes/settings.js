@@ -63,21 +63,26 @@ async function mergedSetting(key) {
     return (process.env[key] || '').trim();
 }
 
+// Shared response shape for GET / and PUT /
+async function getSettings() {
+    const stored = await loadSettings();
+    return {
+        ai: {
+            available: aiService.isAvailable(),
+            model: (stored?.AI_MODEL || process.env.AI_MODEL || '').trim() || aiService.getModel(),
+            baseURL: (stored?.AI_BASE_URL || process.env.AI_BASE_URL || '').trim(),
+        },
+        business: {
+            name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
+            tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
+        },
+    };
+}
+
 // GET /api/settings
 router.get('/', async (req, res) => {
     try {
-        const stored = await loadSettings();
-        res.json({
-            ai: {
-                available: aiService.isAvailable(),
-                model: (stored?.AI_MODEL || process.env.AI_MODEL || '').trim() || aiService.getModel(),
-                baseURL: (stored?.AI_BASE_URL || process.env.AI_BASE_URL || '').trim(),
-            },
-            business: {
-                name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
-                tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
-            },
-        });
+        res.json(await getSettings());
     } catch (error) {
         console.error('[settings] GET error:', error);
         res.status(500).json({ error: 'Failed to load settings' });
@@ -94,6 +99,7 @@ router.put('/', async (req, res) => {
             return res.json(await getSettings());
         }
 
+
         for (const [key, value] of provided) {
             const trimmedValue = value.trim();
             // Update Supabase
@@ -105,18 +111,7 @@ router.put('/', async (req, res) => {
         aiService.reconfigure();
 
         // Return updated settings
-        const stored = await loadSettings();
-        res.json({
-            ai: {
-                available: aiService.isAvailable(),
-                model: (stored?.AI_MODEL || process.env.AI_MODEL || '').trim() || aiService.getModel(),
-                baseURL: (stored?.AI_BASE_URL || process.env.AI_BASE_URL || '').trim(),
-            },
-            business: {
-                name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
-                tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
-            },
-        });
+        res.json(await getSettings());
     } catch (error) {
         console.error('[settings] PUT error:', error);
         res.status(500).json({ error: error.message });

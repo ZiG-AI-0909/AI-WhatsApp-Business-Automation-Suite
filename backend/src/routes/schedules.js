@@ -1,18 +1,10 @@
 const express = require('express');
-const router = express.Router();
 const fs = require('fs');
 const cronParser = require('cron-parser');
 const schedulerService = require('../campaigns/schedulerService');
 const { isRemotePath } = require('../middleware/upload');
 
-// File paths are now Supabase Storage URLs, no local path validation needed
-function uploadedFilePath(filePath) {
-    return filePath;
-}
-
-function uploadedMediaPath(filePath) {
-    return filePath;
-}
+const router = express.Router();
 
 function validateSchedule(body) {
     if (!['once', 'recurring'].includes(body.scheduleType)) return 'scheduleType must be once or recurring';
@@ -31,40 +23,68 @@ function validateSchedule(body) {
 
 function validIds(ids) { return Array.isArray(ids) && ids.length > 0 && ids.every(id => Number.isInteger(id)); }
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
     const error = validateSchedule(req.body || {});
     if (error) return res.status(400).json({ error });
     try {
-        res.status(201).json(schedulerService.create({ ...req.body, filePath: uploadedFilePath(req.body.filePath), mediaPath: req.body.mediaPath ? uploadedMediaPath(req.body.mediaPath) : null }));
-    } catch (err) { res.status(400).json({ error: err.message }); }
+        const schedule = await schedulerService.create({ ...req.body, filePath: req.body.filePath, mediaPath: req.body.mediaPath || null });
+        res.status(201).json(schedule);
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
 });
 
-router.get('/', (_req, res) => res.json(schedulerService.list()));
-router.post('/bulk-delete', (req, res) => {
+router.get('/', async (_req, res) => {
+    try {
+        res.json(await schedulerService.list());
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
-    schedulerService.deleteMany(req.body.ids);
-    res.json({ deleted: req.body.ids.length });
+    try {
+        await schedulerService.deleteMany(req.body.ids);
+        res.json({ deleted: req.body.ids.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
-router.get('/:id', (req, res) => {
-    const schedule = schedulerService.get(+req.params.id);
-    if (!schedule) return res.status(404).json({ error: 'Not found' });
-    res.json(schedule);
+
+router.get('/:id', async (req, res) => {
+    try {
+        const schedule = await schedulerService.get(+req.params.id);
+        if (!schedule) return res.status(404).json({ error: 'Not found' });
+        res.json(schedule);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
-router.patch('/:id/pause', (req, res) => {
-    try { res.json(schedulerService.pause(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+
+router.patch('/:id/pause', async (req, res) => {
+    try { res.json(await schedulerService.pause(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
-router.patch('/:id/resume', (req, res) => {
-    try { res.json(schedulerService.resume(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+
+router.patch('/:id/resume', async (req, res) => {
+    try { res.json(await schedulerService.resume(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
-router.patch('/:id/retry', (req, res) => {
-    try { res.json(schedulerService.retry(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+
+router.patch('/:id/retry', async (req, res) => {
+    try { res.json(await schedulerService.retry(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
-router.post('/:id/cancel', (req, res) => {
-    try { res.json(schedulerService.cancel(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
+
+router.post('/:id/cancel', async (req, res) => {
+    try { res.json(await schedulerService.cancel(+req.params.id)); } catch (err) { res.status(400).json({ error: err.message }); }
 });
-router.delete('/:id', (req, res) => {
-    schedulerService.delete(+req.params.id);
-    res.json({ success: true });
+
+router.delete('/:id', async (req, res) => {
+    try {
+        await schedulerService.delete(+req.params.id);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 module.exports = router;
