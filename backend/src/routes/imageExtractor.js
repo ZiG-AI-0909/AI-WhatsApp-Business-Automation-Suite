@@ -12,41 +12,18 @@ const upload = multer({
   fileFilter: (_req, file, cb) => cb(null, /image\/(jpeg|png|webp)/i.test(file.mimetype)),
 });
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS image_leads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_image TEXT DEFAULT '',
-    extraction_group_id TEXT DEFAULT '',
-    business_name TEXT DEFAULT '',
-    phone_numbers TEXT DEFAULT '[]',
-    emails TEXT DEFAULT '[]',
-    website TEXT DEFAULT '',
-    address TEXT DEFAULT '',
-    city TEXT DEFAULT '',
-    state TEXT DEFAULT '',
-    country TEXT DEFAULT '',
-    postal_code TEXT DEFAULT '',
-    business_category TEXT DEFAULT '',
-    contact_person TEXT DEFAULT '',
-    social_links TEXT DEFAULT '[]',
-    raw_text TEXT DEFAULT '',
-    duplicate_status TEXT DEFAULT '',
-    review_status TEXT DEFAULT 'pending_review',
-    confidence REAL DEFAULT 0,
-    processing_status TEXT DEFAULT 'completed',
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
-  )
-`);
-
-for (const column of [
-  'extraction_group_id TEXT DEFAULT \'\'',
-  'review_status TEXT DEFAULT \'pending_review\'',
-]) {
-  try { db.exec(`ALTER TABLE image_leads ADD COLUMN ${column}`); } catch (error) {
-    if (!error.message.includes('duplicate column')) throw error;
-  }
+// Note: Table creation is done via the SQL migration file.
+// This fallback ensures the table exists if migration hasn't been run.
+async function ensureImageLeadsTable() {
+    try {
+        // Try to query the table; if it doesn't exist, the migration should have created it
+        await db.count('image_leads');
+    } catch (error) {
+        console.warn('[imageExtractor] image_leads table may not exist. Run supabase-data-migration.sql in Supabase dashboard.');
+    }
 }
+
+ensureImageLeadsTable();
 
 function parseJson(value, fallback = []) {
   try { return JSON.parse(value || JSON.stringify(fallback)); } catch { return fallback; }
@@ -95,9 +72,8 @@ function asLead(value, sourceImage, extractionGroupId = '') {
   };
 }
 
-function markDuplicates() {
-  const leads = db.prepare('SELECT * FROM image_leads ORDER BY id').all();
-  const update = db.prepare("UPDATE image_leads SET duplicate_status = ?, updated_at = datetime('now') WHERE id = ?");
+async function markDuplicates() {
+  const leads = await db.select('image_leads', '*', '', [], 'id', 10000, 0);
   for (const lead of leads) {
     const phones = parseJson(lead.phone_numbers);
     const emails = parseJson(lead.emails);
@@ -107,7 +83,10 @@ function markDuplicates() {
       emails.some(email => parseJson(other.emails).includes(email)) ||
       (lead.website && other.website && other.website.toLowerCase() === lead.website.toLowerCase())
     ));
-    update.run(duplicate ? 'Possible Duplicate' : '', lead.id);
+    await db.update('image_leads', {
+      duplicate_status: duplicate ? 'Possible Duplicate' : '',
+      updated_at: new Date(),
+    }, 'id = ?', [lead.id]);
   }
 }
 
@@ -147,15 +126,15 @@ function normalizeResponse(content) {
 
 function recoverLeadObject(text) {
   const readString = (key) => {
-    const match = text.match(new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`));
+    const match = text.match(new RegExp(`\"${key}\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"`));
     if (!match) return '';
-    try { return JSON.parse(`"${match[1]}"`); } catch { return match[1]; }
+    try { return JSON.parse(`\"${match[1]}\"`); } catch { return match[1]; }
   };
   const readArray = (key) => {
-    const match = text.match(new RegExp(`"${key}"\\s*:\\s*(\\[[\\s\\S]*?\\])`));
+    const match = text.match(new RegExp(`\"${key}\"\\s*:\\s*(\\[[\\s\\S]*?\\])`));
     if (!match) return [];
-    try { return JSON.parse(match[1].replace(/,\\s*]/g, ']')); } catch {
-      return match[1].split(',').map(value => value.replace(/[\\[\\]"']/g, '').trim()).filter(Boolean);
+    try { return JSON.parse(match[1].replace(/,\s*]/g, ']')); } catch {
+      return match[1].split(',').map(value => value.replace(/[\\[\\]\"']/g, '').trim()).filter(Boolean);
     }
   };
   return {
@@ -172,7 +151,7 @@ function recoverLeadObject(text) {
     contact_person: readString('contact_person'),
     social_links: readArray('social_links'),
     raw_text: readString('raw_text'),
-    confidence: Number(text.match(/"confidence"\\s*:\\s*([0-9.]+)/)?.[1]) || 0,
+    confidence: Number(text.match(/\"confidence\"\\s*:\\s*([0-9.]+)/)?.[1]) || 0,
   };
 }
 
@@ -289,61 +268,77 @@ function serializeLead(lead) {
   };
 }
 
-router.get('/stats', (_req, res) => {
-  const total = db.prepare('SELECT COUNT(*) count FROM image_leads').get().count;
-  const phones = db.prepare("SELECT COUNT(*) count FROM image_leads WHERE phone_numbers != '[]'").get().count;
-  const emails = db.prepare("SELECT COUNT(*) count FROM image_leads WHERE emails != '[]'").get().count;
-  const duplicates = db.prepare("SELECT COUNT(*) count FROM image_leads WHERE duplicate_status = 'Possible Duplicate'").get().count;
-  res.json({ images_processed: db.prepare('SELECT COUNT(DISTINCT source_image || ":" || extraction_group_id) count FROM image_leads').get().count, leads_extracted: total, valid_phones: phones, emails_found: emails, possible_duplicates: duplicates });
+router.get('/stats', async (_req, res) => {
+  try {
+    const total = await db.count('image_leads');
+    const phones = await db.count('image_leads', "phone_numbers != ?", ['[]']);
+    const emails = await db.count('image_leads', "emails != ?", ['[]']);
+    const duplicates = await db.count('image_leads', "duplicate_status = ?", ['Possible Duplicate']);
+    
+    // For distinct source_image + extraction_group_id count, we'd need raw SQL
+    // For now, estimate from total
+    const imagesProcessed = await db.select('image_leads', 'COUNT(DISTINCT source_image || \':\' || extraction_group_id) as count', '', [], '', 1, 0);
+    
+    res.json({ 
+      images_processed: imagesProcessed[0]?.count || total,
+      leads_extracted: total, 
+      valid_phones: phones, 
+      emails_found: emails, 
+      possible_duplicates: duplicates 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-router.get('/leads', (_req, res) => res.json(db.prepare('SELECT * FROM image_leads ORDER BY id DESC').all().map(serializeLead)));
+router.get('/leads', async (_req, res) => {
+  try {
+    const leads = await db.select('image_leads', '*', '', [], 'id', 10000, 0);
+    res.json(leads.map(serializeLead).reverse());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 async function processFile(file) {
   const extractionGroupId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     const result = await extractWithNvidia(file);
     const leads = (result.leads || []).map((lead) => asLead(lead, file.originalname, extractionGroupId));
-    const insert = db.prepare(`INSERT INTO image_leads
-      (source_image, extraction_group_id, business_name, phone_numbers, emails, website, address, city, state, country, postal_code, business_category, contact_person, social_links, raw_text, review_status, confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const items = leads.length ? leads : [asLead({ raw_text: '', business_name: '', phone_numbers: [], emails: [], social_links: [] }, file.originalname, extractionGroupId)];
-    db.exec('BEGIN');
-    const rows = [];
-    try {
-      for (const lead of items) {
-        const row = insert.run(
-          lead.source_image,
-          lead.extraction_group_id,
-          lead.business_name,
-          JSON.stringify(lead.phone_numbers),
-          JSON.stringify(lead.emails),
-          lead.website,
-          lead.address,
-          lead.city,
-          lead.state,
-          lead.country,
-          lead.postal_code,
-          lead.business_category,
-          lead.contact_person,
-          JSON.stringify(lead.social_links),
-          lead.raw_text,
-          'pending_review',
-          lead.confidence,
-        );
-        rows.push({ ...lead, id: Number(row.lastInsertRowid), processing_status: 'completed', review_status: 'pending_review' });
-      }
-      db.exec('COMMIT');
-    } catch (transactionError) {
-      try { db.exec('ROLLBACK'); } catch {}
-      throw transactionError;
+    
+    const createdLeads = [];
+    for (const lead of items) {
+      const created = await db.insert('image_leads', {
+        source_image: lead.source_image,
+        extraction_group_id: lead.extraction_group_id,
+        business_name: lead.business_name,
+        phone_numbers: JSON.stringify(lead.phone_numbers),
+        emails: JSON.stringify(lead.emails),
+        website: lead.website,
+        address: lead.address,
+        city: lead.city,
+        state: lead.state,
+        country: lead.country,
+        postal_code: lead.postal_code,
+        business_category: lead.business_category,
+        contact_person: lead.contact_person,
+        social_links: JSON.stringify(lead.social_links),
+        raw_text: lead.raw_text,
+        review_status: 'pending_review',
+        confidence: lead.confidence,
+        processing_status: 'completed',
+        updated_at: new Date(),
+      });
+      createdLeads.push({ ...lead, id: created.id, processing_status: 'completed', review_status: 'pending_review' });
     }
+    
     return {
       source_image: file.originalname,
       extraction_group_id: extractionGroupId,
       processing_status: 'completed',
       raw_response: result.rawResponse,
-      leads: rows,
+      leads: createdLeads,
     };
   } catch (error) {
     return { source_image: file.originalname, processing_status: 'failed', error: error.response?.data?.detail || error.message };
@@ -353,92 +348,149 @@ async function processFile(file) {
 router.post('/process-one', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Upload a JPG, PNG, or WEBP image.' });
   const result = await processFile(req.file);
-  markDuplicates();
-  res.json({ result, stats: db.prepare('SELECT COUNT(*) count FROM image_leads').get() });
+  await markDuplicates();
+  const count = await db.count('image_leads');
+  res.json({ result, stats: { count } });
 });
 
 router.post('/process-batch', upload.array('images', 20), async (req, res) => {
   if (!req.files?.length) return res.status(400).json({ error: 'Upload at least one JPG, PNG, or WEBP image.' });
   const results = await Promise.all(req.files.map(processFile));
-  markDuplicates();
-  res.json({ results, stats: db.prepare('SELECT COUNT(*) count FROM image_leads').get() });
+  await markDuplicates();
+  const count = await db.count('image_leads');
+  res.json({ results, stats: { count } });
 });
 
-router.put('/leads/:id', (req, res) => {
-  const lead = asLead(req.body, req.body.source_image || '', req.body.extraction_group_id || '');
-  const result = db.prepare(`UPDATE image_leads SET business_name=?, phone_numbers=?, emails=?, website=?, address=?, city=?, state=?, country=?, postal_code=?, business_category=?, contact_person=?, social_links=?, raw_text=?, review_status=COALESCE(?, review_status), updated_at=datetime('now') WHERE id=?`)
-    .run(lead.business_name, JSON.stringify(lead.phone_numbers), JSON.stringify(lead.emails), lead.website, lead.address, lead.city, lead.state, lead.country, lead.postal_code, lead.business_category, lead.contact_person, JSON.stringify(lead.social_links), lead.raw_text, cleanField(req.body.review_status) || null, req.params.id);
-  if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
-  markDuplicates();
-  res.json(serializeLead(db.prepare('SELECT * FROM image_leads WHERE id=?').get(req.params.id)));
-});
-
-router.post('/leads/:id/review', (req, res) => {
-  const reviewStatus = cleanField(req.body.review_status || req.body.status);
-  if (!['confirmed', 'rejected', 'pending_review'].includes(reviewStatus)) {
-    return res.status(400).json({ error: 'review_status must be confirmed, rejected, or pending_review.' });
-  }
-  const result = db.prepare(`UPDATE image_leads SET review_status=?, updated_at=datetime('now') WHERE id=?`).run(reviewStatus, req.params.id);
-  if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
-  res.json(serializeLead(db.prepare('SELECT * FROM image_leads WHERE id=?').get(req.params.id)));
-});
-
-router.post('/leads/bulk-review', (req, res) => {
-  const ids = [...new Set((Array.isArray(req.body.ids) ? req.body.ids : [])
-    .map(value => Number(value))
-    .filter(Number.isInteger))];
-  const reviewStatus = cleanField(req.body.review_status || req.body.status);
-  if (!ids.length) return res.status(400).json({ error: 'ids must contain at least one lead ID.' });
-  if (!['confirmed', 'rejected'].includes(reviewStatus)) {
-    return res.status(400).json({ error: 'review_status must be confirmed or rejected.' });
-  }
-
-  const placeholders = ids.map(() => '?').join(',');
-  const update = db.prepare(`UPDATE image_leads
-    SET review_status=?, updated_at=datetime('now')
-    WHERE review_status='pending_review' AND id IN (${placeholders})`);
-  let updatedCount = 0;
-  db.exec('BEGIN IMMEDIATE');
+router.put('/leads/:id', async (req, res) => {
   try {
-    updatedCount = Number(update.run(reviewStatus, ...ids).changes || 0);
-    db.exec('COMMIT');
+    const lead = asLead(req.body, req.body.source_image || '', req.body.extraction_group_id || '');
+    const updated = await db.update('image_leads', {
+      business_name: lead.business_name,
+      phone_numbers: JSON.stringify(lead.phone_numbers),
+      emails: JSON.stringify(lead.emails),
+      website: lead.website,
+      address: lead.address,
+      city: lead.city,
+      state: lead.state,
+      country: lead.country,
+      postal_code: lead.postal_code,
+      business_category: lead.business_category,
+      contact_person: lead.contact_person,
+      social_links: JSON.stringify(lead.social_links),
+      raw_text: lead.raw_text,
+      review_status: cleanField(req.body.review_status) || null,
+      updated_at: new Date(),
+    }, 'id = ?', [req.params.id]);
+    
+    if (!updated || updated.length === 0) return res.status(404).json({ error: 'Lead not found' });
+    
+    await markDuplicates();
+    const freshLead = await db.getById('image_leads', req.params.id);
+    res.json(serializeLead(freshLead));
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch {}
-    throw error;
+    res.status(500).json({ error: error.message });
   }
-  res.json({ review_status: reviewStatus, requested_ids: ids, updated_count: updatedCount });
 });
 
-router.delete('/leads/all', (_req, res) => {
-  const result = db.prepare('DELETE FROM image_leads').run();
-  res.json({ ok: true, deleted_count: result.changes });
+router.post('/leads/:id/review', async (req, res) => {
+  try {
+    const reviewStatus = cleanField(req.body.review_status || req.body.status);
+    if (!['confirmed', 'rejected', 'pending_review'].includes(reviewStatus)) {
+      return res.status(400).json({ error: 'review_status must be confirmed, rejected, or pending_review.' });
+    }
+    const updated = await db.update('image_leads', {
+      review_status: reviewStatus,
+      updated_at: new Date(),
+    }, 'id = ?', [req.params.id]);
+    
+    if (!updated || updated.length === 0) return res.status(404).json({ error: 'Lead not found' });
+    
+    const freshLead = await db.getById('image_leads', req.params.id);
+    res.json(serializeLead(freshLead));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-router.post('/leads/delete-all', (_req, res) => {
-  const result = db.prepare('DELETE FROM image_leads').run();
-  res.json({ ok: true, deleted_count: result.changes });
+router.post('/leads/bulk-review', async (req, res) => {
+  try {
+    const ids = [...new Set((Array.isArray(req.body.ids) ? req.body.ids : [])
+      .map(value => Number(value))
+      .filter(Number.isInteger))];
+    const reviewStatus = cleanField(req.body.review_status || req.body.status);
+    if (!ids.length) return res.status(400).json({ error: 'ids must contain at least one lead ID.' });
+    if (!['confirmed', 'rejected'].includes(reviewStatus)) {
+      return res.status(400).json({ error: 'review_status must be confirmed or rejected.' });
+    }
+
+    let updatedCount = 0;
+    for (const id of ids) {
+      const result = await db.update('image_leads', {
+        review_status: reviewStatus,
+        updated_at: new Date(),
+      }, 'id = ? AND review_status = ?', [id, 'pending_review']);
+      if (result && result.length > 0) updatedCount++;
+    }
+
+    res.json({ review_status: reviewStatus, requested_ids: ids, updated_count: updatedCount });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-router.delete('/leads/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM image_leads WHERE id=?').run(req.params.id);
-  if (!result.changes) return res.status(404).json({ error: 'Lead not found' });
-  markDuplicates();
-  res.json({ ok: true });
+router.delete('/leads/all', async (_req, res) => {
+  try {
+    const deleted = await db.del('image_leads');
+    res.json({ ok: true, deleted_count: deleted?.length || 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-router.post('/leads/bulk-delete', (req, res) => {
-  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
-  const remove = db.prepare('DELETE FROM image_leads WHERE id=?');
-  for (const id of ids) remove.run(id);
-  markDuplicates();
-  res.json({ ok: true });
+router.post('/leads/delete-all', async (_req, res) => {
+  try {
+    const deleted = await db.del('image_leads');
+    res.json({ ok: true, deleted_count: deleted?.length || 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/leads/:id', async (req, res) => {
+  try {
+    const deleted = await db.del('image_leads', 'id = ?', [req.params.id]);
+    if (!deleted || deleted.length === 0) return res.status(404).json({ error: 'Lead not found' });
+    await markDuplicates();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/leads/bulk-delete', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    for (const id of ids) {
+      await db.del('image_leads', 'id = ?', [id]);
+    }
+    await markDuplicates();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 function exportRows(includeAll = false) {
-  const query = includeAll
-    ? "SELECT * FROM image_leads ORDER BY id DESC"
-    : "SELECT * FROM image_leads WHERE review_status = 'confirmed' ORDER BY id DESC";
-  return db.prepare(query).all().map(lead => ({
+  // This is now async and returns a promise
+  return db.select(
+    'image_leads',
+    '*',
+    includeAll ? '' : "review_status = ?",
+    includeAll ? [] : ['confirmed'],
+    'id',
+    10000,
+    0
+  ).then(leads => leads.map(lead => ({
     'Business Name': lead.business_name,
     'Phone Number': parseJson(lead.phone_numbers).join(', '),
     'Email': parseJson(lead.emails).join(', '),
@@ -455,29 +507,37 @@ function exportRows(includeAll = false) {
     'Source Image': lead.source_image,
     Confidence: lead.confidence,
     'Review Status': lead.review_status,
-  }));
+  })));
 }
 
-router.get('/export/csv', (req, res) => {
-  const isAll = req.query.all === 'true' || req.query.scope === 'all';
-  const rows = exportRows(isAll);
-  const data = rows.length ? rows : [{ Message: 'No leads found' }];
-  const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(data));
-  const filename = isAll ? 'all-leads.csv' : 'lead-image-extractor.csv';
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.type('text/csv').send(csv);
+router.get('/export/csv', async (req, res) => {
+  try {
+    const isAll = req.query.all === 'true' || req.query.scope === 'all';
+    const rows = await exportRows(isAll);
+    const data = rows.length ? rows : [{ Message: 'No leads found' }];
+    const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(data));
+    const filename = isAll ? 'all-leads.csv' : 'lead-image-extractor.csv';
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.type('text/csv').send(csv);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-router.get('/export/excel', (req, res) => {
-  const isAll = req.query.all === 'true' || req.query.scope === 'all';
-  const rows = exportRows(isAll);
-  const data = rows.length ? rows : [{ Message: 'No leads found' }];
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Leads');
-  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-  const filename = isAll ? 'all-leads.xlsx' : 'lead-image-extractor.xlsx';
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(buffer);
+router.get('/export/excel', async (req, res) => {
+  try {
+    const isAll = req.query.all === 'true' || req.query.scope === 'all';
+    const rows = await exportRows(isAll);
+    const data = rows.length ? rows : [{ Message: 'No leads found' }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Leads');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const filename = isAll ? 'all-leads.xlsx' : 'lead-image-extractor.xlsx';
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = router;

@@ -2,159 +2,260 @@ const db = require('../database/db');
 const contactService = require('../contacts/contactService');
 
 class ConversationService {
-    /**
-     * Get or create a conversation for a contact phone number.
-     */
-    getOrCreate(phone, jid, phoneKnown = true, name = '') {
-        let contact = contactService.findByPhone(phone);
+    async getOrCreate(phone, jid, phoneKnown = true, name = '') {
+        let contact = await contactService.findByPhone(phone);
         if (!contact) {
-            contact = contactService.upsert(phone, { jid, name, is_lid: phoneKnown ? 0 : 1 });
+            contact = await contactService.upsert(phone, { jid, name, is_lid: phoneKnown ? 0 : 1 });
         } else if (jid || name) {
-            contact = contactService.upsert(phone, { jid, name });
+            contact = await contactService.upsert(phone, { jid, name });
         }
-        let conv = db.prepare('SELECT * FROM conversations WHERE contact_id = ?').get(contact.id);
+
+        let conv = await db.getOne('conversations', 'contact_id', contact.id);
         if (!conv) {
-            db.prepare('INSERT INTO conversations (contact_id, last_message_at) VALUES (?, datetime(\'now\'))').run(contact.id);
-            conv = db.prepare('SELECT * FROM conversations WHERE contact_id = ?').get(contact.id);
+            const created = await db.insert('conversations', {
+                contact_id: contact.id,
+                last_message_at: new Date(),
+            });
+            conv = created;
         }
         return { conversation: conv, contact };
     }
 
-    saveMessage(conversationId, direction, body, waMessageId = null, status = 'sent', metadata = {}) {
+    async saveMessage(conversationId, direction, body, waMessageId = null, status = 'sent', metadata = {}) {
         if (waMessageId) {
-            const existing = db.prepare('SELECT id FROM messages WHERE wa_message_id = ?').get(waMessageId);
+            const existing = await db.getOne('messages', 'wa_message_id', waMessageId);
             if (existing) return null;
         }
-        db.prepare(`
-            INSERT INTO messages (conversation_id, direction, body, wa_message_id, status, provider, sender, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(conversationId, direction, body, waMessageId, status, metadata.provider || '', metadata.sender || direction, metadata.timestamp || Date.now());
 
-        db.prepare("UPDATE conversations SET last_message_at = datetime('now') WHERE id = ?").run(conversationId);
+        await db.insert('messages', {
+            conversation_id: conversationId,
+            direction,
+            body,
+            wa_message_id: waMessageId,
+            status,
+            provider: metadata.provider || '',
+            sender: metadata.sender || direction,
+            timestamp: metadata.timestamp || Date.now(),
+        });
+
+        await db.update('conversations', {
+            last_message_at: new Date(),
+        }, 'id = ?', [conversationId]);
 
         if (direction === 'inbound') {
-            db.prepare('UPDATE conversations SET unread_count = unread_count + 1 WHERE id = ?').run(conversationId);
+            // Increment unread count
+            const conv = await db.getById('conversations', conversationId);
+            if (conv) {
+                await db.update('conversations', {
+                    unread_count: conv.unread_count + 1,
+                }, 'id = ?', [conversationId]);
+            }
         }
         return true;
     }
 
-    getMessages(conversationId, limit = 50) {
-        return db.prepare(`
-            SELECT * FROM messages WHERE conversation_id = ?
-            ORDER BY created_at DESC LIMIT ?
-        `).all(conversationId, limit).reverse();
+    async getMessages(conversationId, limit = 50) {
+        const messages = await db.select('messages', '*', 'conversation_id = ?', [conversationId], 'created_at', limit);
+        return messages.reverse();
     }
 
-    getHistory(conversationId, limit = 20) {
-        const msgs = this.getMessages(conversationId, limit);
+    async getHistory(conversationId, limit = 20) {
+        const msgs = await this.getMessages(conversationId, limit);
         return msgs.map(m => ({
             role: m.direction === 'inbound' ? 'user' : 'assistant',
             content: m.body,
         }));
     }
 
-    listConversations({ page = 1, limit = 30, search = '' } = {}) {
+    async listConversations({ page = 1, limit = 30, search = '' } = {}) {
         let where = '';
         const params = [];
+
         if (search) {
-            where = `WHERE (c.name LIKE ? OR c.phone LIKE ? OR c.company LIKE ?)`;
+            where = `(c.name LIKE ? OR c.phone LIKE ? OR c.company LIKE ?)`;
             const s = `%${search}%`;
             params.push(s, s, s);
         }
+
         const offset = (page - 1) * limit;
-        const total = db.prepare(`
-            SELECT COUNT(*) as count FROM conversations cv
-            JOIN contacts c ON c.id = cv.contact_id ${where}
-        `).get(...params).count;
 
-        const rows = db.prepare(`
-            SELECT cv.*, c.name, c.phone, c.company, c.city, c.is_lid,
-                   (SELECT body FROM messages WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) as last_message
-            FROM conversations cv
-            JOIN contacts c ON c.id = cv.contact_id
-            ${where}
-            ORDER BY cv.last_message_at DESC NULLS LAST
-            LIMIT ? OFFSET ?
-        `).all(...params, limit, offset);
+        // Get total count
+        let countWhere = '';
+        if (search) {
+            countWhere = `WHERE (contacts.name LIKE ? OR contacts.phone LIKE ? OR contacts.company LIKE ?)`;
+        }
+        const totalResult = await db.select(
+            'conversations',
+            'COUNT(*) as count',
+            countWhere,
+            search ? [s, s, s] : [],
+            '',
+            1,
+            0
+        );
 
-        return { total, page, limit, data: rows };
+        // Get conversations with contact info and last message
+        // Note: This uses a JOIN which Supabase handles differently
+        // For complex joins, we might need to use raw SQL or multiple queries
+        const conversations = await db.select(
+            'conversations',
+            '*',
+            where,
+            params,
+            'last_message_at',
+            limit,
+            offset
+        );
+
+        // Fetch contact details and last messages
+        const data = await Promise.all(conversations.map(async (conv) => {
+            const contact = await db.getById('contacts', conv.contact_id);
+            const lastMsg = await db.select(
+                'messages',
+                'body',
+                'conversation_id = ?',
+                [conv.id],
+                'created_at',
+                1,
+                0
+            );
+            return {
+                ...conv,
+                name: contact?.name || '',
+                phone: contact?.phone || '',
+                company: contact?.company || '',
+                city: contact?.city || '',
+                is_lid: contact?.is_lid || 0,
+                last_message: lastMsg.length > 0 ? lastMsg[0].body : null,
+            };
+        }));
+
+        return {
+            total: totalResult.length > 0 ? parseInt(totalResult[0].count) : 0,
+            page,
+            limit,
+            data,
+        };
     }
 
-    getConversation(id) {
-        return db.prepare(`
-            SELECT cv.*, c.name, c.phone, c.company, c.city, c.marketing_opt_in, c.jid, c.is_lid
-            FROM conversations cv
-            JOIN contacts c ON c.id = cv.contact_id
-            WHERE cv.id = ?
-        `).get(id);
+    async getConversation(id) {
+        const conv = await db.getById('conversations', id);
+        if (!conv) return null;
+
+        const contact = await db.getById('contacts', conv.contact_id);
+        return {
+            ...conv,
+            name: contact?.name || '',
+            phone: contact?.phone || '',
+            company: contact?.company || '',
+            city: contact?.city || '',
+            marketing_opt_in: contact?.marketing_opt_in || 1,
+            jid: contact?.jid || null,
+            is_lid: contact?.is_lid || 0,
+        };
     }
 
-    setAIEnabled(conversationId, enabled) {
-        db.prepare('UPDATE conversations SET ai_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, conversationId);
+    async setAIEnabled(conversationId, enabled) {
+        await db.update('conversations', {
+            ai_enabled: enabled ? 1 : 0,
+        }, 'id = ?', [conversationId]);
     }
 
-    setStatus(conversationId, status) {
-        db.prepare('UPDATE conversations SET status = ? WHERE id = ?').run(status, conversationId);
+    async setStatus(conversationId, status) {
+        await db.update('conversations', {
+            status,
+        }, 'id = ?', [conversationId]);
+
         if (status === 'resolved') {
-            db.prepare('UPDATE conversations SET unread_count = 0 WHERE id = ?').run(conversationId);
+            await db.update('conversations', {
+                unread_count: 0,
+            }, 'id = ?', [conversationId]);
         }
     }
 
-    markRead(conversationId) {
-        db.prepare('UPDATE conversations SET unread_count = 0 WHERE id = ?').run(conversationId);
+    async markRead(conversationId) {
+        await db.update('conversations', {
+            unread_count: 0,
+        }, 'id = ?', [conversationId]);
     }
 
-    delete(conversationId) {
-        db.exec('BEGIN');
-        try {
-            db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
-            db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
-            db.exec('COMMIT');
-        } catch (error) {
-            db.exec('ROLLBACK');
-            throw error;
+    async delete(conversationId) {
+        await db.del('messages', 'conversation_id = ?', [conversationId]);
+        await db.del('conversations', 'id = ?', [conversationId]);
+    }
+
+    async deleteMany(ids) {
+        for (const id of ids) {
+            await this.delete(id);
         }
     }
 
-    deleteMany(ids) {
-        db.exec('BEGIN');
-        try {
-            for (const id of ids) {
-                db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
-                db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
-            }
-            db.exec('COMMIT');
-        } catch (error) {
-            db.exec('ROLLBACK');
-            throw error;
+    async incrementReplyCount(campaignId) {
+        // Supabase doesn't support atomic increment directly
+        // We need to get, increment, and update
+        const campaign = await db.getById('campaigns', campaignId);
+        if (campaign) {
+            await db.update('campaigns', {
+                replies: (campaign.replies || 0) + 1,
+            }, 'id = ?', [campaignId]);
         }
     }
 
-    incrementReplyCount(campaignId) {
-        db.prepare("UPDATE campaigns SET replies = replies + 1 WHERE id = ?").run(campaignId);
+    async recentActivity(limit = 10) {
+        const conversations = await db.select(
+            'conversations',
+            '*',
+            '',
+            [],
+            'last_message_at',
+            limit
+        );
+
+        const data = await Promise.all(conversations.map(async (conv) => {
+            const contact = await db.getById('contacts', conv.contact_id);
+            const lastMsg = await db.select(
+                'messages',
+                'body',
+                'conversation_id = ?',
+                [conv.id],
+                'created_at',
+                1,
+                0
+            );
+            return {
+                id: conv.id,
+                status: conv.status,
+                ai_enabled: conv.ai_enabled,
+                last_message_at: conv.last_message_at,
+                unread_count: conv.unread_count,
+                name: contact?.name || '',
+                phone: contact?.phone || '',
+                company: contact?.company || '',
+                last_message: lastMsg.length > 0 ? lastMsg[0].body : null,
+            };
+        }));
+
+        return data;
     }
 
-    recentActivity(limit = 10) {
-        return db.prepare(`
-            SELECT cv.id, cv.status, cv.ai_enabled, cv.last_message_at, cv.unread_count,
-                   c.name, c.phone, c.company,
-                   (SELECT body FROM messages WHERE conversation_id=cv.id ORDER BY created_at DESC LIMIT 1) as last_message
-            FROM conversations cv
-            JOIN contacts c ON c.id = cv.contact_id
-            ORDER BY cv.last_message_at DESC NULLS LAST
-            LIMIT ?
-        `).all(limit);
-    }
+    async stats() {
+        const total = await db.count('conversations');
+        const open = await db.count('conversations', "status = ?", ['open']);
+        const resolved = await db.count('conversations', "status = ?", ['resolved']);
+        const humanTakeover = await db.count('conversations', "status = ?", ['human_takeover']);
+        const totalMessages = await db.count('messages');
+        const inbound = await db.count('messages', "direction = ?", ['inbound']);
+        const outbound = await db.count('messages', "direction = ?", ['outbound']);
 
-    stats() {
-        const total = db.prepare('SELECT COUNT(*) as c FROM conversations').get().c;
-        const open = db.prepare("SELECT COUNT(*) as c FROM conversations WHERE status = 'open'").get().c;
-        const resolved = db.prepare("SELECT COUNT(*) as c FROM conversations WHERE status = 'resolved'").get().c;
-        const humanTakeover = db.prepare("SELECT COUNT(*) as c FROM conversations WHERE status = 'human_takeover'").get().c;
-        const totalMessages = db.prepare('SELECT COUNT(*) as c FROM messages').get().c;
-        const inbound = db.prepare("SELECT COUNT(*) as c FROM messages WHERE direction = 'inbound'").get().c;
-        const outbound = db.prepare("SELECT COUNT(*) as c FROM messages WHERE direction = 'outbound'").get().c;
-        return { total, open, resolved, humanTakeover, totalMessages, inbound, outbound };
+        return {
+            total,
+            open,
+            resolved,
+            humanTakeover,
+            totalMessages,
+            inbound,
+            outbound,
+        };
     }
 }
 

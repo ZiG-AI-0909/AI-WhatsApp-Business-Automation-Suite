@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: bhavesh-whatsapp-api
+    env: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      # Supabase (already configured in your .env, set these in Render dashboard)
+      # - key: SUPABASE_URL
+      #   value: your-supabase-project-url
+      # - key: SUPABASE_SECRET_KEY
+      #   value: your-service-role-key
+      # - key: SUPABASE_ANON_KEY
+      #   value: your-anon-key
+      # WhatsApp & AI keys (set in Render dashboard)
+      # - key: AI_API_KEY
+      #   value: your-ai-api-key
+      # - key: AI_BASE_URL
+      #   value: your-ai-base-url
+      # - key: AI_MODEL
+      #   value: deepseek-ai/deepseek-v4-flash-0731
+      # - key: BUSINESS_NAME
+      #   value: Your Business Name
+      # Other env vars as needed

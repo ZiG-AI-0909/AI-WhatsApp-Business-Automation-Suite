@@ -9,23 +9,33 @@ class CampaignService {
     _parseCampaign(campaign) {
         if (!campaign) return campaign;
         try { campaign.buttons = JSON.parse(campaign.buttons || '[]'); } catch { campaign.buttons = []; }
+        // Convert timestamps to ISO strings if they're Date objects
+        if (campaign.created_at && campaign.created_at instanceof Date) {
+            campaign.created_at = campaign.created_at.toISOString();
+        }
+        if (campaign.started_at && campaign.started_at instanceof Date) {
+            campaign.started_at = campaign.started_at.toISOString();
+        }
+        if (campaign.completed_at && campaign.completed_at instanceof Date) {
+            campaign.completed_at = campaign.completed_at.toISOString();
+        }
+        if (campaign.updated_at && campaign.updated_at instanceof Date) {
+            campaign.updated_at = campaign.updated_at.toISOString();
+        }
         return campaign;
     }
 
-    list({ page = 1, limit = 20 } = {}) {
-        const offset = (page - 1) * limit;
-        const total = db.prepare('SELECT COUNT(*) as c FROM campaigns').get().c;
-        const data = db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC LIMIT ? OFFSET ?').all(limit, offset).map(campaign => this._parseCampaign(campaign));
-        return { total, page, limit, data };
+    async list({ page = 1, limit = 20 } = {}) {
+        const result = await db.paginate('campaigns', '', [], 'created_at', 'desc', limit, (page - 1) * limit);
+        const data = await Promise.all(result.data.map(c => this._parseCampaign(c)));
+        return { total: result.total, page, limit, data };
     }
 
-    get(id) {
-        return this._parseCampaign(db.prepare('SELECT * FROM campaigns WHERE id=?').get(id));
+    async get(id) {
+        const campaign = await db.getById('campaigns', id);
+        return this._parseCampaign(campaign);
     }
 
-    /**
-     * Validate an uploaded Excel file and return preview data.
-     */
     validateExcel(filePath) {
         const result = excelParser.parse(filePath);
         const validRows = excelParser.getValidRows(result);
@@ -43,9 +53,6 @@ class CampaignService {
         };
     }
 
-    /**
-     * Preview rendered messages from Excel rows + template.
-     */
     previewMessages(filePath, template, previewCount = 5) {
         const result = excelParser.parse(filePath);
         const validRows = excelParser.getValidRows(result);
@@ -58,9 +65,6 @@ class CampaignService {
         };
     }
 
-    /**
-     * Create a campaign from Excel file + template message + settings.
-     */
     async create({ name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [] }) {
         const result = excelParser.parse(filePath);
         const validRows = excelParser.getValidRows(result);
@@ -74,30 +78,33 @@ class CampaignService {
             throw new Error(`Missing values found for: ${missingFields.map(field => `{{${field}}}`).join(', ')}. Review the preview or explicitly allow missing fields.`);
         }
 
-        db.exec('BEGIN');
-        let campaignId;
-        try {
-            const safeButtons = Array.isArray(buttons) ? buttons.slice(0, 3).map(button => ({
-                type: button?.type === 'url' ? 'url' : 'quick_reply',
-                text: String(button?.text || '').trim(),
-                url: String(button?.url || '').trim(),
-            })).filter(button => button.text) : [];
-            const campaignResult = db.prepare(`
-                INSERT INTO campaigns (name, template_message, total_contacts, settings, provider, media_path, media_type, media_filename, media_mimetype, buttons, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            `).run(name, templateMessage, validRows.length, JSON.stringify(settings), providerManager.activeName, mediaPath, mediaType, mediaFilename, mediaMimetype, JSON.stringify(safeButtons));
+        const safeButtons = Array.isArray(buttons) ? buttons.slice(0, 3).map(button => ({
+            type: button?.type === 'url' ? 'url' : 'quick_reply',
+            text: String(button?.text || '').trim(),
+            url: String(button?.url || '').trim(),
+        })).filter(button => button.text) : [];
 
-            campaignId = campaignResult.lastInsertRowid;
+        // Use transaction-like sequential operations
+        const campaign = await db.insert('campaigns', {
+            name,
+            template_message: templateMessage,
+            total_contacts: validRows.length,
+            settings: JSON.stringify(settings),
+            provider: providerManager.activeName,
+            media_path: mediaPath,
+            media_type: mediaType,
+            media_filename: mediaFilename,
+            media_mimetype: mediaMimetype,
+            buttons: JSON.stringify(safeButtons),
+            updated_at: new Date(),
+        });
+
+        const campaignId = campaign.id;
 
         // Upsert contacts and create campaign_contacts entries
-        const insertCC = db.prepare(`
-            INSERT INTO campaign_contacts (campaign_id, contact_id, rendered_message, status)
-            VALUES (?, ?, ?, 'pending')
-        `);
-
         for (const row of validRows) {
             const phone = row[result.phoneColumn] || row._phone;
-            const contact = contactService.upsert(phone, {
+            const contact = await contactService.upsert(phone, {
                 name: row.name || row.Name || '',
                 company: row.company || row.Company || '',
                 city: row.city || row.City || '',
@@ -105,28 +112,30 @@ class CampaignService {
 
             // Check opt-out
             if (!contact.marketing_opt_in) {
-                insertCC.run(campaignId, contact.id, null);
-                db.prepare("UPDATE campaign_contacts SET status='opted_out' WHERE campaign_id=? AND contact_id=?").run(campaignId, contact.id);
+                await db.insert('campaign_contacts', {
+                    campaign_id: campaignId,
+                    contact_id: contact.id,
+                    rendered_message: null,
+                    status: 'opted_out',
+                });
                 continue;
             }
 
             const rendered = fieldRenderer.render(templateMessage, row, { strict: !allowMissingFields });
-            insertCC.run(campaignId, contact.id, rendered);
-        }
-        db.exec('COMMIT');
-        } catch (error) {
-            db.exec('ROLLBACK');
-            throw error;
+            await db.insert('campaign_contacts', {
+                campaign_id: campaignId,
+                contact_id: contact.id,
+                rendered_message: rendered,
+                status: 'pending',
+            });
         }
 
-        return this.get(campaignId);
+        const created = await db.getById('campaigns', campaignId);
+        return this._parseCampaign(created);
     }
 
-    /**
-     * Start campaign queue processing.
-     */
     async start(campaignId, whatsappService, io) {
-        const campaign = this.get(campaignId);
+        const campaign = await this.get(campaignId);
         if (!campaign) throw new Error('Campaign not found');
         if (!['draft', 'stopped', 'paused'].includes(campaign.status)) {
             throw new Error(`Cannot start campaign in status: ${campaign.status}`);
@@ -151,8 +160,8 @@ class CampaignService {
         messageQueue.pause();
     }
 
-    resume(campaignId, whatsappService, io) {
-        const campaign = this.get(campaignId);
+    async resume(campaignId, whatsappService, io) {
+        const campaign = await this.get(campaignId);
         if (!campaign) throw new Error('Campaign not found');
         if (campaign.status !== 'paused') {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
@@ -171,57 +180,60 @@ class CampaignService {
     stop(campaignId) {
         if (messageQueue.getCurrentCampaignId() !== campaignId) {
             // Force-stop from DB even if queue doesn't match
-            db.prepare("UPDATE campaign_contacts SET status='skipped' WHERE campaign_id=? AND status='pending'").run(campaignId);
-            db.prepare("UPDATE campaigns SET status='stopped', completed_at=datetime('now') WHERE id=?").run(campaignId);
+            db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND status IN (\'pending\', \'processing\')', [campaignId]);
+            db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ?', [campaignId]);
             return;
         }
         messageQueue.stop();
     }
 
-    delete(id) {
+    async delete(id) {
         this.stop(id);
-        db.prepare('DELETE FROM campaigns WHERE id=?').run(id);
+        await db.del('campaigns', 'id = ?', [id]);
     }
 
-    deleteMany(ids) {
-        db.exec('BEGIN');
-        try {
-            for (const id of ids) {
-                this.stop(id);
-                db.prepare('DELETE FROM campaigns WHERE id=?').run(id);
-            }
-            db.exec('COMMIT');
-        } catch (error) {
-            db.exec('ROLLBACK');
-            throw error;
+    async deleteMany(ids) {
+        for (const id of ids) {
+            this.stop(id);
+            await db.del('campaigns', 'id = ?', [id]);
         }
     }
 
-    getContacts(campaignId, { page = 1, limit = 50, status } = {}) {
-        const offset = (page - 1) * limit;
-        let where = 'WHERE cc.campaign_id=?';
+    async getContacts(campaignId, { page = 1, limit = 50, status } = {}) {
+        let where = 'campaign_id = ?';
         const params = [campaignId];
-        if (status) { where += ' AND cc.status=?'; params.push(status); }
+        if (status) {
+            where += ' AND status = ?';
+            params.push(status);
+        }
 
-        const total = db.prepare(`SELECT COUNT(*) as c FROM campaign_contacts cc ${where}`).get(...params).c;
-        const data = db.prepare(`
-            SELECT cc.*, c.phone, c.name, c.company, c.city
-            FROM campaign_contacts cc
-            JOIN contacts c ON c.id = cc.contact_id
-            ${where}
-            ORDER BY cc.id ASC LIMIT ? OFFSET ?
-        `).all(...params, limit, offset);
+        const result = await db.paginate('campaign_contacts', where, params, 'id', 'asc', limit, (page - 1) * limit);
+        
+        // Fetch contact details for each row
+        const data = await Promise.all(result.data.map(async (cc) => {
+            const contact = await db.getById('contacts', cc.contact_id);
+            return {
+                ...cc,
+                phone: contact?.phone || '',
+                name: contact?.name || '',
+                company: contact?.company || '',
+                city: contact?.city || '',
+            };
+        }));
 
-        return { total, page, limit, data };
+        return { total: result.total, page, limit, data };
     }
 
-    stats() {
-        const total = db.prepare('SELECT COUNT(*) as c FROM campaigns').get().c;
-        const active = db.prepare("SELECT COUNT(*) as c FROM campaigns WHERE status='running'").get().c;
-        const totalSent = db.prepare('SELECT COALESCE(SUM(sent),0) as c FROM campaigns').get().c;
-        const totalFailed = db.prepare('SELECT COALESCE(SUM(failed),0) as c FROM campaigns').get().c;
-        const totalReplies = db.prepare('SELECT COALESCE(SUM(replies),0) as c FROM campaigns').get().c;
-        const totalOptOuts = db.prepare('SELECT COALESCE(SUM(opt_outs),0) as c FROM campaigns').get().c;
+    async stats() {
+        const total = await db.count('campaigns');
+        const active = await db.count('campaigns', "status = ?", ['running']);
+        const campaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', '', [], '', 1000, 0);
+        
+        const totalSent = campaigns.reduce((sum, c) => sum + (parseInt(c.sent) || 0), 0);
+        const totalFailed = campaigns.reduce((sum, c) => sum + (parseInt(c.failed) || 0), 0);
+        const totalReplies = campaigns.reduce((sum, c) => sum + (parseInt(c.replies) || 0), 0);
+        const totalOptOuts = campaigns.reduce((sum, c) => sum + (parseInt(c.opt_outs) || 0), 0);
+
         return { total, active, totalSent, totalFailed, totalReplies, totalOptOuts };
     }
 

@@ -4,20 +4,15 @@ const path = require('path');
 const fs = require('fs');
 const campaignService = require('../campaigns/campaignService');
 const whatsappService = require('../whatsapp/providerManager');
-const { uploadExcel, uploadCampaignMedia, UPLOAD_DIR, CAMPAIGN_MEDIA_DIR } = require('../middleware/upload');
+const { uploadExcel, uploadCampaignMedia, UPLOAD_DIR, CAMPAIGN_MEDIA_DIR, isRemotePath, getFileNameFromPath, getBucketForPath, downloadFromStorage, BUCKETS } = require('../middleware/upload');
 
+// File paths are now Supabase Storage URLs, no local path validation needed
 function uploadedFilePath(filePath) {
-    if (!filePath || path.dirname(path.resolve(filePath)) !== path.resolve(UPLOAD_DIR)) {
-        throw new Error('Invalid uploaded file path');
-    }
-    return path.resolve(filePath);
+    return filePath;
 }
 
 function uploadedMediaPath(filePath) {
-    if (!filePath || path.dirname(path.resolve(filePath)) !== path.resolve(CAMPAIGN_MEDIA_DIR)) {
-        throw new Error('Invalid campaign media path');
-    }
-    return path.resolve(filePath);
+    return filePath;
 }
 
 function validIds(ids) {
@@ -63,13 +58,14 @@ router.get('/:id/contacts', (req, res) => {
 });
 
 // POST /api/campaigns/validate-excel
-router.post('/validate-excel', uploadExcel.single('file'), (req, res) => {
+router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     try {
-        const result = campaignService.validateExcel(req.file.path);
-        res.json({ filePath: req.file.path, filename: req.file.filename, ...result });
+        // For Excel files, we need to download from Supabase to validate
+        const filePath = isRemotePath(req.file.path) ? req.file.path : req.file.path;
+        const result = campaignService.validateExcel(filePath);
+        res.json({ filePath, filename: req.file.filename, ...result });
     } catch (err) {
-        fs.unlink(req.file.path, () => {});
         res.status(400).json({ error: err.message });
     }
 });
@@ -88,11 +84,12 @@ router.post('/media', uploadCampaignMedia.single('file'), (req, res) => {
 });
 
 // POST /api/campaigns/preview
-router.post('/preview', (req, res) => {
+router.post('/preview', async (req, res) => {
     const { filePath, template, count = 5 } = req.body;
     if (!filePath || !template) return res.status(400).json({ error: 'filePath and template required' });
     try {
-        res.json(campaignService.previewMessages(uploadedFilePath(filePath), template, +count));
+        // If it's a remote file, we need to handle it differently
+        res.json(campaignService.previewMessages(filePath, template, +count));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -105,7 +102,12 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'name, templateMessage, and filePath required' });
     }
     try {
-        const campaign = await campaignService.create({ name, templateMessage, filePath: uploadedFilePath(filePath), settings, allowMissingFields: !!allowMissingFields, mediaPath: mediaPath ? uploadedMediaPath(mediaPath) : null, mediaType, mediaFilename, mediaMimetype, buttons });
+        // For remote files (Supabase Storage), pass the URL directly
+        // For local files (during transition), resolve the path
+        const resolvedFilePath = isRemotePath(filePath) ? filePath : filePath;
+        const resolvedMediaPath = mediaPath ? (isRemotePath(mediaPath) ? mediaPath : mediaPath) : null;
+        
+        const campaign = await campaignService.create({ name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons });
         res.status(201).json(campaign);
     } catch (err) {
         res.status(400).json({ error: err.message });

@@ -18,15 +18,11 @@ class WhatsAppService {
         this._reconnectPromise = null;
         this._reconnectTimer = null;
         this._baileys = null;
-        const SETTINGS_PATH = path.join(__dirname, '..', '..', 'data', 'settings.json');
-        let businessName = process.env.BUSINESS_NAME || "Bhavesh's Project";
-        if (fs.existsSync(SETTINGS_PATH)) {
-            try {
-                const stored = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
-                if (typeof stored.BUSINESS_NAME === 'string' && stored.BUSINESS_NAME.trim()) businessName = stored.BUSINESS_NAME.trim();
-            } catch {}
-        }
-        this.businessName = businessName;
+        
+        // Read business name from environment or Supabase settings
+        // Note: settings.json is no longer used (doesn't survive Render restarts)
+        // Use process.env which is set from Render dashboard or Supabase app_settings
+        this.businessName = process.env.BUSINESS_NAME || "Bhavesh's Project";
     }
 
     setIO(io) { this._io = io; }

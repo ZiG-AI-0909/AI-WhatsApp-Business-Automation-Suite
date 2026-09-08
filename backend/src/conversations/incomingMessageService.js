@@ -35,24 +35,24 @@ class IncomingMessageService {
         if (!incoming.from || !incoming.text || incoming.type !== 'text') return false;
         if (incoming.from.includes('@g.us') || incoming.from === 'status@broadcast') return false;
 
-        const { conversation, contact } = conversationService.getOrCreate(incoming.from, incoming.jid, incoming.phoneKnown, incoming.contact.name);
-        const saved = conversationService.saveMessage(conversation.id, 'inbound', incoming.text, incoming.messageId, 'received', {
+        const { conversation, contact } = await conversationService.getOrCreate(incoming.from, incoming.jid, incoming.phoneKnown, incoming.contact.name);
+        const saved = await conversationService.saveMessage(conversation.id, 'inbound', incoming.text, incoming.messageId, 'received', {
             provider: incoming.provider, sender: incoming.from, timestamp: incoming.timestamp,
-        });
+        };
         if (!saved) return false;
         this._emit(io, 'message:new', { conversationId: conversation.id, ...incoming, name: contact.name || incoming.contact.name || incoming.from, direction: 'inbound', body: incoming.text });
 
         if (messageQueue.constructor.isOptOut(incoming.text)) {
-            contactService.setOptOut(incoming.from);
-            conversationService.setStatus(conversation.id, 'resolved');
+            await contactService.setOptOut(incoming.from);
+            await conversationService.setStatus(conversation.id, 'resolved');
             const ack = 'You have been unsubscribed from our marketing messages. You will no longer receive promotional messages from us.';
             await this._reply(conversation.id, incoming, ack, sendMessage, io);
             return true;
         }
 
         if (HUMAN_HANDOFF_TRIGGERS.some((pattern) => pattern.test(incoming.text)) && conversation.ai_enabled) {
-            conversationService.setAIEnabled(conversation.id, false);
-            conversationService.setStatus(conversation.id, 'human_takeover');
+            await conversationService.setAIEnabled(conversation.id, false);
+            await conversationService.setStatus(conversation.id, 'human_takeover');
             this._emit(io, 'conversation:human_takeover', { conversationId: conversation.id, phone: incoming.from });
             const handoff = "I understand you'd like to speak with our sales team. We've flagged your conversation and a representative will get in touch with you shortly.";
             await this._reply(conversation.id, incoming, handoff, sendMessage, io);
@@ -71,7 +71,7 @@ class IncomingMessageService {
                 return true;
             }
             const context = knowledgeBase.getRelevantContext(incoming.text, 4);
-            const reply = await aiService.generateReply(this._buildSystemPrompt(context), conversationService.getHistory(conversation.id, 15));
+            const reply = await aiService.generateReply(this._buildSystemPrompt(context), await conversationService.getHistory(conversation.id, 15));
             await this._reply(conversation.id, incoming, reply, sendMessage, io);
         } catch (error) {
             console.error(`AI reply error for ${incoming.from}:`, error.message);
@@ -87,7 +87,7 @@ class IncomingMessageService {
 
     async _reply(conversationId, incoming, body, sendMessage, io) {
         await sendMessage(incoming.from, body, incoming.jid);
-        conversationService.saveMessage(conversationId, 'outbound', body, null, 'sent', { provider: incoming.provider, sender: 'business' });
+        await conversationService.saveMessage(conversationId, 'outbound', body, null, 'sent', { provider: incoming.provider, sender: 'business' });
         this._emit(io, 'message:new', { conversationId, provider: incoming.provider, phone: incoming.from, name: incoming.contact.name || incoming.from, body, text: body, direction: 'outbound', timestamp: Date.now(), type: 'text' });
     }
 

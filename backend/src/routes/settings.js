@@ -1,85 +1,126 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const router = express.Router();
 const aiService = require('../ai/aiService');
+const db = require('../database/db');
 
-// Persisted settings live on the same persistent disk as the SQLite database,
-// not in .env. The platform dashboard env vars are the source of truth on first
-// deploy; the Settings UI writes to settings.json so changes survive restarts.
-const SETTINGS_PATH = path.join(__dirname, '..', '..', 'data', 'settings.json');
-const DATA_DIR = path.dirname(SETTINGS_PATH);
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+// Settings persistence now uses Supabase app_settings table
+// instead of local settings.json file (which doesn't survive Render free tier restarts)
 
-// Map of settings-field keys to their env var names. The UI sends these field
-// names; we store both the env name and the current value.
 const fieldKeys = {
-    aiApiKey: 'AI_API_KEY',
-    aiBaseURL: 'AI_BASE_URL',
-    aiModel: 'AI_MODEL',
-    businessName: 'BUSINESS_NAME',
-    businessTagline: 'BUSINESS_TAGLINE',
+    AI_API_KEY: 'aiApiKey',
+    AI_BASE_URL: 'aiBaseURL',
+    AI_MODEL: 'aiModel',
+    BUSINESS_NAME: 'businessName',
+    BUSINESS_TAGLINE: 'businessTagline',
 };
 
-function loadSettings() {
-    if (!fs.existsSync(SETTINGS_PATH)) return null;
+// Reverse mapping for lookups
+const fieldKeysReverse = {};
+for (const [envKey, fieldKey] of Object.entries(fieldKeys)) {
+    fieldKeysReverse[fieldKey] = envKey;
+}
+
+async function loadSettings() {
+    if (!db.isAvailable()) return null;
     try {
-        return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
-    } catch {
+        const rows = await db.select('app_settings', '*', '', [], 'key', 100, 0);
+        const settings = {};
+        for (const row of rows) {
+            settings[row.key] = row.value;
+        }
+        return settings;
+    } catch (error) {
+        console.error('[settings] Error loading settings from Supabase:', error.message);
         return null;
     }
 }
 
-function saveSettings(settings) {
-    const tempPath = SETTINGS_PATH + '.tmp';
-    fs.writeFileSync(tempPath, JSON.stringify(settings, null, 2));
-    fs.renameSync(tempPath, SETTINGS_PATH);
+async function saveSetting(key, value) {
+    if (!db.isAvailable()) {
+        throw new Error('Supabase is not configured');
+    }
+    await db.insert('app_settings', {
+        key,
+        value,
+        updated_at: new Date(),
+    }).then(() => {
+        // On conflict, update
+    }).catch(() => {
+        // If insert fails (duplicate key), update instead
+        db.update('app_settings', {
+            value,
+            updated_at: new Date(),
+        }, 'key = ?', [key]);
+    });
 }
 
-function mergedSetting(key) {
-    // JSON config (from Settings UI) takes precedence over process.env.
-    const stored = loadSettings();
+async function mergedSetting(key) {
+    // Supabase settings take precedence over process.env
+    const stored = await loadSettings();
     if (stored && typeof stored[key] === 'string' && stored[key].trim()) {
         return stored[key].trim();
     }
     return (process.env[key] || '').trim();
 }
 
-function getSettings() {
-    return {
-        ai: {
-            available: aiService.isAvailable(),
-            model: mergedSetting('AI_MODEL') || aiService.getModel(),
-            baseURL: mergedSetting('AI_BASE_URL') || '',
-        },
-        business: {
-            name: mergedSetting('BUSINESS_NAME') || "Bhavesh's Project",
-            tagline: mergedSetting('BUSINESS_TAGLINE') || '',
-        },
-    };
-}
-
 // GET /api/settings
-router.get('/', (req, res) => {
-    res.json(getSettings());
+router.get('/', async (req, res) => {
+    try {
+        const stored = await loadSettings();
+        res.json({
+            ai: {
+                available: aiService.isAvailable(),
+                model: (stored?.AI_MODEL || process.env.AI_MODEL || '').trim() || aiService.getModel(),
+                baseURL: (stored?.AI_BASE_URL || process.env.AI_BASE_URL || '').trim(),
+            },
+            business: {
+                name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
+                tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
+            },
+        });
+    } catch (error) {
+        console.error('[settings] GET error:', error);
+        res.status(500).json({ error: 'Failed to load settings' });
+    }
 });
 
-router.put('/', (req, res) => {
-    const provided = Object.entries(fieldKeys)
-        .map(([field, key]) => [key, req.body?.[field]])
-        .filter(([, value]) => typeof value === 'string' && value.trim());
-    if (!provided.length) return res.json(getSettings());
+router.put('/', async (req, res) => {
+    try {
+        const provided = Object.entries(fieldKeys)
+            .map(([key, field]) => [key, req.body?.[field]])
+            .filter(([, value]) => typeof value === 'string' && value.trim());
 
-    const stored = loadSettings() || {};
-    for (const [key, value] of provided) {
-        stored[key] = value.trim();
-        // Also update process.env so the running process picks up the change
-        // immediately without a restart.
-        process.env[key] = value.trim();
+        if (!provided.length) {
+            return res.json(await getSettings());
+        }
+
+        for (const [key, value] of provided) {
+            const trimmedValue = value.trim();
+            // Update Supabase
+            await saveSetting(key, trimmedValue);
+            // Also update process.env for immediate effect
+            process.env[key] = trimmedValue;
+        }
+
+        aiService.reconfigure();
+
+        // Return updated settings
+        const stored = await loadSettings();
+        res.json({
+            ai: {
+                available: aiService.isAvailable(),
+                model: (stored?.AI_MODEL || process.env.AI_MODEL || '').trim() || aiService.getModel(),
+                baseURL: (stored?.AI_BASE_URL || process.env.AI_BASE_URL || '').trim(),
+            },
+            business: {
+                name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
+                tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
+            },
+        });
+    } catch (error) {
+        console.error('[settings] PUT error:', error);
+        res.status(500).json({ error: error.message });
     }
-    saveSettings(stored);
-    aiService.reconfigure();
-    res.json(getSettings());
 });
 
 module.exports = router;

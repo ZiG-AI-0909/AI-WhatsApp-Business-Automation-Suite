@@ -3,20 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-// On startup, read any AI settings that were persisted to settings.json by the
-// Settings UI. These take precedence over process.env so a user's in-app
-// changes survive restarts. If settings.json doesn't exist yet, fall back to
-// the platform environment variables.
-(function applyPersistedSettings() {
-    const SETTINGS_PATH = path.join(__dirname, '..', '..', 'data', 'settings.json');
-    if (!fs.existsSync(SETTINGS_PATH)) return;
-    try {
-        const stored = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
-        if (typeof stored.AI_API_KEY === 'string' && stored.AI_API_KEY.trim()) process.env.AI_API_KEY = stored.AI_API_KEY.trim();
-        if (typeof stored.AI_BASE_URL === 'string' && stored.AI_BASE_URL.trim()) process.env.AI_BASE_URL = stored.AI_BASE_URL.trim();
-        if (typeof stored.AI_MODEL === 'string' && stored.AI_MODEL.trim()) process.env.AI_MODEL = stored.AI_MODEL.trim();
-    } catch {}
-})();
+// Note: settings.json is no longer used (doesn't survive Render free tier restarts).
+// AI settings now persist in Supabase app_settings table.
+// The settings.js route handles reading/writing to Supabase and updating process.env.
+// This is called on application startup to load any persisted settings.
 
 /**
  * AIService — Provider-agnostic AI abstraction.

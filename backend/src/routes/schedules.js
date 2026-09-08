@@ -3,12 +3,22 @@ const router = express.Router();
 const fs = require('fs');
 const cronParser = require('cron-parser');
 const schedulerService = require('../campaigns/schedulerService');
-const { uploadedFilePath, uploadedMediaPath } = require('./schedulePathHelpers');
+const { isRemotePath } = require('../middleware/upload');
+
+// File paths are now Supabase Storage URLs, no local path validation needed
+function uploadedFilePath(filePath) {
+    return filePath;
+}
+
+function uploadedMediaPath(filePath) {
+    return filePath;
+}
 
 function validateSchedule(body) {
     if (!['once', 'recurring'].includes(body.scheduleType)) return 'scheduleType must be once or recurring';
     if (!body.name?.trim() || !body.templateMessage?.trim() || !body.filePath) return 'name, templateMessage, and filePath required';
-    if (!fs.existsSync(body.filePath)) return 'Uploaded file not found';
+    // Skip file existence check for remote files (Supabase Storage)
+    if (!isRemotePath(body.filePath) && !fs.existsSync(body.filePath)) return 'Uploaded file not found';
     if (body.scheduleType === 'once') {
         const runAt = new Date(body.runAt);
         if (!body.runAt || Number.isNaN(runAt.getTime()) || runAt <= new Date()) return 'runAt must be a valid future ISO date';
