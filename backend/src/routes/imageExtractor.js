@@ -275,12 +275,21 @@ router.get('/stats', async (_req, res) => {
     const emails = await db.count('image_leads', "emails != ?", ['[]']);
     const duplicates = await db.count('image_leads', "duplicate_status = ?", ['Possible Duplicate']);
     
-    // For distinct source_image + extraction_group_id count, we'd need raw SQL
-    // For now, estimate from total
-    const imagesProcessed = await db.select('image_leads', 'COUNT(DISTINCT source_image || \':\' || extraction_group_id) as count', '', [], '', 1, 0);
+    // Distinct (source_image, extraction_group_id) pairs: SQL aggregate +
+    // concat syntax is not valid PostgREST, so fetch the two columns (paged
+    // in case of >1000 rows) and count distinct pairs in JS.
+    const pairs = [];
+    let offset = 0;
+    for (;;) {
+      const page = await db.select('image_leads', 'source_image, extraction_group_id', '', [], 'id', 1000, offset);
+      pairs.push(...page);
+      if (page.length < 1000) break;
+      offset += 1000;
+    }
+    const imagesProcessed = new Set(pairs.map((r) => `${r.source_image}:${r.extraction_group_id}`)).size;
     
     res.json({ 
-      images_processed: imagesProcessed[0]?.count || total,
+      images_processed: imagesProcessed || total,
       leads_extracted: total, 
       valid_phones: phones, 
       emails_found: emails, 

@@ -10,38 +10,47 @@ class KnowledgeBase {
 
             if (queryWords.length === 0) return '';
 
-            // Fetch all active chunks and score them client-side
-            // Supabase doesn't support complex scoring queries directly
-            const chunks = db.select(
-                'knowledge_chunks',
-                'kc.content, kd.name as doc_name, kd.category',
-                'kd.status = ?',
-                ['active'],
-                'kc.id',
-                1000,
-                0
-            ).then(results => {
-                const scored = results.map(chunk => {
-                    const text = chunk.content.toLowerCase();
-                    const score = queryWords.reduce((acc, w) => {
-                        return acc + (text.includes(w) ? 1 : 0);
-                    }, 0);
-                    return { ...chunk, score };
+            // Fetch active documents first, then their chunks. Alias-prefixed
+            // columns and "as" aliases are not valid PostgREST, and the
+            // "active" status lives on knowledge_documents, not chunks.
+            return db.select('knowledge_documents', 'id', 'status = ?', ['active'], '', 1000, 0)
+                .then(activeDocs => {
+                    const docIds = activeDocs.map(d => d.id);
+                    if (docIds.length === 0) return [];
+                    return db.select(
+                        'knowledge_chunks',
+                        'content, documents(name)',
+                        'document_id IN (?)',
+                        [docIds],
+                        'id',
+                        1000,
+                        0
+                    );
+                })
+                .then(results => {
+                    const scored = results.map(chunk => {
+                        const text = chunk.content.toLowerCase();
+                        const score = queryWords.reduce((acc, w) => {
+                            return acc + (text.includes(w) ? 1 : 0);
+                        }, 0);
+                        return {
+                            content: chunk.content,
+                            doc_name: chunk.documents?.name || 'Unknown',
+                            score,
+                        };
+                    });
+
+                    const relevant = scored
+                        .filter(c => c.score > 0)
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, maxChunks);
+
+                    if (relevant.length === 0) return '';
+
+                    return relevant.map(c =>
+                        `[${c.doc_name}]\n${c.content}`
+                    ).join('\n\n---\n\n');
                 });
-
-                const relevant = scored
-                    .filter(c => c.score > 0)
-                    .sort((a, b) => b.score - a.score)
-                    .slice(0, maxChunks);
-
-                if (relevant.length === 0) return '';
-
-                return relevant.map(c =>
-                    `[${c.doc_name}]\n${c.content}`
-                ).join('\n\n---\n\n');
-            });
-
-            return chunks;
         } catch (err) {
             console.error('KnowledgeBase error:', err.message);
             return '';

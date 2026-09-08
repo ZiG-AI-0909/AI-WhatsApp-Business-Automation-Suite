@@ -68,35 +68,30 @@ class ConversationService {
     }
 
     async listConversations({ page = 1, limit = 30, search = '' } = {}) {
+        // Search matches contacts by name/phone/company. Those columns live on
+        // the contacts table, so resolve matching contact ids first and then
+        // filter conversations by contact_id IN (...) — PostgREST cannot
+        // filter on columns of a related table through a plain WHERE string.
         let where = '';
-        const params = [];
+        let params = [];
 
         if (search) {
-            where = `(c.name LIKE ? OR c.phone LIKE ? OR c.company LIKE ?)`;
             const s = `%${search}%`;
-            params.push(s, s, s);
+            const matches = await db.select('contacts', 'id', '(name LIKE ? OR phone LIKE ? OR company LIKE ?)', [s, s, s], '', 1000, 0);
+            const contactIds = matches.map((m) => m.id);
+            if (contactIds.length === 0) {
+                return { total: 0, page, limit, data: [] };
+            }
+            where = 'contact_id IN (?)';
+            params = [contactIds];
         }
 
         const offset = (page - 1) * limit;
 
-        // Get total count
-        let countWhere = '';
-        if (search) {
-            countWhere = `WHERE (contacts.name LIKE ? OR contacts.phone LIKE ? OR contacts.company LIKE ?)`;
-        }
-        const totalResult = await db.select(
-            'conversations',
-            'COUNT(*) as count',
-            countWhere,
-            search ? [s, s, s] : [],
-            '',
-            1,
-            0
-        );
+        // Total count via db.count() (PostgREST head/count); SQL aggregate
+        // syntax like "COUNT(*) as count" is not valid PostgREST select.
+        const total = where ? await db.count('conversations', where, params) : await db.count('conversations');
 
-        // Get conversations with contact info and last message
-        // Note: This uses a JOIN which Supabase handles differently
-        // For complex joins, we might need to use raw SQL or multiple queries
         const conversations = await db.select(
             'conversations',
             '*',
@@ -131,7 +126,7 @@ class ConversationService {
         }));
 
         return {
-            total: totalResult.length > 0 ? parseInt(totalResult[0].count) : 0,
+            total,
             page,
             limit,
             data,
