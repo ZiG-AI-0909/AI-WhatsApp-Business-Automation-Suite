@@ -89,10 +89,10 @@ class MessageQueue {
 
             const item = await db.select(
                 'campaign_contacts',
-                '*, c.phone, ca.media_path, ca.media_type, ca.media_filename, ca.media_mimetype, ca.buttons',
-                'cc.campaign_id = ? AND cc.status = ? AND (cc.retry_at IS NULL OR cc.retry_at <= ?)',
+                '*, contacts(phone), campaigns(media_path, media_type, media_filename, media_mimetype, buttons)',
+                'campaign_id = ? AND status = ? AND (retry_at IS NULL OR retry_at <= ?)',
                 [campaignId, 'pending', new Date()],
-                'cc.id',
+                'id',
                 1,
                 0
             );
@@ -107,7 +107,28 @@ class MessageQueue {
                 break;
             }
 
-            const contactItem = item[0];
+            // PostgREST returns embedded resources as nested objects
+            // (contacts, campaigns); flatten them back to the flat shape
+            // the rest of _process() expects.
+            const rawItem = item[0];
+            const contactItem = {
+                id: rawItem.id,
+                campaign_id: rawItem.campaign_id,
+                contact_id: rawItem.contact_id,
+                rendered_message: rawItem.rendered_message,
+                status: rawItem.status,
+                attempts: rawItem.attempts,
+                last_error: rawItem.last_error,
+                sent_at: rawItem.sent_at,
+                provider_message_id: rawItem.provider_message_id,
+                retry_at: rawItem.retry_at,
+                phone: rawItem.contacts?.phone || '',
+                media_path: rawItem.campaigns?.media_path || null,
+                media_type: rawItem.campaigns?.media_type || null,
+                media_filename: rawItem.campaigns?.media_filename || null,
+                media_mimetype: rawItem.campaigns?.media_mimetype || null,
+                buttons: rawItem.campaigns?.buttons || '[]',
+            };
             const contact = contactService.findByPhone(contactItem.phone);
             if (contact && !contact.marketing_opt_in) {
                 db.update('campaign_contacts', { status: 'opted_out' }, 'id = ?', [contactItem.id]);
