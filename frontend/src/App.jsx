@@ -804,6 +804,9 @@ function App() {
     }
 
     // Detect initial session (handles page refresh, OAuth callback, recovery link)
+    // The OAuth callback URL contains tokens in the hash fragment:
+    // /auth/callback#access_token=...&refresh_token=...&expires_at=...
+    // Supabase's detectSessionInUrl: true handles parsing these automatically.
     supabase.auth.getSession().then(({ data: { session } }) => {
       console.log('[initial getSession]', !!session, session?.user?.email)
       setSession(session)
@@ -832,6 +835,14 @@ function App() {
     })
 
     return () => subscription.unsubscribe()
+  }, [])
+
+  // Clean up URL hash after OAuth callback to prevent tokens from lingering
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      // Clear the hash without triggering a page reload
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
   }, [])
 
   const handleSignOut = async () => {
