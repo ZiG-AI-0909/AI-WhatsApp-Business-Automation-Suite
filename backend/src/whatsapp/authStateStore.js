@@ -65,6 +65,39 @@ function reviveAuthState(json) {
 
 // ---- Auth state provider -------------------------------------
 
+// Baileys' own helpers, loaded once via dynamic import (the package is
+// ESM-only, so it cannot be require()d from this CommonJS module).
+let baileysHelpersPromise = null;
+function getBaileysHelpers() {
+    if (!baileysHelpersPromise) {
+        baileysHelpersPromise = import('@whiskeysockets/baileys').then((mod) => ({
+            initAuthCreds: mod.initAuthCreds,
+            proto: mod.proto,
+        }));
+    }
+    return baileysHelpersPromise;
+}
+
+/**
+ * DEBUG CHECK: verify the creds object Baileys is about to receive has the
+ * key material the noise handshake consumes in its very first step
+ * (noise-handler reads creds.noiseKey.public). Logs all three critical keys.
+ */
+function logCredsKeyCheck(userId, creds, source) {
+    const pairOk = (pair) => !!(pair && pair.public && pair.private);
+    const noise = pairOk(creds?.noiseKey);
+    const identity = pairOk(creds?.signedIdentityKey);
+    const preKeyPair = creds?.signedPreKey?.keyPair || creds?.signedPreKey;
+    const preKey = pairOk(preKeyPair);
+    console.log(
+        `[authState:${userId}] creds key check (${source}): ` +
+        `noiseKey=${noise ? 'OK' : 'MISSING'} ` +
+        `signedIdentityKey=${identity ? 'OK' : 'MISSING'} ` +
+        `signedPreKey=${preKey ? 'OK' : 'MISSING'} ` +
+        `registrationId=${creds?.registrationId !== undefined ? creds.registrationId : 'MISSING'}`
+    );
+}
+
 /**
  * Build a Baileys auth state (same contract as
  * useMultiFileAuthState) backed by the whatsapp_sessions table.
@@ -114,10 +147,72 @@ async function _useSupabaseAuthState(userId) {
             console.error(`[authState:${userId}] FAILED to revive stored auth state (jsonb serialization issue?):`, reviveError);
             throw new Error(`[authState] Stored auth state for user is corrupt or incompatible: ${reviveError.message}`);
         }
+        // Backfill guard: rows saved by the old broken initializer may hold an
+        // empty/partial creds object (no noiseKey). Baileys would crash the
+        // handshake on creds.noiseKey.public. Regenerate so the link recovers.
+        if (!inMemory?.creds?.noiseKey) {
+            console.warn(`[authState:${userId}] stored creds lack key material (saved by broken initializer?) — regenerating fresh creds`);
+            const { initAuthCreds } = await getBaileysHelpers();
+            inMemory.creds = initAuthCreds();
+        }
+        logCredsKeyCheck(userId, inMemory.creds, 'revived from Supabase');
     } else {
-        // Same shape useMultiFileAuthState starts with.
-        inMemory = { creds: {}, keys: {} };
+        // ROOT CAUSE FIX (QR stuck on "reconnecting", crash
+        // "Cannot read properties of undefined (reading 'public')" at
+        // noise-handler processHandshake): a fresh session MUST be initialized
+        // with Baileys' own initAuthCreds(), exactly like the reference
+        // useMultiFileAuthState does:
+        //   const creds = (await readData('creds.json')) || initAuthCreds();
+        // The old `{ creds: {}, keys: {} }` left creds empty, so the noise
+        // handshake read creds.noiseKey.public of undefined and every fresh
+        // connection died before a QR was ever generated.
+        console.log(`[authState:${userId}] no stored row — generating fresh creds via Baileys initAuthCreds()`);
+        const { initAuthCreds } = await getBaileysHelpers();
+        inMemory = { creds: initAuthCreds(), keys: {} };
+        logCredsKeyCheck(userId, inMemory.creds, 'fresh (initAuthCreds)');
     }
+
+    // Signal key store with REAL get/set/clear — the same contract Baileys'
+    // makeCacheableSignalKeyStore-backed file store exposes (SignalKeyStore:
+    // get(type, ids), set(data), optional clear()). The previous plain `{}`
+    // had no get/set, so even with valid creds the handshake would crash on
+    // the first pre-key/session read. Data lives in the same inMemory doc and
+    // persists through the same debounced Supabase write.
+    async function readKeys(type, ids) {
+        const bucket = inMemory.keys?.[type] || {};
+        const out = {};
+        for (const id of ids) {
+            let value = bucket[id];
+            if (value && type === 'app-state-sync-key') {
+                // Same conversion as useMultiFileAuthState's readData path.
+                const { proto } = await getBaileysHelpers();
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            if (value) out[id] = value;
+        }
+        return out;
+    }
+
+    const keys = {
+        get: readKeys,
+        set: async (data) => {
+            inMemory.keys = inMemory.keys || {};
+            for (const category of Object.keys(data)) {
+                inMemory.keys[category] = inMemory.keys[category] || {};
+                for (const id of Object.keys(data[category])) {
+                    const value = data[category][id];
+                    if (value) inMemory.keys[category][id] = value;
+                    else delete inMemory.keys[category][id]; // null/undefined deletes, like the file store
+                }
+            }
+            scheduleFlush(); // debounced persist, coalesced with creds writes
+        },
+        clear: async () => {
+            console.log(`[authState:${userId}] clearing in-memory signal keys`);
+            inMemory.keys = {};
+            await writeState();
+        },
+    };
 
     async function writeState() {
         if (writing) { writeQueued = true; return; }
@@ -174,8 +269,17 @@ async function _useSupabaseAuthState(userId) {
         if (pendingFlush) { clearTimeout(pendingFlush); pendingFlush = null; }
     };
 
+    // `state` wraps inMemory: Baileys reads creds/keys and MUTATES creds in
+    // place. The getter/setter keeps `inMemory.creds` the single source of
+    // truth even if a consumer reassigns state.creds wholesale.
+    const state = {
+        get creds() { return inMemory.creds; },
+        set creds(value) { inMemory.creds = value; },
+        keys, // SignalKeyStore — required by Baileys' handshake & encryption
+    };
+
     return {
-        state: inMemory,
+        state,
         saveCreds: () => { scheduleFlush(); }, // debounced; use flush() to force
         flush,
         destroy,
