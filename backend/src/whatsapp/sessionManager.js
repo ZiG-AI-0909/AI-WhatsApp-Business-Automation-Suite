@@ -161,7 +161,7 @@ class SessionManager {
             // DEBUG: surface Baileys' internal errors (previously fully silenced —
             // override with BAILEYS_LOG_LEVEL=silent to restore old behavior).
             logger: pino({ level: process.env.BAILEYS_LOG_LEVEL || 'error' }),
-            browser: ["Bhavesh's Project", 'Chrome', '1.0.0'],
+            browser: ['Sudarshan Pipes AI Assistant', 'Chrome', '1.0.0'],
         });
         session.socket = socket;
         session.lastActivityAt = Date.now();

@@ -157,8 +157,16 @@ class IncomingMessageService {
         emitToUser(io, userId, 'message:new', { conversationId, provider: incoming.provider, phone: incoming.from, name: incoming.contact.name || incoming.from, body, text: body, direction: 'outbound', timestamp: Date.now(), type: 'text' });
     }
 
+    /**
+     * Persona template — deliberately generic and settings-driven. The
+     * company identity comes entirely from the caller (per-user
+     * BUSINESS_NAME, falling back to env/defaults); nothing here is
+     * hardcoded to one company, so every tenant's AI introduces itself
+     * correctly from its own settings. Factual grounding comes from the
+     * user's knowledge base injected as COMPANY KNOWLEDGE.
+     */
     _buildSystemPrompt(knowledgeContext, businessName = 'our business') {
-        return `You are a professional AI assistant for ${businessName}. Be concise, friendly, and truthful. Never invent prices, availability, specifications, delivery dates, certifications, discounts, or warranties. If information is unavailable, say you will connect the customer with the sales team. Help with product enquiries and collect product, size, quantity, delivery location, company, and project details for quotations. Do not pretend to be human. Keep replies to 2-4 sentences.\n\n${knowledgeContext ? `COMPANY KNOWLEDGE:\n${knowledgeContext}\nUse only this company information for factual answers.` : ''}`;
+        return `You are the customer assistant for ${businessName}, reachable over WhatsApp. Represent ${businessName} professionally: be concise, friendly, and truthful. Never invent prices, availability, specifications, delivery dates, certifications, discounts, or warranties. If information is unavailable, say you will connect the customer with the sales team. Help with product enquiries and collect product, size, quantity, delivery location, company, and project details for quotations. Do not pretend to be human. Keep replies to 2-4 sentences.\n\n${knowledgeContext ? `COMPANY KNOWLEDGE:\n${knowledgeContext}\nUse only this company information for factual answers. Company-reported or marketing figures must be framed as such, never as independently verified facts.` : ''}`;
     }
 }
 

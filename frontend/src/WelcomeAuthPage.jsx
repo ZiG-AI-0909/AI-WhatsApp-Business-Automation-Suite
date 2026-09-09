@@ -374,7 +374,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
             </div>
             <div>
               <span className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-                Bhavesh's AI Sales Suite
+                Sudarshan Pipes AI Assistant
                 <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                   v2.0 PRO
                 </span>
@@ -594,7 +594,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
                           autoComplete="name"
                           value={fullName}
                           onChange={e => { setFullName(e.target.value); setErrors(p => ({ ...p, fullName: null })) }}
-                          placeholder="Bhavesh Sharma"
+                          placeholder="Your full name"
                           className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950/80 border text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all ${errors.fullName ? 'border-red-500' : 'border-slate-800 focus:border-emerald-500'}`}
                         />
                       </div>

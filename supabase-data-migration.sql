@@ -3,7 +3,7 @@
 -- Run this in: Supabase Dashboard → SQL Editor → New Query
 -- =============================================================
 -- This migration creates all tables needed to replace the SQLite
--- database (data/Bhavesh.db) when deploying to Render free tier.
+-- database (local SQLite file in data/) when deploying to Render free tier.
 -- All tables use BIGSERIAL for auto-incrementing IDs to match
 -- the frontend's expectation of integer IDs.
 -- =============================================================

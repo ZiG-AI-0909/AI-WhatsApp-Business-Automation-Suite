@@ -1,5 +1,6 @@
 const express = require('express');
 const knowledgeBase = require('../ai/knowledgeBase');
+const seedKnowledgeService = require('../knowledge/seedKnowledgeService');
 const {
     uploadKnowledge,
     knowledgeStorageConfig,
@@ -16,8 +17,12 @@ function validIds(ids) {
 }
 
 // GET /api/knowledge
+// First load for a brand-new account seeds the default company-profile
+// document (no-op for anyone who already has documents). Awaited so the
+// seeded doc is visible in the very first list response.
 router.get('/', async (req, res) => {
     try {
+        await seedKnowledgeService.seedIfEmpty(req.user.id);
         res.json(await knowledgeBase.listDocuments(req.user.id));
     } catch (err) {
         res.status(500).json({ error: err.message });

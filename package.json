@@ -1,8 +1,8 @@
 {
-  "name": "Bhavesh-whatsapp-app",
+  "name": "sudarshan-pipes-ai-assistant",
   "version": "1.0.0",
   "private": true,
-  "description": "Bhavesh's Project WhatsApp assistant and campaign manager",
+  "description": "Sudarshan Pipes WhatsApp AI assistant and campaign manager",
   "scripts": {
     "start": "npm run dev",
     "dev": "node scripts/dev.js",

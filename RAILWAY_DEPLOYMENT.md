@@ -13,7 +13,7 @@ Railway filesystems are **ephemeral by default** — without a mounted volume, e
 
 | Folder | Contents | Why it must persist |
 |---|---|---|
-| `data/` | `Bhavesh.db` (SQLite) + `settings.json` | Campaigns, contacts, knowledge base, schedules, and the persisted settings from the Settings UI |
+| `data/` | Local SQLite DB + settings (legacy; Supabase is now the source of truth) | Campaigns, contacts, knowledge base, schedules, and the persisted settings from the Settings UI |
 | `.baileys_auth/` | WhatsApp Web (Baileys) session/auth state | Without this, WhatsApp re-asks for QR login on every restart |
 | `uploads/` | Uploaded campaign Excel files | Campaign creation reads these files from disk |
 | `campaign-media/` | Uploaded campaign media (images, PDFs, docs) | Campaigns reference media by path on disk |
@@ -63,7 +63,7 @@ Do **not** set `PORT`. Railway injects its own `PORT` and the app already reads 
 
 After deploy, check the **Deploy logs** for:
 - `✅ Database schema initialized`
-- `🚀 Bhavesh WhatsApp API started on http://...`
+- `🚀 Sudarshan Pipes AI Assistant API started on http://...`
 - Any errors about missing env vars.
 
 ## WhatsApp login after deploy

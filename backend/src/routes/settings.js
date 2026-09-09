@@ -87,7 +87,7 @@ async function getSettings(userId) {
             baseURL: (stored?.AI_BASE_URL || process.env.AI_BASE_URL || '').trim(),
         },
         business: {
-            name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
+            name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || 'Sudarshan Pipes',
             tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
         },
         // Email (Resend) — mirrors the `ai` section's shape: booleans for

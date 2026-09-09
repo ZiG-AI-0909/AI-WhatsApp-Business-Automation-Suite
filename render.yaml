@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: bhavesh-whatsapp-api
+    name: sudarshan-pipes-api
     env: node
     region: oregon
     plan: free

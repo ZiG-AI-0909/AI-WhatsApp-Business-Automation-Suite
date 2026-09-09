@@ -1,12 +1,12 @@
 {
-  "name": "Bhavesh-whatsapp",
+  "name": "sudarshan-pipes-ai-assistant",
   "version": "1.0.0",
-  "description": "WhatsApp AI Assistant & Campaign Manager for Bhavesh's Project",
+  "description": "WhatsApp AI Assistant & Campaign Manager for Sudarshan Pipes",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch --watch-path=src src/server.js",
-    "test": "node src/whatsapp/__tests__/phase2-smoke.test.js && node src/settings/__tests__/email-phase1-smoke.test.js"
+    "test": "node src/whatsapp/__tests__/phase2-smoke.test.js && node src/settings/__tests__/email-phase1-smoke.test.js && node src/knowledge/__tests__/rebrand-seed-smoke.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",
@@ -31,6 +31,6 @@
     "campaign",
     "automation"
   ],
-  "author": "Bhavesh's Project",
+  "author": "Sudarshan Pipes",
   "license": "ISC"
 }
