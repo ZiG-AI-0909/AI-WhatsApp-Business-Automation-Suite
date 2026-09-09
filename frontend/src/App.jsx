@@ -9,6 +9,17 @@ const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').re
 // If the backend URL matches the current origin (e.g., when the app is hosted on Vercel together with the API), use a relative path to avoid cross‑origin requests.
 const API_URL = BACKEND_URL === window.location.origin ? '/api' : `${BACKEND_URL}/api`
 
+// Local-session invalidation event. Fires when the backend rejects the JWT
+// (401) or when auth-js reports a refresh failure — either way the stored
+// session is dead and every authenticated call would keep 401-ing until the
+// user signs out. Components listen for this to stop their polling instead
+// of hammering the API (BUG 2: repeated 401 request loop after sign-out).
+const SESSION_INVALIDATED_EVENT = 'app:session-invalidated'
+function dispatchSessionInvalidated(reason) {
+  console.warn(`[auth] session invalidated (${reason}) — notifying components to stop polling`)
+  window.dispatchEvent(new CustomEvent(SESSION_INVALIDATED_EVENT, { detail: { reason } }))
+}
+
 async function apiFetch(path, options = {}) {
   // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
   let authHeader = {}
@@ -22,6 +33,9 @@ async function apiFetch(path, options = {}) {
 
       if (error) {
         console.error('Supabase session error:', error)
+        // getSession() only errors when it could not recover a usable session
+        // (e.g. refresh rejected). The stored session is dead — see BUG 1.
+        dispatchSessionInvalidated('getSession error')
       }
 
       if (session?.access_token) {
@@ -45,6 +59,14 @@ async function apiFetch(path, options = {}) {
   const data = await response.json().catch(() => ({}))
 
   if (!response.ok) {
+    // 401 means the JWT we sent is expired/invalid and cannot be recovered
+    // client-side. Clear the dead session from storage so auth-js stops
+    // handing it out (it would otherwise be sent on every future call) and
+    // tell components to stop polling. Mirrors the auth-js onAuthError path.
+    if (response.status === 401 && supabase) {
+      try { await supabase.auth._removeSession() } catch { /* best effort */ }
+      dispatchSessionInvalidated(`API 401 on ${path}`)
+    }
     throw new Error(data.error || `Request failed (${response.status})`)
   }
 
@@ -624,7 +646,23 @@ function InboxView() {
     socket.on('conversation:human_takeover', refresh)
     socket.on('conversation:ai_error', aiError)
     const interval = window.setInterval(refresh, 10000)
-    return () => { socket.off('conversation:ai_error', aiError); socket.disconnect(); window.clearInterval(interval) }
+
+    // BUG 2: stop polling + socket refreshes once the session is invalidated
+    // (sign-out or a fatal 401) — otherwise this loop keeps 401-ing forever.
+    const stopPolling = () => {
+      console.log('[inbox] session invalidated — stopping conversation polling')
+      window.clearInterval(interval)
+      socket.off('message:new', refresh)
+      socket.off('conversation:human_takeover', refresh)
+    }
+    window.addEventListener(SESSION_INVALIDATED_EVENT, stopPolling)
+
+    return () => {
+      window.removeEventListener(SESSION_INVALIDATED_EVENT, stopPolling)
+      socket.off('conversation:ai_error', aiError)
+      socket.disconnect()
+      window.clearInterval(interval)
+    }
   }, [search, selectedId])
 
   useEffect(() => { loadSelected() }, [selectedId])
@@ -903,16 +941,61 @@ function App() {
   // WhatsApp session (real Baileys logout + delete stored auth state)
   // BEFORE the local sign-out. If this call fails (e.g. network drop
   // mid-signout), the local sign-out still completes — it never blocks.
+  //
+  // ORDER MATTERS (BUG 1): the backend call MUST fire while the access
+  // token is still valid. If the stored session is already dead (expired
+  // token whose refresh was rejected, e.g. after the tab slept past the
+  // token lifetime), apiFetch would send no/invalid Authorization header
+  // and the backend would 401 without ever invalidating the WhatsApp
+  // session. In that case we clear the dead local session first so
+  // supabase.auth.signOut() works from a clean state.
   const handleSignOut = async () => {
-    try {
-      await apiFetch('/whatsapp/logout', { method: 'POST' })
-    } catch (error) {
-      console.error('Backend WhatsApp logout failed (continuing sign-out):', error)
-    }
+    // Snapshot the token FIRST — nothing below can invalidate it before
+    // the backend call carries it.
+    let accessToken = null
     if (supabase) {
-      await supabase.auth.signOut()
+      try {
+        const { data } = await supabase.auth.getSession()
+        accessToken = data?.session?.access_token || null
+      } catch (error) {
+        console.warn('[signout] getSession failed while snapshotting token:', error?.message)
+      }
+    }
+
+    if (supabase && !accessToken) {
+      // Session already dead/expired locally — the backend call would be a
+      // guaranteed 401 (it still gets one if a race happens; harmless).
+      console.warn('[signout] no usable access token — skipping backend WhatsApp logout (already dead)')
+      try { await supabase.auth._removeSession() } catch { /* best effort */ }
+    } else {
+      try {
+        await apiFetch('/whatsapp/logout', { method: 'POST' })
+        console.log('[signout] backend WhatsApp logout completed while token was still valid')
+      } catch (error) {
+        console.error('Backend WhatsApp logout failed (continuing sign-out):', error)
+        // A 401 here means the token died between the snapshot and the call.
+        // apiFetch already cleared the dead local session in that case.
+      }
+    }
+
+    // ONLY NOW the local sign-out. NOTE: if the WhatsApp-logout 401 was a
+    // symptom of an already-dead session, the following signOut() 403 on
+    // /auth/v1/logout?scope=global is expected (global revoke needs a valid
+    // JWT) — auth-js still clears local storage, so sign-out completes.
+    if (supabase) {
+      try {
+        await supabase.auth.signOut()
+      } catch (error) {
+        // Never let a failed remote revoke block local sign-out.
+        console.error('[signout] supabase signOut failed (local session cleared anyway):', error)
+        try { await supabase.auth._removeSession() } catch { /* best effort */ }
+      }
     }
     setSession(null)
+    // Drop the just-cleared session out of the component state that
+    // polling effects read, so their in-flight tick exits early.
+    setBackendStatus('offline')
+    setIsConnected(false)
   }
 
   const selectView = (item) => {
@@ -929,6 +1012,10 @@ function App() {
   useEffect(() => {
     // Per-user WhatsApp status: uses the authenticated endpoint, so the
     // pill reflects THIS user's connection only — not anyone else's.
+    // Guard + deps on session: stops the interval entirely on sign-out
+    // instead of polling with a dead token (BUG 2).
+    if (!session) return
+
     const loadStatus = async () => {
       if (!session) return
       try {
@@ -947,6 +1034,10 @@ function App() {
   }, [session?.user?.id])
 
   useEffect(() => {
+    // Dashboard polling. Deps on session: on sign-out the effect re-runs,
+    // clears the old interval, and the guard below stops re-arming it.
+    if (!session) return
+
     const loadDashboard = async () => {
       try {
         const [nextDashboard, conversationData] = await Promise.all([
@@ -964,7 +1055,15 @@ function App() {
     loadDashboard()
     const interval = window.setInterval(loadDashboard, 10000)
     return () => window.clearInterval(interval)
-  }, [])
+  }, [session?.user?.id])
+
+  // Last-resort safety net (BUG 2): if the session becomes null while a
+  // polling loop is still executing (async race), stop it on the next tick
+  // instead of issuing authenticated requests that can only 401.
+  useEffect(() => {
+    if (session || authChecking) return
+    dispatchSessionInvalidated('session cleared')
+  }, [session?.user?.id, authChecking])
 
   const stats = dashboard ? [
     { label: 'Total Contacts', value: dashboard.contacts.total, accent: 'green' },

@@ -30,8 +30,14 @@ const incomingMessageService = require('../conversations/incomingMessageService'
 // 2 hours — see README-phase2 or commit notes for reasoning.
 const IDLE_TIMEOUT_MS = Number(process.env.WHATSAPP_SESSION_IDLE_TIMEOUT_MS || 2 * 60 * 60 * 1000);
 
-const RECONNECT_BASE_MS = 3000;
-const RECONNECT_MAX_MS = 5 * 60 * 1000;
+// Auto-reconnect backoff bounds. Read at call time (not module load) so
+// tests can shrink the delay via env without reloading the module.
+function reconnectBounds() {
+    return {
+        base: Number(process.env.WA_RECONNECT_BASE_MS || 3000),
+        max: Number(process.env.WA_RECONNECT_MAX_MS || 5 * 60 * 1000),
+    };
+}
 
 class SessionManager {
     constructor() {
@@ -138,6 +144,7 @@ class SessionManager {
         this.sessions.set(userId, session);
 
         session.intentionalClose = false;
+        session.lastError = null; // cleared on every fresh start so a recovered session doesn't report a stale error
         clearTimeout(session.reconnectTimer);
         console.log(`[wa:${userId}] initialize: session record ready (new: ${!existing})`);
 
@@ -247,6 +254,15 @@ class SessionManager {
             session.socket = null;
 
             const loggedOut = baileys && statusCode === baileys.DisconnectReason.loggedOut;
+            // Baileys emits a fixed number of QR refs; when they run out before a
+            // scan, the socket ends with DisconnectReason.timedOut (408, message
+            // "QR refs attempts ended"). This is NOT an auth failure — nothing is
+            // wrong with the stored credentials (usually there are none yet). We
+            // clear the dead socket and start a FRESH connection so Baileys
+            // generates a new batch of QR refs; otherwise the session sits in
+            // 'reconnecting' forever and the user must click "Connect with QR"
+            // again manually (BUG 3).
+            const qrRefsExhausted = baileys && statusCode === baileys.DisconnectReason.timedOut;
             if (session.intentionalClose) {
                 // Idle disconnect or explicit disconnect(): stop here quietly.
                 // Auth state stays in Supabase so the next initialize() re-links
@@ -255,7 +271,7 @@ class SessionManager {
                 return;
             }
 
-            console.log(`[wa:${userId}] close handling: intentionalClose=${session.intentionalClose} loggedOut=${loggedOut}`);
+            console.log(`[wa:${userId}] close handling: intentionalClose=${session.intentionalClose} loggedOut=${loggedOut} qrRefsExhausted=${qrRefsExhausted}`);
             if (loggedOut) {
                 // WhatsApp invalidated the link remotely. Wipe stored creds so
                 // the user gets a fresh QR next time, then retry cleanly.
@@ -272,8 +288,9 @@ class SessionManager {
             // capped exponential backoff. Does not require the browser.
             this._pushStatus(userId, 'reconnecting');
             session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
-            const delay = Math.min(RECONNECT_BASE_MS * 2 ** Math.min(session.reconnectAttempts, 7), RECONNECT_MAX_MS);
-            console.log(`[wa:${userId}] scheduling auto-reconnect attempt #${session.reconnectAttempts} in ${delay}ms`);
+            const { base, max } = reconnectBounds();
+            const delay = Math.min(base * 2 ** Math.min(session.reconnectAttempts, 7), max);
+            console.log(`[wa:${userId}] scheduling auto-reconnect attempt #${session.reconnectAttempts} in ${delay}ms${qrRefsExhausted ? ' (QR refs exhausted — restarting connection for a fresh QR)' : ''}`);
             clearTimeout(session.reconnectTimer);
             session.reconnectTimer = setTimeout(() => {
                 this.initialize(userId).catch((error) => {

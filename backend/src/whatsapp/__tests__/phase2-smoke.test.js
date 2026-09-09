@@ -322,12 +322,48 @@ async function test4_logoutEndpoint() {
     console.log('✅ Test 4 passed\n');
 }
 
+// BUG 3 regression: when Baileys runs out of QR refs it closes with
+// DisconnectReason.timedOut (408). The manager must schedule an auto-restart
+// (fresh initialize → fresh QR) instead of getting stuck in 'reconnecting'.
+async function test5_qrRefsExhaustedAutoRestart() {
+    console.log('▶ Test 5: QR refs exhausted (timedOut 408) auto-restarts with a fresh QR');
+    const socketA = sessionManager.sessions.get(USER_B).socket; // B survived test 4
+    assert.ok(socketA, 'B session socket present before the test');
+
+    // Make DisconnectReason include timedOut for this test (the real Baileys
+    // mock above only lists loggedOut: 401).
+    baileysMock.DisconnectReason = { loggedOut: 401, timedOut: 408 };
+
+    // Shrink the backoff so the auto-restart fires quickly.
+    const originalBase = process.env.WA_RECONNECT_BASE_MS;
+    process.env.WA_RECONNECT_BASE_MS = '10';
+
+    // Simulate Baileys giving up after all QR refs were consumed unscanned.
+    socketA.ev.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: { output: { statusCode: 408 }, message: 'QR refs attempts ended' } },
+    });
+
+    // The manager must push 'reconnecting' and then automatically re-initialize.
+    await waitFor(() => (sessionManager.getStatus(USER_B) === 'reconnecting'), 2000, 'reconnecting status after 408 close');
+    await waitFor(() => state.lastSocketConfig && state.lastSocket !== socketA, 2000, 'fresh Baileys socket created');
+    await waitFor(() => sessionManager.getStatus(USER_B) === 'initializing', 2000, 'fresh connection initializing');
+
+    // Cleanup so no timer leaks into other suites / the process exit.
+    await sessionManager.disconnect(USER_B);
+    baileysMock.DisconnectReason = { loggedOut: 401 };
+    if (originalBase === undefined) delete process.env.WA_RECONNECT_BASE_MS;
+    else process.env.WA_RECONNECT_BASE_MS = originalBase;
+    console.log('✅ Test 5 passed\n');
+}
+
 async function main() {
     try {
         await test1_sessionIsolation();
         await test2_authStateRoundTrip();
         await test3_socketRoomScoping();
         await test4_logoutEndpoint();
+        await test5_qrRefsExhaustedAutoRestart();
         console.log('🎉 ALL PHASE 2 SMOKE TESTS PASSED');
         process.exit(0);
     } catch (error) {
