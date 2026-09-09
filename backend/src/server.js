@@ -6,75 +6,59 @@ const cors = require('cors');
 const { Server } = require('socket.io');
 const path = require('path');
 
-const whatsappService = require('./whatsapp/providerManager');
+const sessionManager = require('./whatsapp/sessionManager');
 const messageQueue = require('./campaigns/messageQueue');
 const schedulerService = require('./campaigns/schedulerService');
 const { requireAuth } = require('./middleware/auth');
+const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
 
 const app = express();
 const server = http.createServer(app);
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} is already in use. Stop the existing backend before starting another one.`);
-    return;
-  }
-  console.error('Server error:', error);
-});
-
-// Allowed origins for CORS.
-// - Two fixed production Vercel domains.
-// - Any Vercel preview deployment matching the project's slug pattern.
-// - Local Vite dev server.
-const ALLOWED_ORIGINS = [
-  'https://ai-whats-app-business-automation-suite-zig-ai-0909s-projects.vercel.app',
-  'https://ai-whats-app-business-automation-su-theta.vercel.app',
-  'http://localhost:5173',
-];
-const VERCEL_PREVIEW_REGEX = new RegExp('^(https://ai-[a-z0-9-]+-whats-app-business-automation-suite-zig-ai-0909s-projects\\.vercel\\.app)$');
-
-function isAllowedOrigin(origin) {
-  // No Origin header = same-origin or non-browser client (curl, health checks, etc.).
-  // Allow it through so public endpoints like /api/health work without a browser.
-  if (!origin) return true;
-  if (ALLOWED_ORIGINS.includes(origin)) return true;
-  return VERCEL_PREVIEW_REGEX.test(origin);
-}
-
-const io = new Server(server, {
-  cors: {
-    origin: (origin, callback) => {
-      if (isAllowedOrigin(origin)) return callback(null, true);
-      callback(new Error(`Origin not allowed: ${origin}`));
-    },
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  },
-});
-
 const PORT = Number(process.env.PORT || 3000);
 const FRONTEND_DIST = path.join(__dirname, '..', '..', 'frontend', 'dist');
+server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use. Stop the existing backend before starting another one.`);
+        return;
+    }
+    console.error('Server error:', error);
+});
+
+const io = new Server(server, {
+    cors: {
+        origin: (origin, callback) => {
+            if (isAllowedOrigin(origin)) return callback(null, true);
+            callback(new Error(`Origin not allowed: ${origin}`));
+        },
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    },
+});
 
 app.set('io', io);
 app.use(cors({
-  origin: (origin, callback) => {
-    if (isAllowedOrigin(origin)) return callback(null, true);
-    callback(new Error(`Origin not allowed: ${origin}`));
-  },
-  credentials: true,
+    origin: (origin, callback) => {
+        if (isAllowedOrigin(origin)) return callback(null, true);
+        callback(new Error(`Origin not allowed: ${origin}`));
+    },
+    credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use((req, _res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
-  next();
+    console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+    next();
 });
 
+// Public health endpoint — deliberately reports no global WhatsApp status:
+// connection state is per-user now, so there is nothing meaningful to show
+// without an authenticated user.
 app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    whatsapp: whatsappService.getStatus(),
-  });
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        whatsapp: { mode: 'per-user', note: 'WhatsApp connection status is scoped per user. Use GET /api/whatsapp/status with an auth token.' },
+    });
 });
 
 app.use('/api/auth', require('./routes/auth'));
@@ -91,60 +75,55 @@ app.use('/api/schedules', requireAuth, require('./routes/schedules'));
 app.use('/api/image-extractor', requireAuth, require('./routes/imageExtractor'));
 
 app.use('/api', requireAuth, (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+    res.status(404).json({ error: 'Route not found' });
 });
 
 if (require('fs').existsSync(FRONTEND_DIST)) {
-  app.use(express.static(FRONTEND_DIST));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
-  });
-} else {
-  app.get('/', (_req, res) => {
-    res.json({
-      app: 'Bhavesh WhatsApp AI Assistant',
-      message: 'Frontend build not generated yet. Run the Vite app separately or build the frontend.',
+    app.use(express.static(FRONTEND_DIST));
+    app.get('*', (_req, res) => {
+        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
     });
-  });
+} else {
+    app.get('/', (_req, res) => {
+        res.json({
+            app: "Bhavesh's Project WhatsApp Assistant",
+            message: 'Frontend build not generated yet. Run the Vite app separately or build the frontend.',
+        });
+    });
 }
 
-io.on('connection', (socket) => {
-  socket.emit('whatsapp:status', { status: whatsappService.getStatus() });
-  socket.emit('campaign:status', {
-    running: messageQueue.isRunning(),
-    paused: messageQueue.isPaused(),
-    currentCampaignId: messageQueue.getCurrentCampaignId(),
-  });
+// SECURITY: per-user rooms with JWT verification. A socket without a
+// valid Supabase JWT never joins a room and never receives events.
+attachRealtimeAuth(io);
 
-  socket.on('disconnect', () => {
-    console.log('Socket client disconnected');
-  });
-});
-
-whatsappService.setIO(io);
 messageQueue.setIO(io);
 
 async function startServer() {
-  try {
-    whatsappService.initialize();
-    messageQueue.resumeInterrupted(whatsappService, io);
-    schedulerService.startPolling(io);
-    server.listen(PORT, () => {
-      console.log(`🚀 Bhavesh WhatsApp API started on http://localhost:${PORT}`);
-      console.log(`📱 WhatsApp status: ${whatsappService.getStatus()}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
+    try {
+        // Sessions are created lazily per user on demand — nothing global
+        // to initialize at startup. Interrupted campaigns resume per owner.
+        await messageQueue.resumeInterrupted(io);
+        schedulerService.startPolling(io);
+        server.listen(PORT, () => {
+            console.log(`🚀 Bhavesh's Project API started on http://localhost:${PORT}`);
+            console.log('📱 WhatsApp sessions: per-user (lazy) — users connect via their own QR.');
+        });
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        process.exit(1);
+    }
 }
 
 startServer();
 
 process.on('SIGINT', async () => {
-  console.log('Shutting down gracefully...');
-  try { await whatsappService.disconnect(); } catch (error) {}
-  server.close(() => process.exit(0));
+    console.log('Shutting down gracefully...');
+    try { await sessionManager.shutdown(); } catch (error) {}
+    server.close(() => process.exit(0));
+});
+process.on('SIGTERM', async () => {
+    try { await sessionManager.shutdown(); } catch (error) {}
+    server.close(() => process.exit(0));
 });
 
 module.exports = { app, server, io };

@@ -51,6 +51,20 @@ async function apiFetch(path, options = {}) {
   return data
 }
 
+// Socket.IO auth: supplies the same Supabase JWT used for the API. The
+// backend verifies it and places the socket in this user's private room,
+// so the browser only ever receives ITS OWN whatsapp/campaign/message
+// events — never another user's. The auth callback runs on every
+// (re)connection, so refreshed tokens are picked up automatically.
+function socketAuth() {
+  return (cb) => {
+    if (!supabase) return cb({})
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => cb({ token: session?.access_token || null }))
+      .catch(() => cb({}))
+  }
+}
+
 const navItems = [
   'Dashboard',
   'WhatsApp Connection',
@@ -165,7 +179,7 @@ function CampaignsView({ onNavigate }) {
   useEffect(() => {
     loadSchedules()
     const interval = window.setInterval(loadSchedules, 30000)
-    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'] })
+    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'], auth: socketAuth() })
 
     // Handle schedule:failed events
     const scheduleFailed = (event) => { setMessage({ type: 'error', text: `Schedule "${event.name}" failed: ${event.error}` }); loadSchedules() }
@@ -497,7 +511,8 @@ function ConnectionView() {
 
   const connectWeb = async () => {
     setBusy(true)
-    try { await apiFetch('/whatsapp/provider', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'web' }) }); await apiFetch('/whatsapp/reconnect', { method: 'POST' }); setNotice({ type: 'success', text: 'WhatsApp Web is reconnecting. Scan the QR code when it appears.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    // Lazily starts THIS user's own session; the QR appears in your room only.
+    try { await apiFetch('/whatsapp/connect', { method: 'POST' }); setNotice({ type: 'success', text: 'Starting your WhatsApp session. Scan the QR code when it appears.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
   }
 
   const loadQr = async () => {
@@ -577,7 +592,7 @@ function InboxView() {
 
   useEffect(() => {
     loadConversations()
-    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'] })
+    const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'], auth: socketAuth() })
     const refresh = () => { loadConversations(); loadSelected() }
     const aiError = (event) => setNotice(event.error || 'AI provider unavailable. Check the AI configuration.')
     socket.on('message:new', refresh)
@@ -845,7 +860,17 @@ function App() {
     }
   }, [])
 
+  // Explicit Sign Out ONLY — never called on tab close, refresh, or
+  // network drop. Tells the backend to fully log out this user's own
+  // WhatsApp session (real Baileys logout + delete stored auth state)
+  // BEFORE the local sign-out. If this call fails (e.g. network drop
+  // mid-signout), the local sign-out still completes — it never blocks.
   const handleSignOut = async () => {
+    try {
+      await apiFetch('/whatsapp/logout', { method: 'POST' })
+    } catch (error) {
+      console.error('Backend WhatsApp logout failed (continuing sign-out):', error)
+    }
     if (supabase) {
       await supabase.auth.signOut()
     }
@@ -853,13 +878,14 @@ function App() {
   }
 
   useEffect(() => {
+    // Per-user WhatsApp status: uses the authenticated endpoint, so the
+    // pill reflects THIS user's connection only — not anyone else's.
     const loadStatus = async () => {
+      if (!session) return
       try {
-        const response = await fetch(`${BACKEND_URL}/api/health`)
-        if (!response.ok) throw new Error('Unavailable')
-        const data = await response.json()
-        setBackendStatus(data.whatsapp || 'connected')
-        setIsConnected(data.whatsapp === 'connected')
+        const data = await apiFetch('/whatsapp/status')
+        setBackendStatus(data.status || 'disconnected')
+        setIsConnected(data.status === 'connected')
       } catch {
         setBackendStatus('offline')
         setIsConnected(false)
@@ -869,7 +895,7 @@ function App() {
     loadStatus()
     const interval = window.setInterval(loadStatus, 10000)
     return () => window.clearInterval(interval)
-  }, [])
+  }, [session?.user?.id])
 
   useEffect(() => {
     const loadDashboard = async () => {

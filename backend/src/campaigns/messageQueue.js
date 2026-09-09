@@ -1,6 +1,16 @@
+// =============================================================
+// Campaign message queue — per-user edition.
+//
+// Every campaign is owned by a user (campaigns.user_id). Messages
+// are sent ONLY through that user's own WhatsApp session — never
+// through another user's connection. If the owner's session is not
+// connected, the item fails with a clear error (retry/backoff per
+// rate limiter settings); there is no fallback path.
+// =============================================================
 const db = require('../database/db');
 const contactService = require('../contacts/contactService');
 const RateLimiter = require('./rateLimiter');
+const { emitToUser } = require('../realtime');
 
 const OPT_OUT_PATTERNS = [
     /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\s*me\b/i,
@@ -15,25 +25,29 @@ class MessageQueue {
         this._paused = false;
         this._campaignId = null;
         this._ownerUserId = null; // tenant isolation: owner of the loaded campaign
+        this._provider = 'web';   // provider this campaign was created with
         this._rateLimiter = null;
         this._io = null;
-        this._whatsappService = null;
         this._processPromise = null;
     }
 
     setIO(io) { this._io = io; }
-    setWhatsApp(wa) { this._whatsappService = wa; }
-    _emit(event, data) { this._io?.emit(event, data); }
+    _emit(event, data) {
+        if (this._ownerUserId) emitToUser(this._io, this._ownerUserId, event, data);
+    }
     isRunning() { return this._running && !this._paused; }
     isPaused() { return this._paused; }
     getCurrentCampaignId() { return this._campaignId; }
+    getCurrentOwnerUserId() { return this._ownerUserId; }
 
     async start(campaignId, settings = {}, userId = null) {
         if (this._running) throw new Error('A campaign is already running. Stop or pause it first.');
+        if (!userId) throw new Error('Campaign must be started by its owner.');
         const campaign = await db.getById('campaigns', campaignId, userId);
         if (!campaign) throw new Error('Campaign not found');
         this._campaignId = campaignId;
         this._ownerUserId = userId;
+        this._provider = campaign.provider || 'web';
         this._running = true;
         this._paused = false;
         this._rateLimiter = new RateLimiter(settings);
@@ -75,6 +89,27 @@ class MessageQueue {
         this._emit('campaign:stopped', { campaignId });
         this._campaignId = null;
         this._ownerUserId = null;
+        this._provider = 'web';
+    }
+
+    /**
+     * Resolve the send function for THIS campaign owner and provider.
+     * Sends only ever go through the owner's own session — there is
+     * deliberately no fallback to any other user's connection.
+     */
+    async _getSender(userId, provider) {
+        if (provider === 'business') {
+            const businessApiProvider = require('../whatsapp/businessApiProvider');
+            if (businessApiProvider.getStatus(userId) !== 'connected') {
+                throw new Error('Your WhatsApp Business API is not connected. Reconnect it to continue this campaign.');
+            }
+            return (phone, body, media, buttons) => businessApiProvider.sendMessage(userId, phone, body, media, buttons);
+        }
+        const sessionManager = require('../whatsapp/sessionManager');
+        if (sessionManager.getStatus(userId) !== 'connected') {
+            throw new Error('Your WhatsApp session is not connected. Reconnect WhatsApp to continue this campaign.');
+        }
+        return (phone, body, media) => sessionManager.sendMessage(userId, phone, body, null, media);
     }
 
     async _process() {
@@ -135,7 +170,7 @@ class MessageQueue {
                 media_mimetype: rawItem.campaigns?.media_mimetype || null,
                 buttons: rawItem.campaigns?.buttons || '[]',
             };
-            const contact = contactService.findByPhone(contactItem.phone, userId);
+            const contact = await contactService.findByPhone(contactItem.phone, userId);
             if (contact && !contact.marketing_opt_in) {
                 db.update('campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 const campaignRow = await db.getById('campaigns', campaignId, userId);
@@ -146,11 +181,14 @@ class MessageQueue {
 
             db.update('campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
             try {
-                if (!this._whatsappService || this._whatsappService.getStatus() !== 'connected') throw new Error('WhatsApp provider is not connected');
+                // SECURITY: resolve the send function to THIS user's own
+                // session. If it isn't connected, the send fails — there is
+                // deliberately no fallback to any other user's session.
+                const send = await this._getSender(userId, this._provider || 'web');
                 let buttons = [];
                 try { buttons = JSON.parse(contactItem.buttons || '[]'); } catch { buttons = []; }
                 const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
-                const result = await this._whatsappService.sendMessage(contactItem.phone, contactItem.rendered_message, null, media, buttons);
+                const result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
                 const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
                 db.update('campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 const sentRow = await db.getById('campaigns', campaignId, userId);
@@ -181,21 +219,31 @@ class MessageQueue {
 
     _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-    async resumeInterrupted(whatsappService, io) {
+    async resumeInterrupted(io) {
         this.setIO(io);
-        this.setWhatsApp(whatsappService);
-        const campaign = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', 1, 0);
-        if (!campaign || campaign.length === 0) return;
-        const activeCampaign = campaign[0];
+        // Resume any campaign left running/paused by a restart. Ownership
+        // comes from the row's own user_id — each resumed campaign sends
+        // only through its owner's session.
+        const campaigns = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', 10, 0);
+        if (!campaigns || campaigns.length === 0) return;
+        const activeCampaign = campaigns[0];
         this._campaignId = activeCampaign.id;
         this._ownerUserId = activeCampaign.user_id || null;
+        if (!this._ownerUserId) {
+            console.warn(`[messageQueue] campaign ${activeCampaign.id} has no user_id; skipping resume`);
+            return;
+        }
         this._running = true;
         this._paused = activeCampaign.status === 'paused';
-        this._rateLimiter = new RateLimiter(JSON.parse(activeCampaign.settings || '{}'));
+        this._provider = activeCampaign.provider || 'web';
+        let settings = {};
+        try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
+        this._rateLimiter = new RateLimiter(settings);
         if (!this._paused) this._processPromise = this._process().catch(console.error);
     }
 
     static isOptOut(message) { return OPT_OUT_PATTERNS.some(pattern => pattern.test(message)); }
 }
 
-module.exports = new MessageQueue();
+module.exports = new MessageQueue();
+module.exports.OPT_OUT_PATTERNS = OPT_OUT_PATTERNS;

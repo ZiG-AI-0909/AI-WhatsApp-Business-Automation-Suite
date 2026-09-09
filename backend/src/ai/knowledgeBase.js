@@ -1,7 +1,7 @@
 const db = require('../database/db');
 
 class KnowledgeBase {
-    getRelevantContext(query, maxChunks = 5) {
+    getRelevantContext(query, maxChunks = 5, userId = null) {
         try {
             const queryWords = query.toLowerCase()
                 .replace(/[^\w\s]/g, '')
@@ -10,10 +10,16 @@ class KnowledgeBase {
 
             if (queryWords.length === 0) return '';
 
+            // Per-user retrieval: only THIS user's active documents and
+            // chunks are searched. A user's knowledge never leaks into
+            // another user's AI replies.
+            const docWhere = userId ? 'user_id = ? AND status = ?' : 'status = ?';
+            const docParams = userId ? [userId, 'active'] : ['active'];
+
             // Fetch active documents first, then their chunks. Alias-prefixed
             // columns and "as" aliases are not valid PostgREST, and the
             // "active" status lives on knowledge_documents, not chunks.
-            return db.select('knowledge_documents', 'id', 'status = ?', ['active'], '', 1000, 0)
+            return db.select('knowledge_documents', 'id', docWhere, docParams, '', 1000, 0)
                 .then(activeDocs => {
                     const docIds = activeDocs.map(d => d.id);
                     if (docIds.length === 0) return [];

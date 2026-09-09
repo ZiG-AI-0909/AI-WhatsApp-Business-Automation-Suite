@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch --watch-path=src src/server.js"
+    "dev": "node --watch --watch-path=src src/server.js",
+    "test": "node src/whatsapp/__tests__/phase2-smoke.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",

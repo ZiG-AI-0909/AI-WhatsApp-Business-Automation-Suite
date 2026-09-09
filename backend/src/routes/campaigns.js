@@ -1,6 +1,5 @@
 const express = require('express');
 const campaignService = require('../campaigns/campaignService');
-const whatsappService = require('../whatsapp/providerManager');
 const {
     uploadExcel,
     uploadCampaignMedia,
@@ -155,7 +154,7 @@ router.post('/', async (req, res) => {
 // POST /api/campaigns/:id/start
 router.post('/:id/start', async (req, res) => {
     try {
-        await campaignService.start(+req.params.id, whatsappService, req.app.get('io'), req.user.id);
+        await campaignService.start(+req.params.id, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign started' });
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -175,7 +174,7 @@ router.post('/:id/pause', async (req, res) => {
 // POST /api/campaigns/:id/resume
 router.post('/:id/resume', async (req, res) => {
     try {
-        await campaignService.resume(+req.params.id, whatsappService, req.app.get('io'), req.user.id);
+        await campaignService.resume(+req.params.id, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign resumed' });
     } catch (err) {
         res.status(400).json({ error: err.message });

@@ -1,69 +1,91 @@
+// =============================================================
+// WhatsApp routes — strictly per-user.
+//
+// SECURITY: every handler operates ONLY on req.user.id's own
+// session. req.user is set by the requireAuth middleware from the
+// validated Supabase JWT and can never be influenced by request
+// bodies or query strings. It is therefore impossible for a user
+// to read another user's status/QR or control another user's
+// connection through these endpoints.
+// =============================================================
 const express = require('express');
 const router = express.Router();
-const whatsappService = require('../whatsapp/providerManager');
+const sessionManager = require('../whatsapp/sessionManager');
 
-// GET /api/whatsapp/status
+// GET /api/whatsapp/status — this user's connection status only
 router.get('/status', (req, res) => {
     res.json({
-        status: whatsappService.getStatus(),
-        provider: whatsappService.providerName,
-        qrAvailable: !!whatsappService.getQRDataUrl(),
+        status: sessionManager.getStatus(req.user.id),
+        provider: 'web',
+        qrAvailable: !!sessionManager.getQRDataUrl(req.user.id),
+        lastError: sessionManager.getLastError(req.user.id),
     });
 });
 
-// GET /api/whatsapp/qr
+// GET /api/whatsapp/qr — this user's own QR code only
 router.get('/qr', (req, res) => {
-    const qr = whatsappService.getQRDataUrl();
+    const qr = sessionManager.getQRDataUrl(req.user.id);
     if (!qr) return res.status(404).json({ error: 'No QR code available' });
     res.json({ qrDataUrl: qr });
 });
 
-// POST /api/whatsapp/reconnect
+// POST /api/whatsapp/connect — lazily create/refresh THIS user's Baileys session
+router.post('/connect', async (req, res) => {
+    try {
+        await sessionManager.initialize(req.user.id);
+        res.json({ message: 'Session started. Scan the QR code when it appears.', status: sessionManager.getStatus(req.user.id) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/whatsapp/reconnect — restart this user's socket (keeps auth state)
 router.post('/reconnect', async (req, res) => {
     try {
-        await whatsappService.reconnect();
-        res.json({ message: 'Reconnecting...' });
+        await sessionManager.disconnect(req.user.id);
+        await sessionManager.initialize(req.user.id);
+        res.json({ message: 'Reconnecting...', status: sessionManager.getStatus(req.user.id) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST /api/whatsapp/disconnect
+// POST /api/whatsapp/disconnect — drop this user's socket, keep auth state
 router.post('/disconnect', async (req, res) => {
     try {
-        await whatsappService.disconnect();
-        res.json({ message: 'Disconnected' });
+        await sessionManager.disconnect(req.user.id);
+        res.json({ message: 'Disconnected', status: sessionManager.getStatus(req.user.id) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-router.post('/provider', async (req, res) => {
+// POST /api/whatsapp/logout — EXPLICIT sign-out only (frontend Sign Out button).
+// Fully invalidates the WhatsApp link and deletes stored auth state.
+// Never called on tab close, refresh, or connection drop.
+router.post('/logout', async (req, res) => {
     try {
-        const { provider, config = {} } = req.body || {};
-        await whatsappService.switchProvider(provider);
-        if (provider === 'business') whatsappService.configureBusiness(config);
-        res.json({ provider: whatsappService.providerName, status: whatsappService.getStatus() });
+        await sessionManager.logout(req.user.id);
+        res.json({ message: 'WhatsApp session logged out. A fresh QR scan is required next time.' });
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
 });
 
+// POST /api/whatsapp/business/test — test THIS user's Cloud API credentials
 router.post('/business/test', async (req, res) => {
     try {
-        whatsappService.configureBusiness(req.body || {});
-        res.json(await whatsappService.testBusinessConnection());
+        res.json(await sessionManager.testBusinessConnection(req.user.id, req.body || {}));
     } catch (err) {
         res.status(400).json({ error: err.response?.data?.error?.message || err.message });
     }
 });
 
+// POST /api/whatsapp/business/connect — connect THIS user via Cloud API
 router.post('/business/connect', async (req, res) => {
     try {
-        whatsappService.configureBusiness(req.body || {});
-        await whatsappService.switchProvider('business');
-        await whatsappService.connect();
-        res.json({ provider: whatsappService.providerName, status: whatsappService.getStatus() });
+        const result = await sessionManager.connectBusiness(req.user.id, req.body || {});
+        res.json({ provider: 'WhatsApp Business API', ...result });
     } catch (err) {
         res.status(400).json({ error: err.response?.data?.error?.message || err.message });
     }

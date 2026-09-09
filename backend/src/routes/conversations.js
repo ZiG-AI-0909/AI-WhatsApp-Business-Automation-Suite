@@ -1,6 +1,7 @@
 const express = require('express');
 const conversationService = require('../conversations/conversationService');
-const whatsappService = require('../whatsapp/providerManager');
+const sessionManager = require('../whatsapp/sessionManager');
+const businessApiProvider = require('../whatsapp/businessApiProvider');
 
 const router = express.Router();
 
@@ -76,7 +77,12 @@ router.post('/:id/send', async (req, res) => {
         const conv = await conversationService.getConversation(+req.params.id, req.user.id);
         if (!conv) return res.status(404).json({ error: 'Conversation not found' });
 
-        await whatsappService.sendMessage(conv.phone, body.trim(), conv.jid);
+        // Send through THIS user's own connection only.
+        if (businessApiProvider.getStatus(req.user.id) === 'connected') {
+            await businessApiProvider.sendMessage(req.user.id, conv.phone, body.trim());
+        } else {
+            await sessionManager.sendMessage(req.user.id, conv.phone, body.trim(), conv.jid);
+        }
         await conversationService.saveMessage(+req.params.id, 'outbound', body.trim(), null, 'sent', {}, req.user.id);
         res.json({ success: true });
     } catch (err) {

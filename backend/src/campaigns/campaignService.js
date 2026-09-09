@@ -4,7 +4,6 @@ const excelParser = require('./excelParser');
 const { downloadFromStorage, isRemotePath } = require('../middleware/upload');
 const fieldRenderer = require('./fieldRenderer');
 const messageQueue = require('./messageQueue');
-const providerManager = require('../whatsapp/providerManager');
 
 class CampaignService {
     _parseCampaign(campaign) {
@@ -121,7 +120,9 @@ class CampaignService {
             template_message: templateMessage,
             total_contacts: validRows.length,
             settings: JSON.stringify(settings),
-            provider: providerManager.activeName,
+            // Provider is resolved per user at creation time: business if
+            // THIS user has the Cloud API connected, otherwise web.
+            provider: require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected' ? 'business' : 'web',
             media_path: mediaPath,
             media_type: mediaType,
             media_filename: mediaFilename,
@@ -168,22 +169,34 @@ class CampaignService {
         return this._parseCampaign(created);
     }
 
-    async start(campaignId, whatsappService, io, userId) {
+    /**
+     * Per-user connection check: the campaign can only start through its
+     * OWNER's own connection — never another user's session.
+     */
+    async _assertOwnerConnected(userId, provider) {
+        if (provider === 'business') {
+            const businessApiProvider = require('../whatsapp/businessApiProvider');
+            if (businessApiProvider.getStatus(userId) !== 'connected') {
+                throw new Error('Your WhatsApp Business API is not connected. Connect it and try again.');
+            }
+            return;
+        }
+        const sessionManager = require('../whatsapp/sessionManager');
+        if (sessionManager.getStatus(userId) !== 'connected') {
+            throw new Error('Your WhatsApp session is not connected. Connect WhatsApp and try again.');
+        }
+    }
+
+    async start(campaignId, io, userId) {
         const campaign = await this.get(campaignId, userId);
         if (!campaign) throw new Error('Campaign not found');
         if (!['draft', 'stopped', 'paused'].includes(campaign.status)) {
             throw new Error(`Cannot start campaign in status: ${campaign.status}`);
         }
-        if (whatsappService.getStatus() !== 'connected') {
-            throw new Error(`${whatsappService.providerName} is not connected. Connect WhatsApp and try again.`);
-        }
+        await this._assertOwnerConnected(userId, campaign.provider || 'web');
 
         messageQueue.setIO(io);
-        messageQueue.setWhatsApp(whatsappService);
         const settings = JSON.parse(campaign.settings || '{}');
-        if (campaign.provider && campaign.provider !== whatsappService.activeName) {
-            throw new Error(`Campaign is locked to the ${campaign.provider} provider. Switch providers before starting it.`);
-        }
         await messageQueue.start(campaignId, settings, userId);
     }
 
@@ -194,20 +207,17 @@ class CampaignService {
         messageQueue.pause();
     }
 
-    async resume(campaignId, whatsappService, io, userId) {
+    async resume(campaignId, io, userId) {
         const campaign = await this.get(campaignId, userId);
         if (!campaign) throw new Error('Campaign not found');
         if (campaign.status !== 'paused') {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
         }
-        if (whatsappService.getStatus() !== 'connected') {
-            throw new Error(`${whatsappService.providerName} is not connected. Connect WhatsApp and try again.`);
+        if (messageQueue.getCurrentOwnerUserId() !== userId || messageQueue.getCurrentCampaignId() !== campaignId) {
+            throw new Error('This campaign is not currently loaded in the queue.');
         }
-        if (campaign.provider && campaign.provider !== whatsappService.activeName) {
-            throw new Error(`Campaign is locked to the ${campaign.provider} provider. Switch providers before resuming it.`);
-        }
+        await this._assertOwnerConnected(userId, campaign.provider || 'web');
         messageQueue.setIO(io);
-        messageQueue.setWhatsApp(whatsappService);
         messageQueue.resume();
     }
 

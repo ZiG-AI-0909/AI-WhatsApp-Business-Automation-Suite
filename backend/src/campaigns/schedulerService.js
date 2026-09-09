@@ -1,7 +1,6 @@
 const db = require('../database/db');
 const excelParser = require('./excelParser');
 const campaignService = require('./campaignService');
-const providerManager = require('../whatsapp/providerManager');
 const cronParser = require('cron-parser');
 
 const { CronExpressionParser } = cronParser;
@@ -13,7 +12,25 @@ class SchedulerService {
         this._polling = false;
     }
 
-    _emit(event, data) { this._io?.emit(event, data); }
+    _emit(event, data) {
+        // Schedule events belong to their owner; fall back to broadcast only
+        // for legacy rows without a user_id (pre-Phase-1 data).
+        if (data?.scheduleId) {
+            const { emitToUser } = require('../realtime');
+            // Per-owner emit: resolve the owner for this schedule lazily.
+            db.getById('campaign_schedules', data.scheduleId, null).then((row) => {
+                if (row?.user_id) emitToUser(this._io, row.user_id, event, data);
+                else this._io?.emit(event, data);
+            }).catch(() => this._io?.emit(event, data));
+            return;
+        }
+        this._io?.emit(event, data);
+    }
+
+    _emitToUser(userId, event, data) {
+        const { emitToUser } = require('../realtime');
+        emitToUser(this._io, userId, event, data);
+    }
 
     _toDbDate(value) {
         const date = new Date(value);
@@ -161,9 +178,23 @@ class SchedulerService {
             );
 
             for (const schedule of dueSchedules) {
-                if (providerManager.getStatus() !== 'connected') {
-                    console.log(`Schedule ${schedule.id} is waiting for a connected WhatsApp provider.`);
-                    this._emit('schedule:waiting_connection', { scheduleId: schedule.id });
+                // Per-user connection check: the schedule fires only if ITS
+                // OWNER's own WhatsApp connection is live. Background sending
+                // never depends on the browser being open.
+                const ownerConnected = await (async () => {
+                    try {
+                        const provider = schedule.provider || 'web';
+                        if (provider === 'business') {
+                            const businessApiProvider = require('../whatsapp/businessApiProvider');
+                            return businessApiProvider.getStatus(schedule.user_id) === 'connected';
+                        }
+                        const sessionManager = require('../whatsapp/sessionManager');
+                        return sessionManager.getStatus(schedule.user_id) === 'connected';
+                    } catch { return false; }
+                })();
+                if (!ownerConnected) {
+                    console.log(`Schedule ${schedule.id} waiting: owner ${schedule.user_id} has no connected WhatsApp session.`);
+                    this._emitToUser(schedule.user_id, 'schedule:waiting_connection', { scheduleId: schedule.id });
                     continue;
                 }
                 if (schedule.schedule_type === 'recurring' && schedule.last_campaign_id) {
@@ -192,7 +223,7 @@ class SchedulerService {
                         settings: JSON.parse(schedule.settings || '{}'),
                         allowMissingFields: !!schedule.allow_missing_fields,
                     });
-                    await campaignService.start(campaign.id, providerManager, this._io, schedule.user_id);
+                    await campaignService.start(campaign.id, this._io, schedule.user_id);
 
                     const nextRunAt = schedule.schedule_type === 'recurring' ? this._nextCron(schedule.recurrence_cron, new Date()) : null;
                     await db.update('campaign_schedules', {

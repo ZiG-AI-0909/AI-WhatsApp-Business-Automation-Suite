@@ -43,17 +43,22 @@ class AIService {
      * Core completion — internal, used by all public methods.
      */
     async _complete(messages, options = {}) {
-        if (!this.apiKey) throw new Error('AI_API_KEY is not configured.');
+        // Per-call credentials override instance defaults so each user's
+        // own AI key/model/base URL is used for their conversations.
+        const apiKey = options.apiKey || this.apiKey;
+        const model = options.model || this.model;
+        const baseURL = options.baseURL || this.baseURL;
+        if (!apiKey) throw new Error('AI_API_KEY is not configured.');
 
         const payload = {
-            model: this.model,
+            model,
             messages,
             temperature: options.temperature ?? 0.7,
             top_p: options.topP ?? 0.95,
             max_tokens: options.maxTokens ?? 800,
         };
 
-        if (this.model === 'deepseek-ai/deepseek-v4-flash-0731') {
+        if (model === 'deepseek-ai/deepseek-v4-flash-0731') {
             payload.chat_template_kwargs = {
                 thinking: true,
                 reasoning_effort: options.reasoningEffort || 'high',
@@ -63,11 +68,11 @@ class AIService {
         for (let attempt = 0; attempt < this.maxRetries; attempt++) {
             try {
                 const response = await axios.post(
-                    `${this.baseURL}/chat/completions`,
+                    `${baseURL}/chat/completions`,
                     payload,
                     {
                         headers: {
-                            Authorization: `Bearer ${this.apiKey}`,
+                            Authorization: `Bearer ${apiKey}`,
                             'Content-Type': 'application/json',
                         },
                         timeout: 30000,
@@ -94,12 +99,12 @@ class AIService {
      * @param {Array} conversationHistory - [{role, content}]
      * @returns {string} AI reply
      */
-    async generateReply(systemPrompt, conversationHistory) {
+    async generateReply(systemPrompt, conversationHistory, options = {}) {
         const messages = [
             { role: 'system', content: systemPrompt },
             ...conversationHistory,
         ];
-        return this._complete(messages, { temperature: 0.8, maxTokens: 600 });
+        return this._complete(messages, { temperature: 0.8, maxTokens: 600, ...options });
     }
 
     /**
