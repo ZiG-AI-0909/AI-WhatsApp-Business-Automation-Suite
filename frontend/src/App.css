@@ -223,6 +223,7 @@
 .recent-message-list { max-height: 350px; overflow-y: auto; }
 .recent-message-list li { align-items: flex-start; }
 .recent-message-list small { display: block; max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.checkbox-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .85rem; cursor: pointer; }
 .settings-panel { max-width: 900px; }
 .settings-grid small { color: var(--text-muted); font-size: .75rem; }
 .media-thumb, .preview-media { display: block; width: 112px; height: 82px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
@@ -247,4 +248,33 @@
   .full-field { grid-column: auto; }
   .trend-bars i { width: 8px; }
   .button-config { grid-template-columns: 1fr 1fr; }
+}
+
+/* Phone-only stacked form fields (settings, contacts, campaigns) */
+@media (max-width: 767px) {
+  .form-grid,
+  .settings-grid,
+  .template-grid,
+  .compact-stats { grid-template-columns: 1fr; }
+  .analytics-stats { grid-template-columns: 1fr 1fr; }
+  .full-field { grid-column: auto; }
+  .settings-panel { max-width: none; }
+  .button-config { grid-template-columns: 1fr; }
+  .button-config input, .button-config select { width: 100%; }
+  .view-toolbar, .lead-dashboard-heading, .follow-up-list article, .lead-card { gap: 12px; }
+  .view-toolbar > div { padding-right: 0; }
+  .campaign-detail h3 { word-break: break-word; }
+  .panel { padding: 14px; }
+  .panel-header { flex-wrap: wrap; }
+  .panel-header .button-row { width: 100%; }
+  .panel-header .button-row > * { flex: 1 1 auto; }
+  .panel-header .button-row .primary-btn,
+  .panel-header .button-row .secondary-btn,
+  .panel-header .button-row .danger-btn,
+  .panel-header .button-row .upload-btn,
+  .panel-header .button-row .checkbox-label { width: 100%; justify-content: center; }
+  .panel-header .button-row .checkbox-label { justify-content: flex-start; }
+  .button-row .primary-btn, .button-row .secondary-btn, .button-row .danger-btn, .button-row .upload-btn { flex: 1 1 auto; }
+  .pagination { flex-wrap: wrap; }
+  .recent-message-list small { max-width: 100%; }
 }

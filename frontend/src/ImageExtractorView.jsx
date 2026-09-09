@@ -297,7 +297,7 @@ export default function ImageExtractorView() {
                 <tbody>
                   {group.leads.map(lead => (
                     <tr key={lead.id}>
-                      <td>
+                      <td data-label="Select">
                         {(lead.review_status || 'pending_review') === 'pending_review' && (
                           <input
                             type="checkbox"
@@ -308,15 +308,15 @@ export default function ImageExtractorView() {
                           />
                         )}
                       </td>
-                      <td><strong>{lead.business_name || '(no business name visible)'}</strong><small>{lead.source_image}</small></td>
-                      <td>{listValue(lead.phone_numbers)}</td>
-                      <td>{listValue(lead.emails)}</td>
-                      <td>{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
-                      <td>{lead.address || '-'}</td>
-                      <td><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
-                      <td>{Math.round((lead.confidence || 0) * 100)}%</td>
-                      <td><Badge tone={lead.review_status === 'confirmed' ? 'success' : lead.review_status === 'rejected' ? 'danger' : 'neutral'}>{lead.review_status || 'pending_review'}</Badge></td>
-                      <td>
+                      <td data-label="Business"><strong>{lead.business_name || '(no business name visible)'}</strong><small>{lead.source_image}</small></td>
+                      <td data-label="Phone">{listValue(lead.phone_numbers)}</td>
+                      <td data-label="Email">{listValue(lead.emails)}</td>
+                      <td data-label="Website">{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
+                      <td data-label="Address">{lead.address || '-'}</td>
+                      <td data-label="All visible text"><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
+                      <td data-label="Confidence">{Math.round((lead.confidence || 0) * 100)}%</td>
+                      <td data-label="Review"><Badge tone={lead.review_status === 'confirmed' ? 'success' : lead.review_status === 'rejected' ? 'danger' : 'neutral'}>{lead.review_status || 'pending_review'}</Badge></td>
+                      <td data-label="Actions">
                         <div className="button-row">
                           <Button variant="secondary" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'confirmed' }) }); await load() }}>Confirm</Button>
                           <Button variant="secondary" onClick={async () => { await request(`/leads/${lead.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ review_status: 'rejected' }) }); await load() }}>Reject</Button>
@@ -348,15 +348,15 @@ export default function ImageExtractorView() {
             <tbody>
               {leads.map(lead => (
                 <tr key={lead.id}>
-                  <td><strong>{lead.business_name || '-'}</strong><small>{lead.source_image}</small></td>
-                  <td>{listValue(lead.phone_numbers)}</td>
-                  <td>{listValue(lead.emails)}</td>
-                  <td>{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
-                  <td>{lead.address || '-'}</td>
-                  <td><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
-                  <td>{Math.round((lead.confidence || 0) * 100)}%</td>
-                  <td>{lead.review_status || 'pending_review'}</td>
-                  <td><Button variant="danger" onClick={() => remove(lead.id)}>Delete</Button></td>
+                  <td data-label="Business"><strong>{lead.business_name || '-'}</strong><small>{lead.source_image}</small></td>
+                  <td data-label="Phone">{listValue(lead.phone_numbers)}</td>
+                  <td data-label="Email">{listValue(lead.emails)}</td>
+                  <td data-label="Website">{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
+                  <td data-label="Address">{lead.address || '-'}</td>
+                  <td data-label="All visible text"><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
+                  <td data-label="Confidence">{Math.round((lead.confidence || 0) * 100)}%</td>
+                  <td data-label="Status">{lead.review_status || 'pending_review'}</td>
+                  <td data-label="Actions"><Button variant="danger" onClick={() => remove(lead.id)}>Delete</Button></td>
                 </tr>
               ))}
             </tbody>
