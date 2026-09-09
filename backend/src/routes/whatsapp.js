@@ -14,10 +14,15 @@ const sessionManager = require('../whatsapp/sessionManager');
 
 // GET /api/whatsapp/status — this user's connection status only
 router.get('/status', (req, res) => {
+    const status = sessionManager.getStatus(req.user.id);
+    const qrAvailable = !!sessionManager.getQRDataUrl(req.user.id);
+    // Poll every ~4s from the frontend; only log on transitions or QR availability
+    // so Render's logs stay readable.
+    console.log(`[wa-route:${req.user.id}] GET /status — status=${status} qrAvailable=${qrAvailable}`);
     res.json({
-        status: sessionManager.getStatus(req.user.id),
+        status,
         provider: 'web',
-        qrAvailable: !!sessionManager.getQRDataUrl(req.user.id),
+        qrAvailable,
         lastError: sessionManager.getLastError(req.user.id),
     });
 });
@@ -25,27 +30,36 @@ router.get('/status', (req, res) => {
 // GET /api/whatsapp/qr — this user's own QR code only
 router.get('/qr', (req, res) => {
     const qr = sessionManager.getQRDataUrl(req.user.id);
+    console.log(`[wa-route:${req.user.id}] GET /qr — ${qr ? 'QR available (returning)' : '404 no QR'}`);
     if (!qr) return res.status(404).json({ error: 'No QR code available' });
     res.json({ qrDataUrl: qr });
 });
 
 // POST /api/whatsapp/connect — lazily create/refresh THIS user's Baileys session
 router.post('/connect', async (req, res) => {
+    console.log(`[wa-route:${req.user.id}] POST /connect received`);
     try {
         await sessionManager.initialize(req.user.id);
-        res.json({ message: 'Session started. Scan the QR code when it appears.', status: sessionManager.getStatus(req.user.id) });
+        const status = sessionManager.getStatus(req.user.id);
+        console.log(`[wa-route:${req.user.id}] POST /connect complete — status=${status}`);
+        res.json({ message: 'Session started. Scan the QR code when it appears.', status });
     } catch (err) {
+        console.error(`[wa-route:${req.user.id}] POST /connect FAILED:`, err);
         res.status(500).json({ error: err.message });
     }
 });
 
 // POST /api/whatsapp/reconnect — restart this user's socket (keeps auth state)
 router.post('/reconnect', async (req, res) => {
+    console.log(`[wa-route:${req.user.id}] POST /reconnect received`);
     try {
         await sessionManager.disconnect(req.user.id);
         await sessionManager.initialize(req.user.id);
-        res.json({ message: 'Reconnecting...', status: sessionManager.getStatus(req.user.id) });
+        const status = sessionManager.getStatus(req.user.id);
+        console.log(`[wa-route:${req.user.id}] POST /reconnect complete — status=${status}`);
+        res.json({ message: 'Reconnecting...', status });
     } catch (err) {
+        console.error(`[wa-route:${req.user.id}] POST /reconnect FAILED:`, err);
         res.status(500).json({ error: err.message });
     }
 });

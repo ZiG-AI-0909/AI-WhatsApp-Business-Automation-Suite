@@ -75,22 +75,45 @@ async function useSupabaseAuthState(userId) {
     if (!isAvailable()) {
         throw new Error('[authState] Supabase is not configured. Set SUPABASE_URL and SUPABASE_SECRET_KEY.');
     }
+    console.log(`[authState:${userId}] useSupabaseAuthState: started`);
 
+    try {
+        return await _useSupabaseAuthState(userId);
+    } catch (error) {
+        console.error(`[authState:${userId}] useSupabaseAuthState FAILED:`, error);
+        throw error;
+    }
+}
+
+async function _useSupabaseAuthState(userId) {
     let inMemory = null;      // latest state object (same reference Baileys mutates)
     let pendingFlush = null;  // timer for the debounced write
     let writing = false;
     let writeQueued = false;
 
     // Initial read — only this user's row.
+    console.log(`[authState:${userId}] reading auth_state from ${TABLE}...`);
     const { data, error } = await supabase
         .from(TABLE)
         .select('auth_state')
         .eq('user_id', userId)
         .maybeSingle();
-    if (error) throw new Error(`[authState] Failed to load auth state: ${error.message}`);
+    if (error) {
+        console.error(`[authState:${userId}] Supabase READ error:`, error);
+        throw new Error(`[authState] Failed to load auth state: ${error.message}`);
+    }
+    console.log(`[authState:${userId}] Supabase read ok — row ${data?.auth_state ? 'FOUND' : 'not found (fresh QR flow)'}`);
 
     if (data?.auth_state) {
-        inMemory = reviveAuthState(data.auth_state);
+        try {
+            inMemory = reviveAuthState(data.auth_state);
+            console.log(`[authState:${userId}] stored auth state revived (creds.registered=${inMemory?.creds?.registered ? 'true' : 'false'})`);
+        } catch (reviveError) {
+            // Serialization/corruption bug: fail LOUDLY — a silent crash here
+            // would look exactly like "connect returns 200 but no QR ever".
+            console.error(`[authState:${userId}] FAILED to revive stored auth state (jsonb serialization issue?):`, reviveError);
+            throw new Error(`[authState] Stored auth state for user is corrupt or incompatible: ${reviveError.message}`);
+        }
     } else {
         // Same shape useMultiFileAuthState starts with.
         inMemory = { creds: {}, keys: {} };
@@ -100,7 +123,14 @@ async function useSupabaseAuthState(userId) {
         if (writing) { writeQueued = true; return; }
         writing = true;
         try {
-            const payload = serializeAuthState(inMemory);
+            let payload;
+            try {
+                payload = serializeAuthState(inMemory);
+            } catch (serializeError) {
+                console.error(`[authState:${userId}] FAILED to serialize auth state:`, serializeError);
+                throw serializeError;
+            }
+            console.log(`[authState:${userId}] writing auth_state to ${TABLE} (${payload.length} bytes)...`);
             const { error: upsertError } = await supabase
                 .from(TABLE)
                 .upsert({
@@ -108,10 +138,17 @@ async function useSupabaseAuthState(userId) {
                     auth_state: payload, // jsonb column accepts the object directly
                     updated_at: new Date().toISOString(),
                 }, { onConflict: 'user_id' });
-            if (upsertError) throw new Error(`[authState] Failed to persist auth state: ${upsertError.message}`);
+            if (upsertError) {
+                console.error(`[authState:${userId}] Supabase WRITE (upsert) error:`, upsertError);
+                throw new Error(`[authState] Failed to persist auth state: ${upsertError.message}`);
+            }
+            console.log(`[authState:${userId}] auth_state write ok`);
+        } catch (error) {
+            console.error(`[authState:${userId}] writeState FAILED:`, error);
+            throw error;
         } finally {
             writing = false;
-            if (writeQueued) { writeQueued = false; writeState().catch(() => {}); }
+            if (writeQueued) { writeQueued = false; writeState().catch((err) => console.error(`[authState:${userId}] queued rewrite failed:`, err)); }
         }
     }
 
@@ -119,13 +156,18 @@ async function useSupabaseAuthState(userId) {
         if (pendingFlush) clearTimeout(pendingFlush);
         pendingFlush = setTimeout(() => {
             pendingFlush = null;
-            writeState().catch((err) => console.error(`[authState:${userId}] flush failed:`, err.message));
+            writeState().catch((err) => console.error(`[authState:${userId}] debounced flush failed:`, err));
         }, DEBOUNCE_MS);
     }
 
     const flush = async () => {
+        console.log(`[authState:${userId}] flush: forcing pending write`);
         if (pendingFlush) { clearTimeout(pendingFlush); pendingFlush = null; }
-        await writeState();
+        try { await writeState(); }
+        catch (error) {
+            console.error(`[authState:${userId}] flush FAILED:`, error);
+            throw error;
+        }
     };
 
     const destroy = () => {
@@ -144,8 +186,13 @@ async function useSupabaseAuthState(userId) {
 async function deleteAuthState(userId) {
     if (!userId) throw new Error('[authState] userId is required');
     if (!isAvailable()) throw new Error('[authState] Supabase is not configured.');
+    console.log(`[authState:${userId}] deleting auth_state row from ${TABLE}...`);
     const { error } = await supabase.from(TABLE).delete().eq('user_id', userId);
-    if (error) throw new Error(`[authState] Failed to delete auth state: ${error.message}`);
+    if (error) {
+        console.error(`[authState:${userId}] Supabase DELETE error:`, error);
+        throw new Error(`[authState] Failed to delete auth state: ${error.message}`);
+    }
+    console.log(`[authState:${userId}] auth_state row deleted`);
 }
 
 /** Check whether a user has persisted auth state (i.e. linked a number before). */
@@ -157,7 +204,10 @@ async function hasAuthState(userId) {
         .select('user_id')
         .eq('user_id', userId)
         .maybeSingle();
-    if (error) return false;
+    if (error) {
+        console.error(`[authState:${userId}] hasAuthState read error:`, error);
+        return false;
+    }
     return !!data;
 }
 

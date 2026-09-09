@@ -116,6 +116,14 @@ async function startServer() {
 
 startServer();
 
+// DEBUG: never let background promise rejections disappear silently.
+process.on('unhandledRejection', (reason) => {
+    console.error('[process] UNHANDLED REJECTION:', reason);
+});
+process.on('uncaughtException', (error) => {
+    console.error('[process] UNCAUGHT EXCEPTION:', error);
+});
+
 process.on('SIGINT', async () => {
     console.log('Shutting down gracefully...');
     try { await sessionManager.shutdown(); } catch (error) {}

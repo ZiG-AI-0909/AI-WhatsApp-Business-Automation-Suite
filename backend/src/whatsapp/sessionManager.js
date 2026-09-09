@@ -46,9 +46,15 @@ class SessionManager {
     async _getBaileys() {
         if (this._baileys) return this._baileys;
         if (!this._baileysPromise) {
+            console.log('[wa:sessionManager] loading @whiskeysockets/baileys (dynamic import)...');
             this._baileysPromise = import('@whiskeysockets/baileys').then((mod) => {
+                console.log('[wa:sessionManager] baileys module loaded');
                 this._baileys = mod;
                 return mod;
+            }).catch((error) => {
+                console.error('[wa:sessionManager] FAILED to load baileys module:', error);
+                this._baileysPromise = null; // allow a retry on next call
+                throw error;
             });
         }
         return this._baileysPromise;
@@ -97,8 +103,22 @@ class SessionManager {
      */
     async initialize(userId) {
         if (!userId) throw new Error('[sessionManager] userId is required');
+        console.log(`[wa:${userId}] initialize: requested`);
+        try {
+            return await this._initialize(userId);
+        } catch (error) {
+            console.error(`[wa:${userId}] initialize FAILED:`, error);
+            throw error;
+        }
+    }
+
+    async _initialize(userId) {
         const existing = this.sessions.get(userId);
-        if (existing && existing.socket) return existing.socket;
+        if (existing && existing.socket) {
+            console.log(`[wa:${userId}] initialize: reusing existing live socket`);
+            return existing.socket;
+        }
+        console.log(`[wa:${userId}] initialize: loading baileys module...`);
 
         const baileys = await this._getBaileys();
 
@@ -119,30 +139,42 @@ class SessionManager {
 
         session.intentionalClose = false;
         clearTimeout(session.reconnectTimer);
+        console.log(`[wa:${userId}] initialize: session record ready (new: ${!existing})`);
 
         // Load this user's auth state from Supabase.
+        console.log(`[wa:${userId}] initialize: loading auth state from Supabase...`);
         const auth = await authStateStore.useSupabaseAuthState(userId);
         session.authState = auth;
+        console.log(`[wa:${userId}] initialize: auth state loaded (${auth.state?.creds?.registered ? 'has registered creds' : 'no registered creds — QR expected'})`);
 
+        console.log(`[wa:${userId}] initialize: fetching latest Baileys version...`);
         const { version } = await baileys.fetchLatestBaileysVersion();
+        console.log(`[wa:${userId}] initialize: using Baileys WA version ${Array.isArray(version) ? version.join('.') : version}`);
 
         this._pushStatus(userId, 'initializing', { lastError: null });
+        console.log(`[wa:${userId}] initialize: creating Baileys socket...`);
 
         const socket = baileys.default({
             auth: auth.state,
             version,
             printQRInTerminal: false,
-            logger: pino({ level: 'silent' }),
+            // DEBUG: surface Baileys' internal errors (previously fully silenced —
+            // override with BAILEYS_LOG_LEVEL=silent to restore old behavior).
+            logger: pino({ level: process.env.BAILEYS_LOG_LEVEL || 'error' }),
             browser: ["Bhavesh's Project", 'Chrome', '1.0.0'],
         });
         session.socket = socket;
         session.lastActivityAt = Date.now();
+        console.log(`[wa:${userId}] initialize: Baileys socket created, attaching event handlers...`);
 
-        socket.ev.on('creds.update', () => auth.saveCreds());
+        socket.ev.on('creds.update', () => {
+            try { auth.saveCreds(); }
+            catch (error) { console.error(`[wa:${userId}] creds.update handler error:`, error); }
+        });
 
         socket.ev.on('connection.update', async (update) => {
             try { await this._onConnectionUpdate(userId, update); }
-            catch (error) { console.error(`[wa:${userId}] connection.update handler error:`, error.message); }
+            catch (error) { console.error(`[wa:${userId}] connection.update handler error:`, error); }
         });
 
         socket.ev.on('messages.upsert', ({ messages, type }) => {
@@ -168,23 +200,36 @@ class SessionManager {
             }
         });
 
+        console.log(`[wa:${userId}] initialize: complete — waiting for connection.update events`);
         this._armIdleTimer(userId);
         return socket;
     }
 
     async _onConnectionUpdate(userId, { connection, lastDisconnect, qr }) {
         const session = this.sessions.get(userId);
-        if (!session) return;
+        if (!session) {
+            console.warn(`[wa:${userId}] connection.update received but no session record exists`);
+            return;
+        }
+        console.log(`[wa:${userId}] connection.update: connection=${connection || 'n/a'} qr=${qr ? 'yes' : 'no'} lastDisconnect=${lastDisconnect ? 'yes' : 'no'}`);
 
         if (qr) {
-            session.qrDataUrl = await qrcode.toDataURL(qr);
+            console.log(`[wa:${userId}] QR RECEIVED from Baileys — generating data URL...`);
+            try {
+                session.qrDataUrl = await qrcode.toDataURL(qr);
+            } catch (error) {
+                console.error(`[wa:${userId}] FAILED to render QR data URL:`, error);
+                throw error;
+            }
             this._pushStatus(userId, 'waiting_qr');
             // QR goes ONLY to this user's room.
+            console.log(`[wa:${userId}] emitting whatsapp:qr to room user:${userId} (io attached: ${!!this._io})`);
             this._emitToUser(userId, 'whatsapp:qr', { qrDataUrl: session.qrDataUrl });
             return;
         }
 
         if (connection === 'open') {
+            console.log(`[wa:${userId}] connection OPEN — WhatsApp linked`);
             session.qrDataUrl = null;
             session.lastError = null;
             session.reconnectAttempts = 0;
@@ -197,6 +242,7 @@ class SessionManager {
         if (connection === 'close') {
             const baileys = this._baileys;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`[wa:${userId}] connection CLOSE: statusCode=${statusCode} message=${lastDisconnect?.error?.message || 'n/a'}`);
             session.lastError = lastDisconnect?.error?.message || 'WhatsApp connection closed';
             session.socket = null;
 
@@ -209,6 +255,7 @@ class SessionManager {
                 return;
             }
 
+            console.log(`[wa:${userId}] close handling: intentionalClose=${session.intentionalClose} loggedOut=${loggedOut}`);
             if (loggedOut) {
                 // WhatsApp invalidated the link remotely. Wipe stored creds so
                 // the user gets a fresh QR next time, then retry cleanly.
@@ -226,6 +273,7 @@ class SessionManager {
             this._pushStatus(userId, 'reconnecting');
             session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
             const delay = Math.min(RECONNECT_BASE_MS * 2 ** Math.min(session.reconnectAttempts, 7), RECONNECT_MAX_MS);
+            console.log(`[wa:${userId}] scheduling auto-reconnect attempt #${session.reconnectAttempts} in ${delay}ms`);
             clearTimeout(session.reconnectTimer);
             session.reconnectTimer = setTimeout(() => {
                 this.initialize(userId).catch((error) => {
@@ -254,6 +302,7 @@ class SessionManager {
     async disconnect(userId) {
         const session = this.sessions.get(userId);
         if (!session) return;
+        console.log(`[wa:${userId}] disconnect: dropping socket (auth state kept)`);
         session.intentionalClose = true;
         clearTimeout(session.reconnectTimer);
         clearTimeout(session.idleTimer);
@@ -289,7 +338,11 @@ class SessionManager {
         if (userId) this.sessions.delete(userId);
 
         // Delete stored auth state — this is what makes the logout real.
-        await authStateStore.deleteAuthState(userId);
+        try { await authStateStore.deleteAuthState(userId); }
+        catch (error) {
+            console.error(`[wa:${userId}] failed to delete stored auth state during logout:`, error);
+            throw error;
+        }
 
         console.log(`[wa:${userId}] logged out (auth state deleted)`);
     }
@@ -366,7 +419,8 @@ class SessionManager {
             const idleMs = Date.now() - (current.lastActivityAt || 0);
             if (idleMs < IDLE_TIMEOUT_MS) { this._armIdleTimer(userId); return; }
             console.log(`[wa:${userId}] idle for ${Math.round(idleMs / 60000)}min — disconnecting socket (auth state kept)`);
-            await this.disconnect(userId);
+            try { await this.disconnect(userId); }
+            catch (error) { console.error(`[wa:${userId}] idle disconnect error:`, error); }
         }, IDLE_TIMEOUT_MS + 1000);
     }
 

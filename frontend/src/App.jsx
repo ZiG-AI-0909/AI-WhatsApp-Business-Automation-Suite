@@ -58,10 +58,16 @@ async function apiFetch(path, options = {}) {
 // (re)connection, so refreshed tokens are picked up automatically.
 function socketAuth() {
   return (cb) => {
-    if (!supabase) return cb({})
+    if (!supabase) { console.warn('[socket] no Supabase client — connecting WITHOUT a token (server will reject the room join)'); return cb({}) }
     supabase.auth.getSession()
-      .then(({ data: { session } }) => cb({ token: session?.access_token || null }))
-      .catch(() => cb({}))
+      .then(({ data: { session } }) => {
+        // DEBUG: the server-side room join (realtime.js) uses this JWT. If the
+        // token is missing here, the socket joins no room and every
+        // whatsapp:qr emit goes to an empty room.
+        console.log('[socket] auth callback — token:', session?.access_token ? 'present' : 'MISSING', '| user:', session?.user?.id || 'n/a')
+        cb({ token: session?.access_token || null })
+      })
+      .catch((error) => { console.error('[socket] auth callback getSession failed:', error); cb({}) })
   }
 }
 
@@ -180,6 +186,11 @@ function CampaignsView({ onNavigate }) {
     loadSchedules()
     const interval = window.setInterval(loadSchedules, 30000)
     const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'], auth: socketAuth() })
+    // DEBUG: connection lifecycle — connect_error means the server rejected
+    // the handshake (usually auth), which also means no room join happened.
+    socket.on('connect', () => console.log('[socket:Campaigns] connected — id', socket.id))
+    socket.on('connect_error', (error) => console.error('[socket:Campaigns] connect_error:', error.message))
+    socket.on('disconnect', (reason) => console.warn('[socket:Campaigns] disconnected:', reason))
 
     // Handle schedule:failed events
     const scheduleFailed = (event) => { setMessage({ type: 'error', text: `Schedule "${event.name}" failed: ${event.error}` }); loadSchedules() }
@@ -493,17 +504,25 @@ function ConnectionView() {
   const loadStatus = async () => {
     try {
       const nextStatus = await apiFetch('/whatsapp/status')
+      console.log('[wa-qr] poll /whatsapp/status →', nextStatus)
       setStatus(nextStatus)
       if (nextStatus.qrAvailable && !qr) {
+        console.log('[wa-qr] server reports qrAvailable — fetching /whatsapp/qr')
         const qrResponse = await apiFetch('/whatsapp/qr')
+        console.log('[wa-qr] /whatsapp/qr returned', qrResponse.qrDataUrl ? 'a QR data URL' : 'NOTHING')
         setQr(qrResponse.qrDataUrl)
       } else if (!nextStatus.qrAvailable) {
         setQr('')
       }
-    } catch (error) { setNotice({ type: 'error', text: error.message }) }
+    } catch (error) { console.error('[wa-qr] status/qr poll failed:', error); setNotice({ type: 'error', text: error.message }) }
   }
 
   useEffect(() => {
+    // DEBUG: make the QR transport visible. NOTE: this view has NO Socket.IO
+    // connection and NO 'whatsapp:qr' listener — the QR only arrives via the
+    // 4s polling loop below. If the server emits whatsapp:qr while this view
+    // is mounted (Campaigns/Inbox sockets are unmounted), nobody receives it.
+    console.log('[wa-qr] ConnectionView mounted — no Socket.IO socket in this view; QR display relies on 4s REST polling')
     loadStatus()
     const interval = window.setInterval(loadStatus, 4000)
     return () => window.clearInterval(interval)
@@ -511,8 +530,9 @@ function ConnectionView() {
 
   const connectWeb = async () => {
     setBusy(true)
+    console.log('[wa-qr] Connect with QR clicked — POST /whatsapp/connect')
     // Lazily starts THIS user's own session; the QR appears in your room only.
-    try { await apiFetch('/whatsapp/connect', { method: 'POST' }); setNotice({ type: 'success', text: 'Starting your WhatsApp session. Scan the QR code when it appears.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/whatsapp/connect', { method: 'POST' }); console.log('[wa-qr] POST /whatsapp/connect OK'); setNotice({ type: 'success', text: 'Starting your WhatsApp session. Scan the QR code when it appears.' }); await loadStatus() } catch (error) { console.error('[wa-qr] POST /whatsapp/connect FAILED:', error); setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
   }
 
   const loadQr = async () => {
@@ -593,6 +613,10 @@ function InboxView() {
   useEffect(() => {
     loadConversations()
     const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'], auth: socketAuth() })
+    // DEBUG: connection lifecycle — connect_error means the server rejected
+    // the handshake (usually auth), which also means no room join happened.
+    socket.on('connect', () => console.log('[socket:Inbox] connected — id', socket.id))
+    socket.on('connect_error', (error) => console.error('[socket:Inbox] connect_error:', error.message))
     const refresh = () => { loadConversations(); loadSelected() }
     const aiError = (event) => setNotice(event.error || 'AI provider unavailable. Check the AI configuration.')
     socket.on('message:new', refresh)
