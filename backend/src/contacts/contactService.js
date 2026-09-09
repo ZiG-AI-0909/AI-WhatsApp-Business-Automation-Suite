@@ -10,6 +10,7 @@ class ContactService {
         if (existing) {
             const updates = {};
             if (typeof data.name === 'string' && data.name.trim()) updates.name = data.name;
+            if (data.email !== undefined) updates.email = this._cleanEmail(data.email);
             if (data.company !== undefined) updates.company = data.company;
             if (data.city !== undefined) updates.city = data.city;
             if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags);
@@ -32,6 +33,7 @@ class ContactService {
             const newContact = await db.insert('contacts', {
                 phone: clean,
                 name: data.name || '',
+                email: this._cleanEmail(data.email),
                 company: data.company || '',
                 city: data.city || '',
                 tags: JSON.stringify(data.tags || []),
@@ -57,9 +59,9 @@ class ContactService {
         let where = 'user_id = ?';
         const params = [userId];
         if (search) {
-            where += ` AND (phone LIKE ? OR name LIKE ? OR company LIKE ? OR city LIKE ?)`;
+            where += ` AND (phone LIKE ? OR name LIKE ? OR company LIKE ? OR city LIKE ? OR email LIKE ?)`;
             const s = `%${search}%`;
-            params.push(s, s, s, s);
+            params.push(s, s, s, s, s);
         }
         if (optIn !== undefined) {
             where += ' AND marketing_opt_in = ?';
@@ -82,6 +84,7 @@ class ContactService {
 
         const updates = { updated_at: new Date() };
         if (data.name !== undefined) updates.name = data.name;
+        if (data.email !== undefined) updates.email = this._cleanEmail(data.email);
         if (data.company !== undefined) updates.company = data.company;
         if (data.city !== undefined) updates.city = data.city;
         if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags);
@@ -125,7 +128,7 @@ class ContactService {
             if (seen.has(clean)) { results.duplicates++; return; }
             seen.add(clean);
             const existing = await db.getOne('contacts', 'phone', clean, userId);
-            await this.upsert(clean, { name: row.name, company: row.company, city: row.city }, userId);
+            await this.upsert(clean, { name: row.name, email: row.email, company: row.company, city: row.city }, userId);
             if (existing) results.updated++;
             else results.added++;
         };
@@ -141,6 +144,17 @@ class ContactService {
 
     _cleanPhone(phone) {
         return String(phone).replace(/[^\d]/g, '');
+    }
+
+    /**
+     * Normalize an email address: trim, lowercase, empty string -> null.
+     * Email is optional, so absence is stored as NULL rather than ''.
+     * No format validation here — the UI hints at format; invalid values
+     * simply never match a campaign send (Phase 2 filters them out).
+     */
+    _cleanEmail(email) {
+        const clean = String(email || '').trim().toLowerCase() || null;
+        return clean;
     }
 
     _parse(contact) {

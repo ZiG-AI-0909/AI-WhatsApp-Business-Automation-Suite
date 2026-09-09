@@ -9,7 +9,7 @@ function validIds(ids) {
 
 router.get('/', async (req, res) => {
     try {
-        res.json(await templateService.list(req.user.id));
+        res.json(await templateService.list(req.user.id, { channel: req.query.channel }));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -36,20 +36,20 @@ router.get('/:id', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-    const { name, content } = req.body;
+    const { name, content, channel, subject } = req.body;
     if (!name?.trim() || !content?.trim()) return res.status(400).json({ error: 'Name and content required' });
     try {
-        res.status(201).json(await templateService.create(req.user.id, name, content));
+        res.status(201).json(await templateService.create(req.user.id, name, content, { channel, subject }));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
 });
 
 router.put('/:id', async (req, res) => {
-    const { name, content } = req.body;
+    const { name, content, channel, subject } = req.body;
     if (!name?.trim() || !content?.trim()) return res.status(400).json({ error: 'Name and content required' });
     try {
-        const t = await templateService.update(+req.params.id, name, content, req.user.id);
+        const t = await templateService.update(+req.params.id, name, content, req.user.id, { channel, subject });
         if (!t) return res.status(404).json({ error: 'Not found' });
         res.json(t);
     } catch (err) {

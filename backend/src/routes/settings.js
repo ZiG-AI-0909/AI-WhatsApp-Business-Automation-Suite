@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const aiService = require('../ai/aiService');
+const resendService = require('../email/resendService');
 const db = require('../database/db');
 
 // Settings persistence now uses Supabase app_settings table
@@ -12,6 +13,11 @@ const fieldKeys = {
     AI_MODEL: 'aiModel',
     BUSINESS_NAME: 'businessName',
     BUSINESS_TAGLINE: 'businessTagline',
+    // Per-user Resend (email campaigns) — same bring-your-own-key pattern
+    // as the AI settings above.
+    RESEND_API_KEY: 'resendApiKey',
+    RESEND_FROM_EMAIL: 'resendFromEmail',
+    RESEND_FROM_NAME: 'resendFromName',
 };
 
 // Reverse mapping for lookups
@@ -73,6 +79,7 @@ async function mergedSetting(key, userId) {
 // Shared response shape for GET / and PUT /
 async function getSettings(userId) {
     const stored = await loadSettings(userId);
+    const [email] = await Promise.all([resendService.getConfig(userId)]);
     return {
         ai: {
             available: aiService.isAvailable(),
@@ -83,6 +90,9 @@ async function getSettings(userId) {
             name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || "Bhavesh's Project",
             tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
         },
+        // Email (Resend) — mirrors the `ai` section's shape: booleans for
+        // secret presence, plain values for sender identity fields.
+        email,
     };
 }
 
@@ -106,7 +116,6 @@ router.put('/', async (req, res) => {
             return res.json(await getSettings(req.user.id));
         }
 
-
         for (const [key, value] of provided) {
             const trimmedValue = value.trim();
             // Store per-user (multi-tenant isolation); do NOT write process.env
@@ -120,6 +129,25 @@ router.put('/', async (req, res) => {
     } catch (error) {
         console.error('[settings] PUT error:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/settings/email/test — send a test email to the logged-in
+// user's own Supabase auth email using their SAVED Resend credentials.
+// Mirrors POST /api/whatsapp/business/test. On failure the response
+// carries Resend's actual error message (e.g. "domain not verified"),
+// not a generic error.
+router.post('/email/test', async (req, res) => {
+    try {
+        const recipient = req.user.email;
+        if (!recipient) {
+            return res.status(400).json({ error: 'Your account has no email address to send the test to.' });
+        }
+        const result = await resendService.sendTestEmail(req.user.id, recipient);
+        res.json(result);
+    } catch (error) {
+        console.error('[settings] email test error:', error.message);
+        res.status(400).json({ error: error.message });
     }
 });
 
