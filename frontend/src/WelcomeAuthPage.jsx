@@ -351,6 +351,18 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
   // ─────────────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen w-full bg-[#080C15] text-slate-100 flex items-center justify-center p-4 sm:p-6 lg:p-12 relative overflow-hidden font-sans selection:bg-emerald-500 selection:text-white">
+      {/* Back to public landing page */}
+      <a
+        href="#/"
+        className="absolute top-4 left-4 sm:top-6 sm:left-6 z-20 inline-flex items-center gap-1.5 text-xs sm:text-sm text-slate-400 hover:text-white transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10 19l-7-7 7-7" />
+          <path d="M3 12h18" />
+        </svg>
+        Back to home
+      </a>
+
       {/* Background decorations */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#1e293b10_1px,transparent_1px),linear-gradient(to_bottom,#1e293b10_1px,transparent_1px)] bg-[size:3.5rem_3.5rem] pointer-events-none" />
       <div className="absolute -top-48 left-1/4 w-96 h-96 bg-emerald-500/15 rounded-full blur-[128px] pointer-events-none" />

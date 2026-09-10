@@ -1,97 +1,17 @@
 import { useEffect, useState } from 'react'
 import { io } from 'socket.io-client'
 import './App.css'
-import ImageExtractorView from './ImageExtractorView.jsx'
+import LandingPage from './LandingPage.jsx'
+import OnboardingChecklist from './OnboardingChecklist.jsx'
 import WelcomeAuthPage from './WelcomeAuthPage.jsx'
+import ImageExtractorView from './ImageExtractorView.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
-const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
-// If the backend URL matches the current origin (e.g., when the app is hosted on Vercel together with the API), use a relative path to avoid cross‑origin requests.
-const API_URL = BACKEND_URL === window.location.origin ? '/api' : `${BACKEND_URL}/api`
+// API helpers (apiFetch, socketAuth, session-invalidation event) now live in
+// ./api.js — shared with the public landing page and onboarding checklist.
+import { BACKEND_URL, apiFetch, socketAuth, dispatchSessionInvalidated, SESSION_INVALIDATED_EVENT } from './api.js'
 
-// Local-session invalidation event. Fires when the backend rejects the JWT
-// (401) or when auth-js reports a refresh failure — either way the stored
-// session is dead and every authenticated call would keep 401-ing until the
-// user signs out. Components listen for this to stop their polling instead
-// of hammering the API (BUG 2: repeated 401 request loop after sign-out).
-const SESSION_INVALIDATED_EVENT = 'app:session-invalidated'
-function dispatchSessionInvalidated(reason) {
-  console.warn(`[auth] session invalidated (${reason}) — notifying components to stop polling`)
-  window.dispatchEvent(new CustomEvent(SESSION_INVALIDATED_EVENT, { detail: { reason } }))
-}
-
-async function apiFetch(path, options = {}) {
-  // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
-  let authHeader = {}
-
-  if (supabase) {
-    try {
-      const {
-        data: { session },
-        error,
-      } = await supabase.auth.getSession()
-
-      if (error) {
-        console.error('Supabase session error:', error)
-        // getSession() only errors when it could not recover a usable session
-        // (e.g. refresh rejected). The stored session is dead — see BUG 1.
-        dispatchSessionInvalidated('getSession error')
-      }
-
-      if (session?.access_token) {
-        authHeader = {
-          Authorization: `Bearer ${session.access_token}`,
-        }
-      }
-    } catch (error) {
-      console.error('Failed to get Supabase session:', error)
-    }
-  }
-
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      ...authHeader,
-      ...(options.headers || {}),
-    },
-  })
-
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok) {
-    // 401 means the JWT we sent is expired/invalid and cannot be recovered
-    // client-side. Clear the dead session from storage so auth-js stops
-    // handing it out (it would otherwise be sent on every future call) and
-    // tell components to stop polling. Mirrors the auth-js onAuthError path.
-    if (response.status === 401 && supabase) {
-      try { await supabase.auth._removeSession() } catch { /* best effort */ }
-      dispatchSessionInvalidated(`API 401 on ${path}`)
-    }
-    throw new Error(data.error || `Request failed (${response.status})`)
-  }
-
-  return data
-}
-
-// Socket.IO auth: supplies the same Supabase JWT used for the API. The
-// backend verifies it and places the socket in this user's private room,
-// so the browser only ever receives ITS OWN whatsapp/campaign/message
-// events — never another user's. The auth callback runs on every
-// (re)connection, so refreshed tokens are picked up automatically.
-function socketAuth() {
-  return (cb) => {
-    if (!supabase) { console.warn('[socket] no Supabase client — connecting WITHOUT a token (server will reject the room join)'); return cb({}) }
-    supabase.auth.getSession()
-      .then(({ data: { session } }) => {
-        // DEBUG: the server-side room join (realtime.js) uses this JWT. If the
-        // token is missing here, the socket joins no room and every
-        // whatsapp:qr emit goes to an empty room.
-        console.log('[socket] auth callback — token:', session?.access_token ? 'present' : 'MISSING', '| user:', session?.user?.id || 'n/a')
-        cb({ token: session?.access_token || null })
-      })
-      .catch((error) => { console.error('[socket] auth callback getSession failed:', error); cb({}) })
-  }
-}
+// Socket auth moved to ./api.js (socketAuth).
 
 const navItems = [
   'Dashboard',
@@ -888,6 +808,35 @@ function App() {
   const [recentConversations, setRecentConversations] = useState(null)
   const [dashboardError, setDashboardError] = useState('')
 
+  // ── Minimal hash-based routing ────────────────────────────────────────
+  // ''          → public landing page (default for logged-out visitors)
+  // '#/login'   → sign-in / sign-up flow (WelcomeAuthPage)
+  // '#/app'     → authenticated app shell (also the post-login default)
+  // Any other hash falls back to the landing page for logged-out users.
+  const readRoute = () => {
+    const hash = window.location.hash.replace(/^#/, '')
+    if (hash === '/login' || hash === '/app') return hash
+    return ''
+  }
+  const [route, setRoute] = useState(readRoute)
+
+  const navigate = (nextRoute) => {
+    // Central navigation: updates the hash (which triggers the listener
+    // below) or sets state directly when the hash is already correct.
+    if (window.location.hash !== `#${nextRoute}`) {
+      window.location.hash = nextRoute
+    } else {
+      setRoute(nextRoute)
+    }
+    window.scrollTo(0, 0)
+  }
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(readRoute())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
       setAuthChecking(false)
@@ -928,10 +877,15 @@ function App() {
     return () => subscription.unsubscribe()
   }, [])
 
-  // Clean up URL hash after OAuth callback to prevent tokens from lingering
+  // Clean up OAuth token fragments from the URL after a callback (they would
+  // otherwise linger in the address bar and be bookmarkable/shared).
+  // Route hashes (#/login, #/app) are left untouched — they drive the
+  // hash-based routing, so wiping every hash would break refresh-deep-links.
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.hash) {
-      // Clear the hash without triggering a page reload
+    if (typeof window === 'undefined') return
+    const hash = window.location.hash
+    if (hash && (hash.includes('access_token') || hash.includes('refresh_token') || hash.includes('error') || hash.includes('code='))) {
+      // Clear the hash without triggering a page reload or a hashchange event
       window.history.replaceState(null, '', window.location.pathname + window.location.search)
     }
   }, [])
@@ -996,6 +950,9 @@ function App() {
     // polling effects read, so their in-flight tick exits early.
     setBackendStatus('offline')
     setIsConnected(false)
+    // Return to the sign-in route (not the public landing page) — the user
+    // was already authenticated, so the marketing page would be noise.
+    navigate('/login')
   }
 
   const selectView = (item) => {
@@ -1093,6 +1050,11 @@ function App() {
 
       return (
         <>
+          {/* New-account setup guide: step completion derives from live
+              data (WhatsApp status + analytics poll below + knowledge doc
+              count) and hides itself once dismissed or fully complete. */}
+          <OnboardingChecklist onNavigate={setActiveView} dashboard={dashboard} whatsappConnected={isConnected} />
+
           <section className="stats-grid">
             {stats.map((stat) => (
               <article key={stat.label} className={`stat-card ${stat.accent}`}>
@@ -1158,6 +1120,15 @@ function App() {
     )
   }
 
+  // Keep the hash route in sync with auth state: a signed-in user always
+  // lands in the app shell, whatever route they arrived on — this covers
+  // direct sign-in (onAuthSuccess) and OAuth redirects back to '/', where
+  // the session arrives via onAuthStateChange instead of onAuthSuccess.
+  useEffect(() => {
+    if (session && route !== '/app') navigate('/app')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id, route])
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 font-sans">
@@ -1168,12 +1139,19 @@ function App() {
   }
 
   if (!session || resetPasswordMode) {
-    return (
-      <WelcomeAuthPage
-        onAuthSuccess={(newSession) => { setSession(newSession); setResetPasswordMode(false) }}
-        initialMode={resetPasswordMode ? 'reset-password' : undefined}
-      />
-    )
+    // Logged out: the public landing page is the default route; the sign-in /
+    // sign-up flow lives at #/login. PASSWORD_RECOVERY always forces the auth
+    // page regardless of the current hash. A logged-in visitor who lands on
+    // the landing page is bounced to /login by LandingPage's session check.
+    if (route === '/login' || resetPasswordMode) {
+      return (
+        <WelcomeAuthPage
+          onAuthSuccess={(newSession) => { setSession(newSession); setResetPasswordMode(false); navigate('/app') }}
+          initialMode={resetPasswordMode ? 'reset-password' : undefined}
+        />
+      )
+    }
+    return <LandingPage onSignIn={() => navigate('/login')} />
   }
 
   return (
