@@ -9,6 +9,7 @@ const {
     isRemotePath,
     BUCKETS,
 } = require('../middleware/upload');
+const { respondIfInvalidUpload } = require('../middleware/fileValidation');
 
 const router = express.Router();
 
@@ -68,6 +69,7 @@ router.post('/', async (req, res) => {
 // POST /api/knowledge/upload — upload a text file
 router.post('/upload', uploadKnowledge.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!respondIfInvalidUpload(req, res)) return;
     const { name, category } = req.body;
     try {
         // Multer parsed the file into memory — upload it to Supabase Storage.

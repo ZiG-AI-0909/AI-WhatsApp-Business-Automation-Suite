@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch --watch-path=src src/server.js",
-    "test": "node src/whatsapp/__tests__/phase2-smoke.test.js && node src/settings/__tests__/email-phase1-smoke.test.js && node src/knowledge/__tests__/rebrand-seed-smoke.test.js"
+    "test": "node src/whatsapp/__tests__/phase2-smoke.test.js && node src/settings/__tests__/email-phase1-smoke.test.js && node src/knowledge/__tests__/rebrand-seed-smoke.test.js && node src/security/__tests__/security-phase1-smoke.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.115.0",
@@ -16,13 +16,13 @@
     "cron-parser": "^5.10.0",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
+    "express-rate-limit": "^8.7.0",
     "form-data": "^4.0.6",
     "multer": "^1.4.5-lts.1",
     "pino": "^10.3.1",
     "qrcode": "^1.5.3",
     "resend": "^6.26.0",
     "socket.io": "^4.6.1",
-    "uuid": "^9.0.0",
     "xlsx": "^0.18.5"
   },
   "keywords": [

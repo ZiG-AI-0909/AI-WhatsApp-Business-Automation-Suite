@@ -9,6 +9,7 @@ const {
     downloadFromStorage,
     BUCKETS,
 } = require('../middleware/upload');
+const { respondIfInvalidUpload } = require('../middleware/fileValidation');
 
 const router = express.Router();
 
@@ -77,6 +78,7 @@ router.get('/:id/contacts', async (req, res) => {
 // POST /api/campaigns/validate-excel
 router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!respondIfInvalidUpload(req, res)) return;
     try {
         // Multer parsed the file into memory — upload it to Supabase Storage.
         const stored = await uploadToStorage(
@@ -99,6 +101,7 @@ router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
 // POST /api/campaigns/media
 router.post('/media', uploadCampaignMedia.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!respondIfInvalidUpload(req, res)) return;
 
     try {
         // Multer parsed the file into memory — upload it to Supabase Storage.

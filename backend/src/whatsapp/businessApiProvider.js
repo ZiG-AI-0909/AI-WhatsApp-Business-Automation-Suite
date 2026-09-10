@@ -132,9 +132,15 @@ class WhatsAppBusinessProvider extends WhatsAppProvider {
         return response.data;
     }
 
-    verifyWebhook(userId, mode, token, challenge) {
-        const config = this._getConfig(userId);
-        if (mode === 'subscribe' && token && token === config.verifyToken) return challenge;
+    /**
+     * Validate the Meta subscription handshake. `expectedToken` lets the
+     * webhook route check per-user tokens from app_settings without a userId;
+     * when omitted, the env-level verify token for this user is used.
+     */
+    verifyWebhook(userId, mode, token, challenge, expectedToken = null) {
+        const expected = expectedToken
+            ?? (userId ? this._getConfig(userId).verifyToken : process.env.WABA_WEBHOOK_VERIFY_TOKEN);
+        if (mode === 'subscribe' && token && expected && token === expected) return challenge;
         throw new Error('Webhook verification failed');
     }
 

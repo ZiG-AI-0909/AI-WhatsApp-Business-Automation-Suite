@@ -3,6 +3,7 @@ const multer = require('multer');
 const axios = require('axios');
 const XLSX = require('xlsx');
 const db = require('../database/db');
+const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
 
 const router = express.Router();
 
@@ -357,6 +358,7 @@ async function processFile(file, userId) {
 
 router.post('/process-one', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Upload a JPG, PNG, or WEBP image.' });
+  if (!respondIfInvalidUpload(req, res)) return;
   const result = await processFile(req.file, req.user.id);
   await markDuplicates(req.user.id);
   const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
@@ -365,6 +367,10 @@ router.post('/process-one', upload.single('image'), async (req, res) => {
 
 router.post('/process-batch', upload.array('images', 20), async (req, res) => {
   if (!req.files?.length) return res.status(400).json({ error: 'Upload at least one JPG, PNG, or WEBP image.' });
+  for (const file of req.files) {
+    const check = validateUploadBuffer(file.buffer, file.originalname);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+  }
   const results = await Promise.all(req.files.map(file => processFile(file, req.user.id)));
   await markDuplicates(req.user.id);
   const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
