@@ -3,6 +3,7 @@ const contactService = require('../contacts/contactService');
 const conversationService = require('./conversationService');
 const aiService = require('../ai/aiService');
 const knowledgeBase = require('../ai/knowledgeBase');
+const { resolveAiConfig } = require('../utils/aiConfig');
 const { emitToUser } = require('../realtime');
 
 const HUMAN_HANDOFF_TRIGGERS = [
@@ -117,9 +118,18 @@ class IncomingMessageService {
 
         if (!conversation.ai_enabled) return true;
 
-        // Per-user AI configuration: the user's own stored key, env fallback.
-        const userApiKey = userSettings.AI_API_KEY || process.env.AI_API_KEY || '';
-        const userBaseURL = userSettings.AI_BASE_URL || process.env.AI_BASE_URL;
+        // Per-user AI configuration via the never-mix resolver: a stored
+        // custom AI_BASE_URL is only ever used WITH that same user's own
+        // stored AI_API_KEY — the server's env key never goes to a
+        // tenant-controlled URL (key-exfiltration guard).
+        const aiConfig = resolveAiConfig({
+            storedKey: userSettings.AI_API_KEY,
+            storedBaseURL: userSettings.AI_BASE_URL,
+            envKey: process.env.AI_API_KEY,
+            envBaseURL: process.env.AI_BASE_URL,
+        });
+        const userApiKey = aiConfig.apiKey;
+        const userBaseURL = aiConfig.baseURL;
         const userModel = userSettings.AI_MODEL || process.env.AI_MODEL;
         if (!userApiKey) {
             const unavailable = 'Thanks for your message. Our sales team will get back to you shortly.';
