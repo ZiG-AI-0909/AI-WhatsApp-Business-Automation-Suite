@@ -428,6 +428,27 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .message-preview p { white-space: pre-wrap; margin: 8px 0 0; color: var(--text-primary); font-size: .9rem; }
 .message-preview em { display: block; color: var(--warning); font-size: .78rem; margin-top: 7px; }
 .empty-preview { min-height: 150px; display: grid; place-items: center; text-align: center; padding: 20px; }
+
+/* ── Shared empty state (icon + heading + description + actions) ── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  padding: clamp(28px, 6vw, 56px) 20px;
+}
+.empty-state-icon { font-size: 2.2rem; line-height: 1; }
+.empty-state-title { font-size: 1.05rem; color: var(--text-primary); }
+.empty-state-description { margin: 0; max-width: 440px; color: var(--text-muted); font-size: .9rem; line-height: 1.55; }
+.empty-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 12px; }
+.empty-state-actions .primary-btn,
+.empty-state-actions .secondary-btn { min-height: 44px; }
+@media (max-width: 560px) {
+  .empty-state-actions { width: 100%; flex-direction: column; }
+  .empty-state-actions .primary-btn,
+  .empty-state-actions .secondary-btn { width: 100%; justify-content: center; }
+}
 .campaign-table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 620px; }
 th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--border-subtle); }

@@ -10,6 +10,8 @@ import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 // API helpers (apiFetch, socketAuth, session-invalidation event) now live in
 // ./api.js — shared with the public landing page and onboarding checklist.
 import { BACKEND_URL, apiFetch, socketAuth, dispatchSessionInvalidated, SESSION_INVALIDATED_EVENT } from './api.js'
+import { friendlyErrorMessage } from './utils/errorMessages.js'
+import EmptyState from './components/EmptyState.jsx'
 
 // Socket auth moved to ./api.js (socketAuth).
 
@@ -109,12 +111,12 @@ function CampaignsView({ onNavigate }) {
         if (current) setSelectedCampaign(current)
       }
     } catch (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     }
   }
 
   const loadSchedules = async () => {
-    try { setSchedules(await apiFetch('/schedules')) } catch (error) { setMessage({ type: 'error', text: error.message }) }
+    try { setSchedules(await apiFetch('/schedules')) } catch (error) { setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) }) }
   }
 
   useEffect(() => {
@@ -233,7 +235,7 @@ function CampaignsView({ onNavigate }) {
       setUpload(data)
       setMessage({ type: 'success', text: `${data.valid} valid contacts ready.` })
     } catch (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
       setBusy(false)
     }
@@ -263,7 +265,7 @@ function CampaignsView({ onNavigate }) {
     } catch (error) {
       setMediaFile(null)
       setMediaPreview('')
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
       setBusy(false)
     }
@@ -281,7 +283,7 @@ function CampaignsView({ onNavigate }) {
       setPreviews(data.previews || [])
       setMissingByField(data.missingByField || {})
     } catch (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
       setBusy(false)
     }
@@ -325,7 +327,7 @@ function CampaignsView({ onNavigate }) {
       setScheduleType('now')
       setRunAt('')
     } catch (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
       setBusy(false)
     }
@@ -340,7 +342,7 @@ function CampaignsView({ onNavigate }) {
       const refreshed = await apiFetch(`/campaigns/${selectedCampaign.id}`)
       setSelectedCampaign(refreshed)
     } catch (error) {
-      setMessage({ type: 'error', text: error.message })
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
       setBusy(false)
     }
@@ -354,17 +356,17 @@ function CampaignsView({ onNavigate }) {
     const warning = runningCount ? ` This will stop ${runningCount} running campaign(s) before deleting.` : ''
     if (!window.confirm(`Delete ${selectedIds.length} selected campaign(s)?${warning}`)) return
     setBusy(true)
-    try { await apiFetch('/campaigns/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setSelectedCampaign(null); setMessage({ type: 'success', text: `${selectedIds.length} campaign(s) deleted.` }); await loadCampaigns() } catch (error) { setMessage({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/campaigns/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setSelectedCampaign(null); setMessage({ type: 'success', text: `${selectedIds.length} campaign(s) deleted.` }); await loadCampaigns() } catch (error) { setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) }) } finally { setBusy(false) }
   }
 
   const scheduleAction = async (id, action, method = 'PATCH') => {
-    try { await apiFetch(`/schedules/${id}${action ? `/${action}` : ''}`, { method }); await loadSchedules() } catch (error) { setMessage({ type: 'error', text: error.message }) }
+    try { await apiFetch(`/schedules/${id}${action ? `/${action}` : ''}`, { method }); await loadSchedules() } catch (error) { setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) }) }
   }
   const retrySchedule = async (id) => { await scheduleAction(id, 'retry') }
   const deleteSchedule = async (id) => { if (!window.confirm('Delete this schedule?')) return; await scheduleAction(id, '', 'DELETE') }
   const toggleSchedule = (id) => setSelectedScheduleIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   const toggleAllSchedules = () => setSelectedScheduleIds(selectedScheduleIds.length === schedules.length ? [] : schedules.map((schedule) => schedule.id))
-  const bulkDeleteSchedules = async () => { if (!selectedScheduleIds.length || !window.confirm(`Delete ${selectedScheduleIds.length} selected schedule(s)?`)) return; try { await apiFetch('/schedules/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedScheduleIds }) }); setSelectedScheduleIds([]); await loadSchedules() } catch (error) { setMessage({ type: 'error', text: error.message }) } }
+  const bulkDeleteSchedules = async () => { if (!selectedScheduleIds.length || !window.confirm(`Delete ${selectedScheduleIds.length} selected schedule(s)?`)) return; try { await apiFetch('/schedules/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedScheduleIds }) }); setSelectedScheduleIds([]); await loadSchedules() } catch (error) { setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) }) } }
 
   const statusClass = (status) => `campaign-status ${String(status || '').toLowerCase()}`
 
@@ -428,13 +430,23 @@ function CampaignsView({ onNavigate }) {
 
       <section className="panel queue-panel">
         <div className="panel-header"><div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>{selectedCampaign && <div className="button-row"><button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)}>Start</button><button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button><button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button><button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button></div>}</div>
-        {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead><tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td><td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small></td><td data-label="Provider">{campaign.provider || 'web'}</td><td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status}</span></td><td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td></tr>)}</tbody></table>{!campaignList.length && <div className="empty-preview">No campaigns created yet.</div>}</div>
+        {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead><tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td><td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small></td><td data-label="Provider">{campaign.provider || 'web'}</td><td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status}</span></td><td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td></tr>)}</tbody></table>{!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }] } />}</div>
         {selectedCampaign && <div className="campaign-detail"><div className="panel-header"><div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div><strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong></div>{waitingHoursMessage && <div className="notice warning" style={{ margin: '1rem 0' }}>{waitingHoursMessage}</div>}<p className="detail-template">{selectedCampaign.template_message}</p><div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div></div>}
       </section>
-      <section className="panel queue-panel"><div className="panel-header"><div><h2>Scheduled campaigns</h2><span className="file-note">{schedules.length} schedules</span></div></div>{selectedScheduleIds.length > 0 && <div className="button-row"><span>{selectedScheduleIds.length} selected</span><button className="danger-btn" onClick={bulkDeleteSchedules}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all schedules" checked={schedules.length > 0 && selectedScheduleIds.length === schedules.length} onChange={toggleAllSchedules} /></th><th>Name</th><th>Type</th><th>Next run</th><th>Status</th><th>Last run</th><th>Actions</th></tr></thead><tbody>{schedules.map((schedule) => <tr key={schedule.id} title={schedule.last_error || undefined}><td data-label="Select"><input type="checkbox" aria-label={`Select ${schedule.name}`} checked={selectedScheduleIds.includes(schedule.id)} onChange={() => toggleSchedule(schedule.id)} /></td><td data-label="Name"><strong>{schedule.name}</strong>{schedule.last_error && <small className="schedule-error">{schedule.last_error}</small>}</td><td data-label="Type">{schedule.schedule_type}</td><td data-label="Next run">{formatDate(schedule.next_run_at)}</td><td data-label="Status"><span className={statusClass(schedule.status)}>{schedule.status}</span></td><td data-label="Last run">{formatDate(schedule.last_run_at)}</td><td data-label="Actions"><div className="button-row">{schedule.status === 'failed' && <button className="secondary-btn" onClick={() => retrySchedule(schedule.id)}>Retry now</button>}{['active', 'pending'].includes(schedule.status) && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'pause')}>Pause</button>}{schedule.status === 'paused' && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'resume')}>Resume</button>}{!['cancelled', 'completed', 'failed'].includes(schedule.status) && <button className="danger-btn" onClick={() => scheduleAction(schedule.id, 'cancel', 'POST')}>Cancel</button>}<button className="danger-btn" onClick={() => deleteSchedule(schedule.id)}>Delete</button></div></td></tr>)}</tbody></table>{!schedules.length && <div className="empty-preview">No scheduled campaigns yet.</div>}</div></section>
+      <section className="panel queue-panel"><div className="panel-header"><div><h2>Scheduled campaigns</h2><span className="file-note">{schedules.length} schedules</span></div></div>{selectedScheduleIds.length > 0 && <div className="button-row"><span>{selectedScheduleIds.length} selected</span><button className="danger-btn" onClick={bulkDeleteSchedules}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all schedules" checked={schedules.length > 0 && selectedScheduleIds.length === schedules.length} onChange={toggleAllSchedules} /></th><th>Name</th><th>Type</th><th>Next run</th><th>Status</th><th>Last run</th><th>Actions</th></tr></thead><tbody>{schedules.map((schedule) => <tr key={schedule.id} title={schedule.last_error || undefined}><td data-label="Select"><input type="checkbox" aria-label={`Select ${schedule.name}`} checked={selectedScheduleIds.includes(schedule.id)} onChange={() => toggleSchedule(schedule.id)} /></td><td data-label="Name"><strong>{schedule.name}</strong>{schedule.last_error && <small className="schedule-error">{schedule.last_error}</small>}</td><td data-label="Type">{schedule.schedule_type}</td><td data-label="Next run">{formatDate(schedule.next_run_at)}</td><td data-label="Status"><span className={statusClass(schedule.status)}>{schedule.status}</span></td><td data-label="Last run">{formatDate(schedule.last_run_at)}</td><td data-label="Actions"><div className="button-row">{schedule.status === 'failed' && <button className="secondary-btn" onClick={() => retrySchedule(schedule.id)}>Retry now</button>}{['active', 'pending'].includes(schedule.status) && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'pause')}>Pause</button>}{schedule.status === 'paused' && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'resume')}>Resume</button>}{!['cancelled', 'completed', 'failed'].includes(schedule.status) && <button className="danger-btn" onClick={() => scheduleAction(schedule.id, 'cancel', 'POST')}>Cancel</button>}<button className="danger-btn" onClick={() => deleteSchedule(schedule.id)}>Delete</button></div></td></tr>)}</tbody></table>{!schedules.length && <EmptyState icon="🗓️" title="No scheduled campaigns yet" description="When you create a campaign with “Schedule once” or “Recurring” timing, it will show up here." />}</div></section>
     </div>
   )
 }
+
+// Domain-specific, actionable wording for WhatsApp Business API setup errors.
+// These stay specific (they help the user fix their credentials) but never
+// include raw stack traces, JSON, or internal state strings.
+const WHATSAPP_BUSINESS_ERROR_RULES = [
+  { match: 'phone number id', message: 'The Phone Number ID doesn\'t look right. Copy it from your Meta Business dashboard and try again.' },
+  { match: 'access token', message: "Meta rejected the access token. Double-check it (and that it hasn't expired), then try again." },
+  { match: 'verify token', message: 'The webhook verify token doesn\'t match. Re-copy it from your Meta webhook settings.' },
+  { match: 'authentication', message: "Meta rejected the access token. Double-check it (and that it hasn't expired), then try again." },
+]
 
 function ConnectionView() {
   const [status, setStatus] = useState({ provider: '', status: 'checking', qrAvailable: false })
@@ -456,7 +468,7 @@ function ConnectionView() {
       } else if (!nextStatus.qrAvailable) {
         setQr('')
       }
-    } catch (error) { console.error('[wa-qr] status/qr poll failed:', error); setNotice({ type: 'error', text: error.message }) }
+    } catch (error) { console.error('[wa-qr] status/qr poll failed:', error); setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'WhatsApp connection', log: false }) }) }
   }
 
   useEffect(() => {
@@ -474,7 +486,7 @@ function ConnectionView() {
     setBusy(true)
     console.log('[wa-qr] Connect with QR clicked — POST /whatsapp/connect')
     // Lazily starts THIS user's own session; the QR appears in your room only.
-    try { await apiFetch('/whatsapp/connect', { method: 'POST' }); console.log('[wa-qr] POST /whatsapp/connect OK'); setNotice({ type: 'success', text: 'Starting your WhatsApp session. Scan the QR code when it appears.' }); await loadStatus() } catch (error) { console.error('[wa-qr] POST /whatsapp/connect FAILED:', error); setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/whatsapp/connect', { method: 'POST' }); console.log('[wa-qr] POST /whatsapp/connect OK'); setNotice({ type: 'success', text: 'Starting your WhatsApp session. Scan the QR code when it appears.' }); await loadStatus() } catch (error) { console.error('[wa-qr] POST /whatsapp/connect FAILED:', error); setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'WhatsApp connect', log: false }) }) } finally { setBusy(false) }
   }
 
   const loadQr = async () => {
@@ -492,23 +504,23 @@ function ConnectionView() {
           return
         }
       }
-      setNotice({ type: 'error', text: error.message })
+      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'QR refresh', custom: [{ match: 'no qr code available', message: 'No QR code is showing right now. Click “Refresh QR” in a few seconds — or disconnect and connect again.' }] }) })
     }
   }
 
   const testBusiness = async () => {
     setBusy(true)
-    try { await apiFetch('/whatsapp/business/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) }); setNotice({ type: 'success', text: 'Business API credentials are valid.' }) } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/whatsapp/business/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) }); setNotice({ type: 'success', text: 'Business API credentials are valid.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Business API test', custom: WHATSAPP_BUSINESS_ERROR_RULES }) }) } finally { setBusy(false) }
   }
 
   const connectBusiness = async () => {
     setBusy(true)
-    try { await apiFetch('/whatsapp/business/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) }); setNotice({ type: 'success', text: 'WhatsApp Business API connected.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/whatsapp/business/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) }); setNotice({ type: 'success', text: 'WhatsApp Business API connected.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Business API connect', custom: WHATSAPP_BUSINESS_ERROR_RULES }) }) } finally { setBusy(false) }
   }
 
   const disconnect = async () => {
     setBusy(true)
-    try { await apiFetch('/whatsapp/disconnect', { method: 'POST' }); setNotice({ type: 'success', text: 'WhatsApp disconnected.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/whatsapp/disconnect', { method: 'POST' }); setNotice({ type: 'success', text: 'WhatsApp disconnected.' }); await loadStatus() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'WhatsApp disconnect' }) }) } finally { setBusy(false) }
   }
 
   return <div className="connection-workspace">
@@ -522,7 +534,7 @@ function ConnectionView() {
   </div>
 }
 
-function InboxView() {
+function InboxView({ onNavigate }) {
   const [conversations, setConversations] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [conversation, setConversation] = useState(null)
@@ -538,7 +550,7 @@ function InboxView() {
       const data = await apiFetch(`/conversations?limit=50&search=${encodeURIComponent(search)}`)
       setConversations((data.data || []).map((item) => ({ ...item, name: displayIdentity(item) })))
       if (!selectedId && data.data?.[0]) setSelectedId(data.data[0].id)
-    } catch (error) { setNotice(error.message) }
+    } catch (error) { setNotice(friendlyErrorMessage(error, { context: 'Inbox' })) }
   }
 
   const loadSelected = async () => {
@@ -550,7 +562,7 @@ function InboxView() {
       ])
       setConversation({ ...nextConversation, name: displayIdentity(nextConversation) })
       setMessages(nextMessages)
-    } catch (error) { setNotice(error.message) }
+    } catch (error) { setNotice(friendlyErrorMessage(error, { context: 'Inbox' })) }
   }
 
   useEffect(() => {
@@ -589,20 +601,20 @@ function InboxView() {
 
   const updateConversation = async (path, options) => {
     setBusy(true)
-    try { await apiFetch(path, options); await loadSelected(); await loadConversations() } catch (error) { setNotice(error.message) } finally { setBusy(false) }
+    try { await apiFetch(path, options); await loadSelected(); await loadConversations() } catch (error) { setNotice(friendlyErrorMessage(error, { context: 'Inbox' })) } finally { setBusy(false) }
   }
 
   const removeConversation = async (id) => {
     if (!window.confirm('Delete this conversation and its messages?')) return
     setBusy(true)
-    try { await apiFetch(`/conversations/${id}`, { method: 'DELETE' }); if (selectedId === id) { setSelectedId(null); setConversation(null); setMessages([]); setThreadOpen(false) } await loadConversations(); setNotice('Conversation deleted.') } catch (error) { setNotice(error.message) } finally { setBusy(false) }
+    try { await apiFetch(`/conversations/${id}`, { method: 'DELETE' }); if (selectedId === id) { setSelectedId(null); setConversation(null); setMessages([]); setThreadOpen(false) } await loadConversations(); setNotice('Conversation deleted.') } catch (error) { setNotice(friendlyErrorMessage(error, { context: 'Inbox' })) } finally { setBusy(false) }
   }
 
   const sendReply = async (event) => {
     event.preventDefault()
     if (!draft.trim() || !selectedId) return
     setBusy(true)
-    try { await apiFetch(`/conversations/${selectedId}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: draft.trim() }) }); setDraft(''); await loadSelected(); await loadConversations() } catch (error) { setNotice(error.message) } finally { setBusy(false) }
+    try { await apiFetch(`/conversations/${selectedId}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: draft.trim() }) }); setDraft(''); await loadSelected(); await loadConversations() } catch (error) { setNotice(friendlyErrorMessage(error, { context: 'Inbox' })) } finally { setBusy(false) }
   }
 
   const toggleAI = () => updateConversation(`/conversations/${selectedId}/ai`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !conversation?.ai_enabled }) })
@@ -613,7 +625,7 @@ function InboxView() {
     <div className="inbox-toolbar"><div><p className="eyebrow">Live conversations</p><h2>Inbox</h2></div><input className="search-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search conversations" /></div>
     {notice && <div className="notice error">{notice}</div>}
     <div className="inbox-layout">
-      <aside className="panel conversation-sidebar"><h2>Conversations</h2>{conversations.map((item) => <div className="conversation-row" key={item.id}><button type="button" className={`conversation-item ${selectedId === item.id ? 'selected' : ''}`} onClick={() => { setSelectedId(item.id); setThreadOpen(true) }}><span className="conversation-item-top"><strong>{displayIdentity(item)}</strong>{item.unread_count > 0 && <b>{item.unread_count}</b>}</span><small>{item.last_message || 'No messages yet'}</small>{item.status === 'human_takeover' && <em>Human attention required</em>}</button><button type="button" className="danger-btn" onClick={() => removeConversation(item.id)} disabled={busy}>Delete</button></div>)}{!conversations.length && <div className="empty-preview">No conversations yet.</div>}</aside>
+      <aside className="panel conversation-sidebar"><h2>Conversations</h2>{conversations.map((item) => <div className="conversation-row" key={item.id}><button type="button" className={`conversation-item ${selectedId === item.id ? 'selected' : ''}`} onClick={() => { setSelectedId(item.id); setThreadOpen(true) }}><span className="conversation-item-top"><strong>{displayIdentity(item)}</strong>{item.unread_count > 0 && <b>{item.unread_count}</b>}</span><small>{item.last_message || 'No messages yet'}</small>{item.status === 'human_takeover' && <em>Human attention required</em>}</button><button type="button" className="danger-btn" onClick={() => removeConversation(item.id)} disabled={busy}>Delete</button></div>)}{!conversations.length && <EmptyState icon="💬" title="No conversations yet" description="Once customers message your connected WhatsApp number, they'll appear here. Check back after your number is connected." actions={[{ label: 'Open WhatsApp Connection', variant: 'secondary', onClick: () => onNavigate?.('WhatsApp Connection') }] } />}</aside>
       <section className="panel chat-panel">{conversation ? <><div className="chat-header"><button type="button" className="chat-back-btn" aria-label="Back to conversations" onClick={() => setThreadOpen(false)}>←</button><div><h2>{displayIdentity(conversation)}</h2><small>{conversation.is_lid ? 'WhatsApp identity protected' : displayIdentity({ phone: conversation.phone })}{conversation.company ? ` · ${conversation.company}` : ''}</small></div><span className={`campaign-status ${conversation.status === 'human_takeover' ? 'stopped' : conversation.ai_enabled ? 'running' : 'paused'}`}>{conversation.status === 'human_takeover' ? 'Human attention required' : conversation.ai_enabled ? 'AI Active' : 'Human Active'}</span></div><div className="message-stream">{messages.map((item) => <article key={item.id} className={`chat-message ${item.direction === 'inbound' ? 'inbound' : 'outbound'}`}><small>{item.direction === 'inbound' ? 'Customer' : 'Sudarshan Pipes AI Assistant'}</small><p>{item.body}</p><time>{item.status}</time></article>)}</div><div className="chat-controls"><button className="secondary-btn" onClick={toggleAI} disabled={busy}>{conversation.ai_enabled ? 'Pause AI' : 'Resume AI'}</button><button className="secondary-btn" onClick={takeOver} disabled={busy || conversation.status === 'human_takeover'}>Take Over</button><button className="secondary-btn" onClick={resolve} disabled={busy || conversation.status === 'resolved'}>Mark Resolved</button></div><form className="reply-form" onSubmit={sendReply}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Write a WhatsApp reply..." aria-label="WhatsApp reply" /><button className="primary-btn" disabled={busy || !draft.trim()}>Send Reply</button></form></> : <div className="empty-preview">Select a conversation to view its history.</div>}</section>
     </div>
   </div>
@@ -645,6 +657,11 @@ function ContactsView() {
   const [deleteId, setDeleteId] = useState(null)
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
+  // Inline "Add contact" form (empty-state CTA) — creating a contact manually
+  // was previously impossible: the backend only created contacts via campaign
+  // Excel uploads or incoming WhatsApp messages.
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [addForm, setAddForm] = useState({ phone: '', name: '', company: '', marketing_opt_in: true })
   const limit = 50
 
   const load = async () => {
@@ -656,7 +673,7 @@ function ContactsView() {
       setContacts((data.data || []).map((contact) => ({ ...contact, name: displayIdentity(contact), phone: contact.is_lid ? '' : displayIdentity({ phone: contact.phone }) })))
       setTotal(data.total || 0)
       setStats(nextStats)
-    } catch (error) { setNotice({ type: 'error', text: error.message }) }
+    } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) }
   }
 
   useEffect(() => { load() }, [search, page])
@@ -667,18 +684,37 @@ function ContactsView() {
     setDeleteId(null)
   }
 
+  const createContact = async (event) => {
+    event.preventDefault()
+    if (!addForm.phone.trim()) return
+    setBusy(true)
+    try {
+      await apiFetch('/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...addForm, phone: addForm.phone.trim() }),
+      })
+      setNotice({ type: 'success', text: 'Contact added.' })
+      setAddForm({ phone: '', name: '', company: '', marketing_opt_in: true })
+      setShowAddForm(false)
+      await load()
+    } catch (error) {
+      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Contacts · add' }) })
+    } finally { setBusy(false) }
+  }
+
   const save = async (event) => {
     event.preventDefault()
     setBusy(true)
     try {
       await apiFetch(`/contacts/${selected.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...form, tags: form.tags.split(',').map((tag) => tag.trim()).filter(Boolean) }) })
       setNotice({ type: 'success', text: 'Contact updated.' }); setSelected(null); await load()
-    } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) }
   }
 
   const optOut = async (contact) => {
     setBusy(true)
-    try { await apiFetch(`/contacts/${contact.id}/optout`, { method: 'POST' }); setNotice({ type: 'success', text: `${displayIdentity(contact)} opted out.` }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch(`/contacts/${contact.id}/optout`, { method: 'POST' }); setNotice({ type: 'success', text: `${displayIdentity(contact)} opted out.` }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) }
   }
 
   const toggleContact = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
@@ -686,22 +722,33 @@ function ContactsView() {
   const bulkDelete = async () => {
     if (!selectedIds.length || !window.confirm(`Delete ${selectedIds.length} selected contact(s)?`)) return
     setBusy(true)
-    try { await apiFetch('/contacts/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setNotice({ type: 'success', text: `${selectedIds.length} contact(s) deleted.` }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch('/contacts/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setNotice({ type: 'success', text: `${selectedIds.length} contact(s) deleted.` }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) }
   }
 
   const remove = async (contact) => {
     if (deleteId !== contact.id) return setDeleteId(contact.id)
     setBusy(true)
-    try { await apiFetch(`/contacts/${contact.id}`, { method: 'DELETE' }); setDeleteId(null); setSelected(null); setNotice({ type: 'success', text: 'Contact deleted.' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
+    try { await apiFetch(`/contacts/${contact.id}`, { method: 'DELETE' }); setDeleteId(null); setSelected(null); setNotice({ type: 'success', text: 'Contact deleted.' }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) }
   }
 
   const pageCount = Math.max(1, Math.ceil(total / limit))
   return <div className="view-workspace">
-    <div className="view-toolbar"><div><p className="eyebrow">Customer directory</p><h2>Contacts</h2><p className="muted-copy">Keep customer details, consent, and conversation context in one place.</p></div><input className="search-input" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search contacts" /></div>
+    <div className="view-toolbar"><div><p className="eyebrow">Customer directory</p><h2>Contacts</h2><p className="muted-copy">Keep customer details, consent, and conversation context in one place.</p></div><div className="button-row"><input className="search-input" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search contacts" /><button type="button" className="primary-btn" onClick={() => setShowAddForm((open) => !open)}>Add contact</button></div></div>
+    {showAddForm && <section className="panel editor-panel"><div className="panel-header"><div><p className="eyebrow">New contact</p><h2>Add a contact manually</h2></div><button className="secondary-btn" onClick={() => setShowAddForm(false)}>Close</button></div><form className="form-grid" onSubmit={createContact}><label className="form-label">Phone number<input value={addForm.phone} onChange={(event) => setAddForm({ ...addForm, phone: event.target.value })} placeholder="+91 98765 43210" required /><small>Include the country code, e.g. +91…</small></label><label className="form-label">Name<input value={addForm.name} onChange={(event) => setAddForm({ ...addForm, name: event.target.value })} placeholder="Customer name" /></label><label className="form-label">Company<input value={addForm.company} onChange={(event) => setAddForm({ ...addForm, company: event.target.value })} placeholder="Company (optional)" /></label><label className="check-label full-field"><input type="checkbox" checked={addForm.marketing_opt_in} onChange={(event) => setAddForm({ ...addForm, marketing_opt_in: event.target.checked })} /> Marketing opt-in</label><div className="button-row full-field"><button className="primary-btn" disabled={busy || !addForm.phone.trim()}>Save contact</button></div></form></section>}
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
     <div className="stats-grid compact-stats">{[['Total contacts', stats.total, 'green'], ['Opted in', stats.optedIn, 'blue'], ['Opted out', stats.optedOut, 'amber']].map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
     {selected && <section className="panel editor-panel"><div className="panel-header"><div><p className="eyebrow">Editing contact</p><h2>{selected.name || selected.phone}</h2></div><button className="secondary-btn" onClick={() => setSelected(null)}>Close</button></div><form className="form-grid" onSubmit={save}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label className="form-label">Email<input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="name@example.com" /><small>Optional — used for email campaigns.</small></label><label className="form-label">Company<input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></label><label className="form-label">City<input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></label><label className="form-label">Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="dealer, priority" /></label><label className="form-label full-field">Notes<textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><label className="check-label full-field"><input type="checkbox" checked={form.marketing_opt_in} onChange={(event) => setForm({ ...form, marketing_opt_in: event.target.checked })} /> Marketing opt-in</label><div className="button-row full-field"><button className="primary-btn" disabled={busy}>Save changes</button></div></form></section>}
-    <section className="panel"><div className="panel-header"><h2>All contacts</h2><span className="file-note">{total} records</span></div>{selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all contacts on this page" checked={contacts.length > 0 && selectedIds.length === contacts.length} onChange={toggleAllContacts} /></th><th>Phone</th><th>Name</th><th>Email</th><th>Company</th><th>City</th><th>Opt-in</th><th>Last message</th><th>Actions</th></tr></thead><tbody>{contacts.map((contact) => <tr key={contact.id} onClick={() => selectContact(contact)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${contact.name || contact.phone}`} checked={selectedIds.includes(contact.id)} onChange={() => toggleContact(contact.id)} /></td><td data-label="Phone">{contact.phone}</td><td data-label="Name">{contact.name || 'Unknown'}</td><td data-label="Email">{contact.email || '-'}</td><td data-label="Company">{contact.company || '-'}</td><td data-label="City">{contact.city || '-'}</td><td data-label="Consent"><span className={`campaign-status ${contact.marketing_opt_in ? 'running' : 'stopped'}`}>{contact.marketing_opt_in ? 'Opted in' : 'Opted out'}</span></td><td data-label="Last message">{formatDate(contact.last_message_at)}</td><td data-label="Actions"><div className="button-row" onClick={(event) => event.stopPropagation()}><button className="secondary-btn" onClick={() => optOut(contact)} disabled={busy || !contact.marketing_opt_in}>Opt out</button><button className="danger-btn" onClick={() => remove(contact)} disabled={busy}>{deleteId === contact.id ? 'Confirm delete' : 'Delete'}</button></div></td></tr>)}</tbody></table>{!contacts.length && <div className="empty-preview">No contacts match this search.</div>}</div><div className="pagination"><button className="secondary-btn" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1}>Previous</button><span>Page {page} of {pageCount}</span><button className="secondary-btn" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={page >= pageCount}>Next</button></div></section>
+    <section className="panel"><div className="panel-header"><h2>All contacts</h2><span className="file-note">{total} records</span></div>{selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all contacts on this page" checked={contacts.length > 0 && selectedIds.length === contacts.length} onChange={toggleAllContacts} /></th><th>Phone number</th><th>Name</th><th>Email</th><th>Company</th><th>City</th><th>Opt-in</th><th>Last message</th><th>Actions</th></tr></thead><tbody>{contacts.map((contact) => <tr key={contact.id} onClick={() => selectContact(contact)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${contact.name || contact.phone}`} checked={selectedIds.includes(contact.id)} onChange={() => toggleContact(contact.id)} /></td><td data-label="Phone">{contact.phone}</td><td data-label="Name">{contact.name || 'Unknown'}</td><td data-label="Email">{contact.email || '-'}</td><td data-label="Company">{contact.company || '-'}</td><td data-label="City">{contact.city || '-'}</td><td data-label="Consent"><span className={`campaign-status ${contact.marketing_opt_in ? 'running' : 'stopped'}`}>{contact.marketing_opt_in ? 'Opted in' : 'Opted out'}</span></td><td data-label="Last message">{formatDate(contact.last_message_at)}</td><td data-label="Actions"><div className="button-row" onClick={(event) => event.stopPropagation()}><button className="secondary-btn" onClick={() => optOut(contact)} disabled={busy || !contact.marketing_opt_in}>Opt out</button><button className="danger-btn" onClick={() => remove(contact)} disabled={busy}>{deleteId === contact.id ? 'Confirm delete' : 'Delete'}</button></div></td></tr>)}</tbody></table>{!contacts.length && (search
+                ? <EmptyState icon="🔍" title="No matching contacts" description={`No contacts match “${search}”. Try a different name, phone number, or company.`} />
+                : <EmptyState
+                    icon="👥"
+                    title="No contacts yet"
+                    description="Add your first contact or upload an Excel file to get started."
+                    actions={[
+                      { label: 'Add contact', onClick: () => setShowAddForm(true) },
+                      { label: 'Import from an Excel file', variant: 'secondary', onClick: () => setActiveView('Campaigns') },
+                    ]}
+                  />)}</div><div className="pagination"><button className="secondary-btn" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page === 1}>Previous</button><span>Page {page} of {pageCount}</span><button className="secondary-btn" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={page >= pageCount}>Next</button></div></section>
   </div>
 }
 
@@ -712,12 +759,12 @@ function TemplatesView() {
   const [editing, setEditing] = useState(null)
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
-  const load = async () => { try { setTemplates(await apiFetch('/templates')) } catch (error) { setNotice({ type: 'error', text: error.message }) } }
+  const load = async () => { try { setTemplates(await apiFetch('/templates')) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } }
   useEffect(() => { load() }, [])
-  const submit = async (event) => { event.preventDefault(); setBusy(true); try { await apiFetch(editing ? `/templates/${editing}` : '/templates', { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); setForm({ name: '', content: '' }); setEditing(null); setNotice({ type: 'success', text: editing ? 'Template updated.' : 'Template created.' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) } }
-  const duplicate = async (id) => { try { await apiFetch(`/templates/${id}/duplicate`, { method: 'POST' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } }
-  const remove = async (id) => { if (!window.confirm('Delete this template?')) return; try { await apiFetch(`/templates/${id}`, { method: 'DELETE' }); setSelectedIds((current) => current.filter((item) => item !== id)); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } }
-  const bulkDelete = async () => { if (!selectedIds.length || !window.confirm(`Delete ${selectedIds.length} selected template(s)?`)) return; setBusy(true); try { await apiFetch('/templates/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setNotice({ type: 'success', text: `${selectedIds.length} template(s) deleted.` }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) } }
+  const submit = async (event) => { event.preventDefault(); setBusy(true); try { await apiFetch(editing ? `/templates/${editing}` : '/templates', { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); setForm({ name: '', content: '' }); setEditing(null); setNotice({ type: 'success', text: editing ? 'Template updated.' : 'Template created.' }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  const duplicate = async (id) => { try { await apiFetch(`/templates/${id}/duplicate`, { method: 'POST' }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } }
+  const remove = async (id) => { if (!window.confirm('Delete this template?')) return; try { await apiFetch(`/templates/${id}`, { method: 'DELETE' }); setSelectedIds((current) => current.filter((item) => item !== id)); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } }
+  const bulkDelete = async () => { if (!selectedIds.length || !window.confirm(`Delete ${selectedIds.length} selected template(s)?`)) return; setBusy(true); try { await apiFetch('/templates/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setNotice({ type: 'success', text: `${selectedIds.length} template(s) deleted.` }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
   const toggleTemplate = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   const toggleAllTemplates = () => setSelectedIds(selectedIds.length === templates.length ? [] : templates.map((template) => template.id))
   const loadExample = (exampleType) => {
@@ -729,7 +776,7 @@ function TemplatesView() {
       setForm({ name: 'Promotional Announcement', content: `Hi {{name}},\n\nExciting news! Sudarshan Pipes is launching a special promotion on {{product}}.\n\nLimited time offer:\n• Competitive pricing\n• Fast delivery to {{city}}\n• Dedicated support for bulk orders\n\nReply with "More Info" to learn more, or reach out directly.\n\nSudarshan Pipes Team` })
     }
   }
-  return <div className="view-workspace"><div><p className="eyebrow">Reusable messages</p><h2>Templates</h2><p className="muted-copy">Build consistent messages with fields that personalize at send time.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<div className="split-view"><section className="panel"><div className="panel-header"><h2>{editing ? 'Edit template' : 'New template'}</h2>{editing && <button className="secondary-btn" onClick={() => { setEditing(null); setForm({ name: '', content: '' }) }}>Cancel</button>}</div><form className="campaign-builder form-stack" onSubmit={submit}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="form-label">Content<textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} required /><small className="help-note">Fields like <code>{"{{name}}"}</code>, <code>{"{{company}}"}</code>, <code>{"{{product}}"}</code>, <code>{"{{city}}"}</code> are replaced with actual data from your Excel sheet. Example: <code>{"Hi {{name}}"}</code> becomes "Hi Rajesh" when name=Rajesh in your upload.</small></label><button className="primary-btn" disabled={busy}>{editing ? 'Update template' : 'Create template'}</button></form><div className="button-row"><button type="button" className="secondary-btn" onClick={() => loadExample('inquiry')} disabled={busy}>Load example: Product Inquiry</button><button type="button" className="secondary-btn" onClick={() => loadExample('reengagement')} disabled={busy}>Load example: Re-engagement</button><button type="button" className="secondary-btn" onClick={() => loadExample('promotion')} disabled={busy}>Load example: Promotion</button></div></section><section className="template-grid"><div className="panel-header"><span>{selectedIds.length > 0 ? `${selectedIds.length} selected` : 'Select templates'}</span><div className="button-row"><label className="check-label"><input type="checkbox" aria-label="Select all templates" checked={templates.length > 0 && selectedIds.length === templates.length} onChange={toggleAllTemplates} /> All</label>{selectedIds.length > 0 && <button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button>}</div></div>{templates.map((template) => <article className="panel template-card" key={template.id}><div className="panel-header"><label className="check-label"><input type="checkbox" aria-label={`Select ${template.name}`} checked={selectedIds.includes(template.id)} onChange={() => toggleTemplate(template.id)} /> Select</label><small className="file-note">Updated {formatDate(template.updated_at)}</small></div><h2>{template.name}</h2><p className="template-preview"><PlaceholderPreview content={template.content} /></p><div className="button-row"><button className="secondary-btn" onClick={() => { setEditing(template.id); setForm({ name: template.name, content: template.content }) }}>Edit</button><button className="secondary-btn" onClick={() => duplicate(template.id)}>Duplicate</button><button className="danger-btn" onClick={() => remove(template.id)}>Delete</button></div></article>)}{!templates.length && <div className="panel empty-preview">No templates created yet.</div>}</section></div></div>
+  return <div className="view-workspace"><div><p className="eyebrow">Reusable messages</p><h2>Templates</h2><p className="muted-copy">Build consistent messages with fields that personalize at send time.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<div className="split-view"><section className="panel"><div className="panel-header"><h2>{editing ? 'Edit template' : 'New template'}</h2>{editing && <button className="secondary-btn" onClick={() => { setEditing(null); setForm({ name: '', content: '' }) }}>Cancel</button>}</div><form className="campaign-builder form-stack" onSubmit={submit}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="form-label">Content<textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} required /><small className="help-note">Fields like <code>{"{{name}}"}</code>, <code>{"{{company}}"}</code>, <code>{"{{product}}"}</code>, <code>{"{{city}}"}</code> are replaced with actual data from your Excel sheet. Example: <code>{"Hi {{name}}"}</code> becomes "Hi Rajesh" when name=Rajesh in your upload.</small></label><button className="primary-btn" disabled={busy}>{editing ? 'Update template' : 'Create template'}</button></form><div className="button-row"><button type="button" className="secondary-btn" onClick={() => loadExample('inquiry')} disabled={busy}>Load example: Product Inquiry</button><button type="button" className="secondary-btn" onClick={() => loadExample('reengagement')} disabled={busy}>Load example: Re-engagement</button><button type="button" className="secondary-btn" onClick={() => loadExample('promotion')} disabled={busy}>Load example: Promotion</button></div></section><section className="template-grid"><div className="panel-header"><span>{selectedIds.length > 0 ? `${selectedIds.length} selected` : 'Select templates'}</span><div className="button-row"><label className="check-label"><input type="checkbox" aria-label="Select all templates" checked={templates.length > 0 && selectedIds.length === templates.length} onChange={toggleAllTemplates} /> All</label>{selectedIds.length > 0 && <button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button>}</div></div>{templates.map((template) => <article className="panel template-card" key={template.id}><div className="panel-header"><label className="check-label"><input type="checkbox" aria-label={`Select ${template.name}`} checked={selectedIds.includes(template.id)} onChange={() => toggleTemplate(template.id)} /> Select</label><small className="file-note">Updated {formatDate(template.updated_at)}</small></div><h2>{template.name}</h2><p className="template-preview"><PlaceholderPreview content={template.content} /></p><div className="button-row"><button className="secondary-btn" onClick={() => { setEditing(template.id); setForm({ name: template.name, content: template.content }) }}>Edit</button><button className="secondary-btn" onClick={() => duplicate(template.id)}>Duplicate</button><button className="danger-btn" onClick={() => remove(template.id)}>Delete</button></div></article>)}{!templates.length && <div className="panel"><EmptyState icon="📝" title="No templates yet" description={`Save time by creating reusable message templates — fields like {{name}} personalize every send automatically.`} actions={[{ label: 'Create your first template', onClick: () => document.querySelector('.campaign-builder input')?.focus() }] } /></div>}</section></div></div>
 }
 
 function KnowledgeBaseView() {
@@ -740,15 +787,15 @@ function KnowledgeBaseView() {
   const [editing, setEditing] = useState(null)
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
-  const load = async () => { try { setDocuments(await apiFetch('/knowledge')) } catch (error) { setNotice({ type: 'error', text: error.message }) } }
+  const load = async () => { try { setDocuments(await apiFetch('/knowledge')) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } }
   useEffect(() => { load() }, [])
-  const save = async (event) => { event.preventDefault(); setBusy(true); try { await apiFetch(editing ? `/knowledge/${editing}` : '/knowledge', { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); setForm({ name: '', category: 'general', content: '' }); setEditing(null); setNotice({ type: 'success', text: editing ? 'Document updated.' : 'Document added.' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) } }
-  const upload = async (event) => { event.preventDefault(); if (!file) return; setBusy(true); const formData = new FormData(); formData.append('file', file); formData.append('name', form.name); formData.append('category', form.category); try { await apiFetch('/knowledge/upload', { method: 'POST', body: formData }); setFile(null); setForm({ name: '', category: 'general', content: '' }); setNotice({ type: 'success', text: 'Document uploaded.' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) } }
-  const remove = async (id) => { if (!window.confirm('Delete this document?')) return; try { await apiFetch(`/knowledge/${id}`, { method: 'DELETE' }); setSelectedIds((current) => current.filter((item) => item !== id)); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } }
-  const bulkDelete = async () => { if (!selectedIds.length || !window.confirm(`Delete ${selectedIds.length} selected document(s)?`)) return; setBusy(true); try { await apiFetch('/knowledge/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setNotice({ type: 'success', text: `${selectedIds.length} document(s) deleted.` }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) } }
+  const save = async (event) => { event.preventDefault(); setBusy(true); try { await apiFetch(editing ? `/knowledge/${editing}` : '/knowledge', { method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); setForm({ name: '', category: 'general', content: '' }); setEditing(null); setNotice({ type: 'success', text: editing ? 'Document updated.' : 'Document added.' }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  const upload = async (event) => { event.preventDefault(); if (!file) return; setBusy(true); const formData = new FormData(); formData.append('file', file); formData.append('name', form.name); formData.append('category', form.category); try { await apiFetch('/knowledge/upload', { method: 'POST', body: formData }); setFile(null); setForm({ name: '', category: 'general', content: '' }); setNotice({ type: 'success', text: 'Document uploaded.' }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  const remove = async (id) => { if (!window.confirm('Delete this document?')) return; try { await apiFetch(`/knowledge/${id}`, { method: 'DELETE' }); setSelectedIds((current) => current.filter((item) => item !== id)); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } }
+  const bulkDelete = async () => { if (!selectedIds.length || !window.confirm(`Delete ${selectedIds.length} selected document(s)?`)) return; setBusy(true); try { await apiFetch('/knowledge/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedIds }) }); setSelectedIds([]); setNotice({ type: 'success', text: `${selectedIds.length} document(s) deleted.` }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
   const toggleDocument = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   const toggleAllDocuments = () => setSelectedIds(selectedIds.length === documents.length ? [] : documents.map((document) => document.id))
-  const edit = async (id) => { try { const doc = await apiFetch(`/knowledge/${id}`); setEditing(id); setForm({ name: doc.name, category: doc.category, content: doc.content }) } catch (error) { setNotice({ type: 'error', text: error.message }) } }
+  const edit = async (id) => { try { const doc = await apiFetch(`/knowledge/${id}`); setEditing(id); setForm({ name: doc.name, category: doc.category, content: doc.content }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } }
   const loadExample = (exampleType) => {
     if (exampleType === 'spec') {
       setForm({ name: 'UGD Pipe Specifications', category: 'Product Specs', content: `Diameter Range: 20mm to 110mm\nMaterial Grade: Grade B, Grade C, Grade D\nStandard Compliance: IS 651:2015 (uPVC pipes for water supply)\n\nTypical Use Cases:\n- Municipal water distribution networks\n- Agricultural irrigation systems\n- Industrial process water applications\n\nKey Performance Features:\n- Corrosion-resistant uPVC construction\n- Lightweight and easy to install\n- Hydrostatic strength rated for 10-16 bar working pressure\n- UV-stabilized for outdoor applications\n- Long service life of 50+ years with minimal maintenance` })
@@ -756,18 +803,18 @@ function KnowledgeBaseView() {
       setForm({ name: 'UGD Pipes - Frequently Asked Questions', category: 'FAQ', content: `Q: What is the difference between Grade B and Grade C pipes?\nA: Grade C pipes have higher hydrostatic strength and are suitable for higher pressure applications. Grade B is standard for municipal water supply.\n\nQ: Can UGD pipes be used for hot water?\nA: No, uPVC pipes are designed for cold water applications only. Exposure to temperatures above 40°C may damage the pipes.\n\nQ: How long do UGD pipes last?\nA: With proper installation and maintenance, UGD pipes have a service life of 50 years or more.\n\nQ: Are UGD pipes environmentally friendly?\nA: Yes, uPVC is recyclable and the pipes don't leach harmful chemicals into water.` })
     }
   }
-  return <div className="view-workspace"><div><p className="eyebrow">AI context library</p><h2>Knowledge Base</h2><p className="muted-copy">This content feeds the AI's replies through the knowledge base lookup.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<div className="split-view"><section className="panel"><div className="panel-header"><h2>{editing ? 'Edit document' : 'Add text'}</h2>{editing && <button className="secondary-btn" onClick={() => { setEditing(null); setForm({ name: '', category: 'general', content: '' }) }}>Cancel</button>}</div><form className="form-stack" onSubmit={save}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="form-label">Category<input value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><label className="form-label">Content<textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} required /></label><div className="help-note"><strong>Tips for good entries:</strong> Be specific and factual. Keep one topic per entry. Avoid mixing unrelated products. Strong entries directly improve AI reply accuracy.</div><button className="primary-btn" disabled={busy}>{editing ? 'Update document' : 'Add document'}</button></form><div className="button-row"><button type="button" className="secondary-btn" onClick={() => loadExample('spec')} disabled={busy}>Load example: Product Specs</button><button type="button" className="secondary-btn" onClick={() => loadExample('faq')} disabled={busy}>Load example: FAQ</button></div><div className="upload-divider"><span>or upload a file</span></div><form className="form-stack" onSubmit={upload}><label className="upload-dropzone">{file ? file.name : 'Choose TXT, MD, PDF, or DOCX'}<input type="file" accept=".txt,.md,.pdf,.docx" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-btn" disabled={busy || !file}>Upload document</button></form></section><section className="panel"><div className="panel-header"><h2>Documents</h2><span className="file-note">{documents.length} sources</span></div><div className="button-row"><label className="check-label"><input type="checkbox" aria-label="Select all knowledge documents" checked={documents.length > 0 && selectedIds.length === documents.length} onChange={toggleAllDocuments} /> All</label>{selectedIds.length > 0 && <><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></>}</div><div className="campaign-table-wrap"><table><thead><tr><th>Select</th><th>Name</th><th>Category</th><th>Status</th><th>Length</th><th>Added</th><th /></tr></thead><tbody>{documents.map((document) => <tr key={document.id}><td data-label="Select"><input type="checkbox" aria-label={`Select ${document.name}`} checked={selectedIds.includes(document.id)} onChange={() => toggleDocument(document.id)} /></td><td data-label="Name"><strong>{document.name}</strong></td><td data-label="Category">{document.category}</td><td data-label="Status"><span className={`campaign-status ${document.status === 'active' ? 'running' : 'paused'}`}>{document.status}</span></td><td data-label="Length">{document.content_length} chars</td><td data-label="Added">{formatDate(document.created_at)}</td><td data-label="Actions"><div className="button-row"><button className="secondary-btn" onClick={() => edit(document.id)}>Edit</button><button className="danger-btn" onClick={() => remove(document.id)}>Delete</button></div></td></tr>)}</tbody></table>{!documents.length && <div className="empty-preview">No knowledge documents yet.</div>}</div></section></div></div>
+  return <div className="view-workspace"><div><p className="eyebrow">AI context library</p><h2>Knowledge Base</h2><p className="muted-copy">This content feeds the AI's replies through the knowledge base lookup.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<div className="split-view"><section className="panel"><div className="panel-header"><h2>{editing ? 'Edit document' : 'Add text'}</h2>{editing && <button className="secondary-btn" onClick={() => { setEditing(null); setForm({ name: '', category: 'general', content: '' }) }}>Cancel</button>}</div><form className="form-stack" onSubmit={save}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="form-label">Category<input value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><label className="form-label">Content<textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} required /></label><div className="help-note"><strong>Tips for good entries:</strong> Be specific and factual. Keep one topic per entry. Avoid mixing unrelated products. Strong entries directly improve AI reply accuracy.</div><button className="primary-btn" disabled={busy}>{editing ? 'Update document' : 'Add document'}</button></form><div className="button-row"><button type="button" className="secondary-btn" onClick={() => loadExample('spec')} disabled={busy}>Load example: Product Specs</button><button type="button" className="secondary-btn" onClick={() => loadExample('faq')} disabled={busy}>Load example: FAQ</button></div><div className="upload-divider"><span>or upload a file</span></div><form className="form-stack" onSubmit={upload}><label className="upload-dropzone">{file ? file.name : 'Choose TXT, MD, PDF, or DOCX'}<input type="file" accept=".txt,.md,.pdf,.docx" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label><button className="secondary-btn" disabled={busy || !file}>Upload document</button></form></section><section className="panel"><div className="panel-header"><h2>Documents</h2><span className="file-note">{documents.length} sources</span></div><div className="button-row"><label className="check-label"><input type="checkbox" aria-label="Select all knowledge documents" checked={documents.length > 0 && selectedIds.length === documents.length} onChange={toggleAllDocuments} /> All</label>{selectedIds.length > 0 && <><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></>}</div><div className="campaign-table-wrap"><table><thead><tr><th>Select</th><th>Name</th><th>Category</th><th>Status</th><th>Length</th><th>Added</th><th /></tr></thead><tbody>{documents.map((document) => <tr key={document.id}><td data-label="Select"><input type="checkbox" aria-label={`Select ${document.name}`} checked={selectedIds.includes(document.id)} onChange={() => toggleDocument(document.id)} /></td><td data-label="Name"><strong>{document.name}</strong></td><td data-label="Category">{document.category}</td><td data-label="Status"><span className={`campaign-status ${document.status === 'active' ? 'running' : 'paused'}`}>{document.status}</span></td><td data-label="Length">{document.content_length} chars</td><td data-label="Added">{formatDate(document.created_at)}</td><td data-label="Actions"><div className="button-row"><button className="secondary-btn" onClick={() => edit(document.id)}>Edit</button><button className="danger-btn" onClick={() => remove(document.id)}>Delete</button></div></td></tr>)}</tbody></table>{!documents.length && <EmptyState icon="📚" title="No documents yet" description="Upload files so the AI can answer questions using your business information — products, pricing, policies." actions={[{ label: 'Add or upload a document', onClick: () => document.querySelector('.form-stack input')?.focus() }] } />}</div></section></div></div>
 }
 
 function AnalyticsView() {
   const [dashboard, setDashboard] = useState(null)
   const [trend, setTrend] = useState([])
   const [notice, setNotice] = useState({ type: '', text: '' })
-  useEffect(() => { Promise.all([apiFetch('/analytics/dashboard'), apiFetch('/analytics/messages/trend?days=7')]).then(([data, nextTrend]) => { setDashboard({ ...data, recentMessages: (data.recentMessages || []).map((message) => ({ ...message, name: displayIdentity(message) })) }); setTrend(nextTrend || []) }).catch((error) => setNotice({ type: 'error', text: error.message })) }, [])
+  useEffect(() => { Promise.all([apiFetch('/analytics/dashboard'), apiFetch('/analytics/messages/trend?days=7')]).then(([data, nextTrend]) => { setDashboard({ ...data, recentMessages: (data.recentMessages || []).map((message) => ({ ...message, name: displayIdentity(message) })) }); setTrend(nextTrend || []) }).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
   if (!dashboard) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <div className="panel empty-preview">Loading analytics...</div>}</div>
   const cards = [['Active contacts', dashboard.contacts.active, 'green'], ['Opted-out contacts', dashboard.contacts.optedOut, 'amber'], ['Open conversations', dashboard.conversations.open, 'blue'], ['Human takeover', dashboard.conversations.human_takeover, 'violet'], ['Resolved', dashboard.conversations.resolved, 'green'], ['Inbound messages', dashboard.messages.inbound, 'blue'], ['Outbound messages', dashboard.messages.outbound, 'violet'], ['Campaigns sent', dashboard.campaigns.total_sent, 'green'], ['Campaigns failed', dashboard.campaigns.total_failed, 'amber'], ['Campaign replies', dashboard.campaigns.total_replies, 'blue'], ['Campaign opt-outs', dashboard.campaigns.total_opt_outs, 'violet']]
   const maxValue = Math.max(1, ...trend.flatMap((item) => [item.inbound || 0, item.outbound || 0]))
-  return <div className="view-workspace"><div><p className="eyebrow">Performance overview</p><h2>Analytics</h2><p className="muted-copy">A compact view of customer activity, campaigns, and message flow.</p></div>{notice.text && <div className="notice error">{notice.text}</div>}<div className="stats-grid analytics-stats">{cards.map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value || 0}</strong></article>)}</div><div className="analytics-grid"><section className="panel"><div className="panel-header"><h2>Message trend</h2><span className="file-note">Last 7 days</span></div><div className="trend-chart">{trend.map((item) => <div className="trend-day" key={item.date}><div className="trend-bars"><i className="inbound-bar" style={{ height: `${Math.max(4, ((item.inbound || 0) / maxValue) * 100)}%` }} /><i className="outbound-bar" style={{ height: `${Math.max(4, ((item.outbound || 0) / maxValue) * 100)}%` }} /></div><small>{item.date.slice(5)}</small><span>{item.inbound || 0} / {item.outbound || 0}</span></div>)}</div><div className="chart-legend"><span><i className="inbound-bar" /> Inbound</span><span><i className="outbound-bar" /> Outbound</span></div></section><section className="panel"><div className="panel-header"><h2>Recent messages</h2></div><ul className="list recent-message-list">{dashboard.recentMessages.map((message, index) => <li key={`${message.created_at}-${index}`}><div><strong>{message.name || message.phone}</strong><small>{message.body}</small></div><span className={`campaign-status ${message.direction === 'inbound' ? 'running' : 'completed'}`}>{message.direction}</span></li>)}</ul>{!dashboard.recentMessages.length && <div className="empty-preview">No messages yet.</div>}</section></div><section className="panel"><div className="panel-header"><h2>Recent campaigns</h2></div><div className="campaign-table-wrap"><table><thead><tr><th>Campaign</th><th>Status</th><th>Sent</th><th>Failed</th><th>Replies</th><th>Opt-outs</th></tr></thead><tbody>{dashboard.recentCampaigns.map((campaign) => <tr key={campaign.id}><td data-label="Campaign"><strong>{campaign.name}</strong><small>{formatDate(campaign.created_at)}</small></td><td data-label="Status"><span className={`campaign-status ${String(campaign.status).toLowerCase()}`}>{campaign.status}</span></td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td><td data-label="Replies">{campaign.replies}</td><td data-label="Opt-outs">{campaign.opt_outs}</td></tr>)}</tbody></table>{!dashboard.recentCampaigns.length && <div className="empty-preview">No campaign activity yet.</div>}</div></section></div>
+  return <div className="view-workspace"><div><p className="eyebrow">Performance overview</p><h2>Analytics</h2><p className="muted-copy">A compact view of customer activity, campaigns, and message flow.</p></div>{notice.text && <div className="notice error">{notice.text}</div>}<div className="stats-grid analytics-stats">{cards.map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value || 0}</strong></article>)}</div><div className="analytics-grid"><section className="panel"><div className="panel-header"><h2>Message trend</h2><span className="file-note">Last 7 days</span></div><div className="trend-chart">{trend.length ? trend.map((item) => <div className="trend-day" key={item.date}><div className="trend-bars"><i className="inbound-bar" style={{ height: `${Math.max(4, ((item.inbound || 0) / maxValue) * 100)}%` }} /><i className="outbound-bar" style={{ height: `${Math.max(4, ((item.outbound || 0) / maxValue) * 100)}%` }} /></div><small>{item.date.slice(5)}</small><span>{item.inbound || 0} / {item.outbound || 0}</span></div>) : <EmptyState icon="📊" title="No message activity yet" description="Once conversations and campaigns start exchanging messages, daily trends will appear here." />}</div><div className="chart-legend"><span><i className="inbound-bar" /> Inbound</span><span><i className="outbound-bar" /> Outbound</span></div></section><section className="panel"><div className="panel-header"><h2>Recent messages</h2></div><ul className="list recent-message-list">{dashboard.recentMessages.map((message, index) => <li key={`${message.created_at}-${index}`}><div><strong>{message.name || message.phone}</strong><small>{message.body}</small></div><span className={`campaign-status ${message.direction === 'inbound' ? 'running' : 'completed'}`}>{message.direction}</span></li>)}</ul>{!dashboard.recentMessages.length && <EmptyState icon="✉️" title="No messages yet" description="Inbound and outbound messages will appear here once customers start chatting with you." />}</section></div><section className="panel"><div className="panel-header"><h2>Recent campaigns</h2></div><div className="campaign-table-wrap"><table><thead><tr><th>Campaign</th><th>Status</th><th>Sent</th><th>Failed</th><th>Replies</th><th>Opt-outs</th></tr></thead><tbody>{dashboard.recentCampaigns.map((campaign) => <tr key={campaign.id}><td data-label="Campaign"><strong>{campaign.name}</strong><small>{formatDate(campaign.created_at)}</small></td><td data-label="Status"><span className={`campaign-status ${String(campaign.status).toLowerCase()}`}>{campaign.status}</span></td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td><td data-label="Replies">{campaign.replies}</td><td data-label="Opt-outs">{campaign.opt_outs}</td></tr>)}</tbody></table>{!dashboard.recentCampaigns.length && <EmptyState icon="📣" title="No campaign activity yet" description="Create and run your first campaign — its delivery and reply stats will show up here." actions={[{ label: 'Go to Campaigns', onClick: () => setActiveView('Campaigns') }] } />}</div></section></div>
 }
 
 function SettingsView({ userEmail }) {
@@ -779,16 +826,20 @@ function SettingsView({ userEmail }) {
   const [testNotice, setTestNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
-  useEffect(() => { apiFetch('/settings').then(setSettings).catch((error) => setNotice({ type: 'error', text: error.message })) }, [])
+  useEffect(() => { apiFetch('/settings').then(setSettings).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
   useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '' })) }, [settings])
-  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) } }
+  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
   const testResend = async () => {
     setTesting(true); setTestNotice({ type: '', text: '' })
     try {
       const result = await apiFetch('/settings/email/test', { method: 'POST' })
       setTestNotice({ type: 'success', text: result.message || `Test email sent to ${userEmail}. Check your inbox (and spam folder).` })
     } catch (error) {
-      setTestNotice({ type: 'error', text: error.message })
+      // Resend setup errors stay actionable/specific — the backend already
+      // phrases them for users ("Resend rejected the test email: …"). The
+      // translator keeps them but strips any embedded technical detail
+      // (stack traces, JSON objects, status-code strings).
+      setTestNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Resend test email' }) })
     } finally { setTesting(false) }
   }
   if (!settings) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <div className="panel empty-preview">Loading settings...</div>}</div>
@@ -1005,7 +1056,7 @@ function App() {
         setRecentConversations(conversationData.data || [])
         setDashboardError('')
       } catch (error) {
-        setDashboardError(error.message)
+        setDashboardError(friendlyErrorMessage(error, { context: 'Dashboard' }))
       }
     }
 
@@ -1036,7 +1087,7 @@ function App() {
   const renderView = () => {
     if (activeView === 'WhatsApp Connection') return <ConnectionView />
     if (activeView === 'Campaigns') return <CampaignsView onNavigate={setActiveView} />
-    if (activeView === 'Inbox') return <InboxView />
+    if (activeView === 'Inbox') return <InboxView onNavigate={setActiveView} />
     if (activeView === 'Contacts') return <ContactsView />
     if (activeView === 'Templates') return <TemplatesView />
     if (activeView === 'Knowledge Base') return <KnowledgeBaseView />
@@ -1081,7 +1132,14 @@ function App() {
                   </li>
                 ))}
               </ul>
-              {!dashboard.recentCampaigns.length && <div className="empty-preview">No campaigns created yet.</div>}
+              {!dashboard.recentCampaigns.length && (
+                <EmptyState
+                  icon="📣"
+                  title="No campaigns yet"
+                  description="Create your first campaign to start reaching customers with personalized messages."
+                  actions={[{ label: 'Create campaign', onClick: () => setActiveView('Campaigns') }]}
+                />
+              )}
             </article>
 
             <article className="panel">
@@ -1100,7 +1158,14 @@ function App() {
                   </li>
                 ))}
               </ul>
-              {!recentConversations.length && <div className="empty-preview">No conversations yet.</div>}
+              {!recentConversations.length && (
+                <EmptyState
+                  icon="💬"
+                  title="No conversations yet"
+                  description="Once customers message your connected WhatsApp number, their conversations will appear here."
+                  actions={[{ label: 'Check connection', variant: 'secondary', onClick: () => setActiveView('WhatsApp Connection') }]}
+                />
+              )}
             </article>
           </section>
 

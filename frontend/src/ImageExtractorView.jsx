@@ -3,6 +3,8 @@ import Card from './components/Card';
 import Button from './components/Button';
 import Badge from './components/Badge';
 import { supabase } from './supabaseClient.js'
+import { friendlyErrorMessage } from './utils/errorMessages.js'
+import EmptyState from './components/EmptyState.jsx'
 
 const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
 const API = `${BACKEND_URL}/api/image-extractor`
@@ -37,7 +39,11 @@ async function request(path, options = {}) {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error(data.error || `Request failed (${response.status})`)
+    // Keep the HTTP status so friendlyErrorMessage() can map 401/404/429/5xx
+    // to human-readable text.
+    const error = new Error(data.error || `Request failed (${response.status})`)
+    error.status = response.status
+    throw error
   }
 
   return data
@@ -79,7 +85,7 @@ export default function ImageExtractorView() {
 
         return nextSelected.size === current.size ? current : nextSelected
       })
-    } catch (error) { setNotice({ type: 'error', text: error.message }) }
+    } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Image extractor · load leads' }) }) }
   }
 
   useEffect(() => { load() }, [])
@@ -117,7 +123,7 @@ export default function ImageExtractorView() {
       await load()
       setNotice({ type: 'success', text: `${result.updated_count} lead(s) marked ${reviewStatus}.` })
     } catch (error) {
-      setNotice({ type: 'error', text: error.message })
+      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Image extractor · bulk review' }) })
     } finally {
       setBulkBusy(false)
     }
@@ -152,7 +158,7 @@ export default function ImageExtractorView() {
             : entry))
         } catch (error) {
           failed += 1
-          setFiles(current => current.map((entry, currentIndex) => currentIndex === itemIndex ? { ...entry, status: 'failed', error: error.message } : entry))
+          setFiles(current => current.map((entry, currentIndex) => currentIndex === itemIndex ? { ...entry, status: 'failed', error: friendlyErrorMessage(error, { context: 'Image extractor · process image', log: false }) } : entry))
         }
       }
     }
@@ -163,7 +169,7 @@ export default function ImageExtractorView() {
   }
 
   const remove = async (id) => {
-    try { await request(`/leads/${id}`, { method: 'DELETE' }); await load() } catch (error) { setNotice({ type: 'error', text: error.message }) }
+    try { await request(`/leads/${id}`, { method: 'DELETE' }); await load() } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Image extractor · delete lead' }) }) }
   }
 
   const deleteAll = async () => {
@@ -177,7 +183,7 @@ export default function ImageExtractorView() {
       await load()
       setNotice({ type: 'success', text: 'All extracted leads have been deleted.' })
     } catch (error) {
-      setNotice({ type: 'error', text: error.message || 'Failed to delete all leads.' })
+      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Image extractor · delete all leads' }) })
     } finally {
       setBulkBusy(false)
     }
@@ -190,7 +196,9 @@ export default function ImageExtractorView() {
       const response = await fetch(`${API}/export/${format}${all ? '?all=true' : ''}`, { headers: await authHeaders() })
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
-        throw new Error(data.error || `Export failed (${response.status})`)
+        const error = new Error(data.error || `Export failed (${response.status})`)
+        error.status = response.status
+        throw error
       }
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
@@ -202,7 +210,7 @@ export default function ImageExtractorView() {
       anchor.remove()
       URL.revokeObjectURL(url)
     } catch (error) {
-      setNotice({ type: 'error', text: error.message })
+      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Image extractor · export' }) })
     }
   }
 
@@ -361,7 +369,13 @@ export default function ImageExtractorView() {
               ))}
             </tbody>
           </table>
-          {!leads.length && <div className="empty-preview">No extracted leads yet.</div>}
+          {!leads.length && (
+            <EmptyState
+              icon="🖼️"
+              title="No extracted leads yet"
+              description="Upload business card or listing photos above — the AI will pull out names, phone numbers, and emails into this table."
+            />
+          )}
         </div>
       </section>
     </div>

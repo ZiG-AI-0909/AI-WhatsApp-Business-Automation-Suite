@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient.js'
+import { friendlyErrorMessage } from './utils/errorMessages.js'
 
 export const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
 // If the backend URL matches the current origin (e.g., when the app is hosted on Vercel together with the API), use a relative path to avoid cross‑origin requests.
@@ -62,7 +63,11 @@ export async function apiFetch(path, options = {}) {
       try { await supabase.auth._removeSession() } catch { /* best effort */ }
       dispatchSessionInvalidated(`API 401 on ${path}`)
     }
-    throw new Error(data.error || `Request failed (${response.status})`)
+    // Attach the HTTP status so friendlyErrorMessage() can map 401/404/429/5xx
+    // to human-readable text without pattern-matching strings.
+    const error = new Error(data.error || `Request failed (${response.status})`)
+    error.status = response.status
+    throw error
   }
 
   return data

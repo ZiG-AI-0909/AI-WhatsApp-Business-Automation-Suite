@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { friendlyErrorMessage } from './utils/errorMessages.js';
 
 // ─── Password strength helper ──────────────────────────────────────────────────
 function getPasswordStrength(pw) {
@@ -240,7 +241,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
       // Browser will redirect — no further action needed here.
     } catch (err) {
       setGoogleLoading(false);
-      setNotice({ type: 'error', text: err.message || 'Google sign-in failed. Please try again.' });
+      setNotice({ type: 'error', text: friendlyErrorMessage(err, { context: 'Google sign-in', fallback: 'Google sign-in failed. Please try again.' }) });
     }
   };
 
@@ -295,7 +296,9 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
       if (mode === 'forgot') {
         const redirectTo = `${window.location.origin}/auth/callback`;
         const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
-        if (error) throw error;
+        if (error) {
+          throw new Error(friendlyErrorMessage(error, { context: 'Forgot password', log: false }));
+        }
         setNotice({
           type: 'success',
           text: 'Password reset instructions have been sent. Please check your inbox (and spam folder).',
@@ -313,14 +316,14 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
             error.message?.toLowerCase().includes('invalid')) {
             throw new Error('This password reset link has expired or is invalid. Please request a new one.');
           }
-          throw error;
+          throw new Error(friendlyErrorMessage(error, { context: 'Reset password', log: false }));
         }
         setNotice({ type: 'success', text: 'Password updated successfully! Please sign in with your new password.' });
         setTimeout(() => switchMode('signin'), 2000);
         return;
       }
     } catch (err) {
-      setNotice({ type: 'error', text: err.message || 'Something went wrong. Please try again.' });
+      setNotice({ type: 'error', text: friendlyErrorMessage(err, { context: 'Auth form', fallback: 'Something went wrong. Please try again.' }) });
     } finally {
       setLoading(false);
     }
@@ -340,7 +343,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
       setNotice({ type: 'success', text: 'Verification email resent. Please check your inbox.' });
       setResendCooldown(60);
     } catch (err) {
-      setNotice({ type: 'error', text: err.message || 'Failed to resend. Please try again shortly.' });
+      setNotice({ type: 'error', text: friendlyErrorMessage(err, { context: 'Resend verification', fallback: 'Failed to resend. Please try again shortly.' }) });
     } finally {
       setLoading(false);
     }

@@ -7,6 +7,25 @@ function validIds(ids) {
     return Array.isArray(ids) && ids.length > 0 && ids.every(id => Number.isInteger(id));
 }
 
+// POST /api/contacts — manual contact creation (empty-state "Add contact"
+// CTA). The service upserts by phone, so re-adding an existing number safely
+// updates it instead of duplicating.
+router.post('/', async (req, res) => {
+    const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+    if (!phone) return res.status(400).json({ error: 'A phone number is required.' });
+    try {
+        const created = await contactService.upsert(phone, {
+            name: req.body?.name || '',
+            company: req.body?.company || '',
+            marketing_opt_in: req.body?.marketing_opt_in !== false,
+        }, req.user.id);
+        res.status(201).json(created);
+    } catch (err) {
+        console.error('[contacts] manual create failed:', err);
+        res.status(500).json({ error: 'Could not save the contact. Please try again.' });
+    }
+});
+
 // GET /api/contacts
 router.get('/', async (req, res) => {
     const { search, page, limit, opt_in } = req.query;
