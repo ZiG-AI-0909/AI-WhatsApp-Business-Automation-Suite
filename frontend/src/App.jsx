@@ -524,7 +524,7 @@ function ConnectionView() {
   }
 
   return <div className="connection-workspace">
-    <div><p className="eyebrow">One active connection</p><h2>Connect WhatsApp</h2><p className="muted-copy">Choose the provider used by the inbox, AI assistant, and campaigns.</p></div>
+    <div><p className="eyebrow">One active connection</p><h2>Connect WhatsApp</h2><p className="muted-copy">Once connected, this WhatsApp number powers your Inbox, AI auto-replies, and Campaigns.</p></div>
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
     <div className="connection-grid">
       <section className="panel connection-card"><div className="connection-heading"><span className="connection-icon">&#128241;</span><div><h2>WhatsApp Web</h2><p className="muted-copy">Connect by scanning a QR code from your phone.</p></div></div><ol><li>Open WhatsApp on your phone</li><li>Go to Linked Devices</li><li>Choose Link a Device and scan</li></ol>{qr ? <img className="qr-image" src={qr} alt="WhatsApp Web QR code" /> : <div className="qr-placeholder">{status.qrAvailable ? 'QR code available' : 'No QR code available'}</div>}<div className="connection-actions"><button className="primary-btn" onClick={connectWeb} disabled={busy}>Connect with QR</button><button className="secondary-btn" onClick={loadQr} disabled={busy || !status.qrAvailable}>Refresh QR</button></div></section>
