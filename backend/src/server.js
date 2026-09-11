@@ -11,6 +11,7 @@ const messageQueue = require('./campaigns/messageQueue');
 const schedulerService = require('./campaigns/schedulerService');
 const { requireAuth } = require('./middleware/auth');
 const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
+const { assertEncryptionKey } = require('./utils/encryption');
 
 const app = express();
 const server = http.createServer(app);
@@ -109,6 +110,11 @@ messageQueue.setIO(io);
 
 async function startServer() {
     try {
+        // SECURITY: refuse to start without ENCRYPTION_KEY — secrets would
+        // otherwise be stored as plaintext. Intentional fail-loud behavior:
+        // set ENCRYPTION_KEY (64 hex chars) in the environment first.
+        assertEncryptionKey();
+
         // Sessions are created lazily per user on demand — nothing global
         // to initialize at startup. Interrupted campaigns resume per owner.
         await messageQueue.resumeInterrupted(io);

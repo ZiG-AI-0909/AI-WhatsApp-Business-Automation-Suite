@@ -20,6 +20,7 @@
 // process exit and exposed for explicit await on logout.
 // =============================================================
 const { supabase, isAvailable } = require('../database/supabaseClient');
+const { encrypt, decrypt } = require('../utils/encryption');
 
 const TABLE = 'whatsapp_sessions';
 const DEBOUNCE_MS = Number(process.env.WHATSAPP_AUTH_STATE_DEBOUNCE_MS || 5000);
@@ -139,7 +140,9 @@ async function _useSupabaseAuthState(userId) {
 
     if (data?.auth_state) {
         try {
-            inMemory = reviveAuthState(data.auth_state);
+            // auth_state holds WhatsApp identity keys — stored encrypted,
+            // decrypted here. Legacy plaintext rows pass through until migrated.
+            inMemory = reviveAuthState(decrypt(data.auth_state));
             console.log(`[authState:${userId}] stored auth state revived (creds.registered=${inMemory?.creds?.registered ? 'true' : 'false'})`);
         } catch (reviveError) {
             // Serialization/corruption bug: fail LOUDLY — a silent crash here
@@ -230,7 +233,8 @@ async function _useSupabaseAuthState(userId) {
                 .from(TABLE)
                 .upsert({
                     user_id: userId,
-                    auth_state: payload, // jsonb column accepts the object directly
+                    // Session keys are secrets — encrypted before storage.
+                    auth_state: encrypt(payload),
                     updated_at: new Date().toISOString(),
                 }, { onConflict: 'user_id' });
             if (upsertError) {

@@ -140,6 +140,15 @@ sessionManager._getBaileys = async () => baileysMock;
 const authStateStore = require('../../whatsapp/authStateStore');
 const { emitToUser } = require('../../realtime');
 
+// auth_state is encrypted at rest — the store's writes are ciphertext, and
+// rows seeded by this test are encrypted with the same test key so reads
+// revive. (Legacy plaintext seeded rows also revive via passthrough; we
+// seed ciphertext to mirror post-migration reality.)
+process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const { encrypt, decrypt } = require('../../utils/encryption');
+const encryptAuthState = (state) => encrypt(authStateStore.serializeAuthState(state));
+const decryptAuthState = (value) => decrypt(value);
+
 process.env.WHATSAPP_AUTH_STATE_DEBOUNCE_MS = '0';
 
 // ---- Fake room-tracking Socket.IO --------------------------------
@@ -241,7 +250,11 @@ async function test2_authStateRoundTrip() {
 
     const storedA = state.rows.whatsapp_sessions.find(r => r.user_id === USER_A);
     assert.ok(storedA, 'user A row written to whatsapp_sessions');
-    assert.ok(JSON.stringify(storedA.auth_state).includes('$b'), 'Buffer serialized with $b marker');
+    // auth_state is now ENCRYPTED at rest (v1:iv:tag:ciphertext). The $b
+    // Buffer markers only exist inside the encrypted payload, so assert
+    // ciphertext here and prove the $b round-trip via the revived read.
+    const { isEncrypted } = require('../../utils/encryption');
+    assert.ok(isEncrypted(storedA.auth_state), 'auth_state stored as versioned ciphertext (not plaintext)');
 
     // Fresh instance reads back the same bytes.
     const authA2 = await authStateStore.useSupabaseAuthState(USER_A);
@@ -252,7 +265,7 @@ async function test2_authStateRoundTrip() {
     authB.state.creds = { noiseKey: Buffer.from('b-state') };
     await authB.flush();
     const storedA2 = state.rows.whatsapp_sessions.find(r => r.user_id === USER_A);
-    const revivedA2 = authStateStore.reviveAuthState(storedA2.auth_state);
+    const revivedA2 = authStateStore.reviveAuthState(decryptAuthState(storedA2.auth_state));
     assert.strictEqual(revivedA2.creds.noiseKey.toString('utf8'), 'a-state', 'A row untouched by B write');
     console.log('✅ Test 2 passed\n');
 }
@@ -291,8 +304,8 @@ async function test4_logoutEndpoint() {
     console.log('▶ Test 4: logout endpoint clears session + row, never touches others');
     // Seed: both users have stored auth rows and live sessions.
     state.rows.whatsapp_sessions = [
-        { user_id: USER_A, auth_state: authStateStore.serializeAuthState({ creds: { noiseKey: Buffer.from('a') } }), updated_at: new Date().toISOString() },
-        { user_id: USER_B, auth_state: authStateStore.serializeAuthState({ creds: { noiseKey: Buffer.from('b') } }), updated_at: new Date().toISOString() },
+        { user_id: USER_A, auth_state: encryptAuthState({ creds: { noiseKey: Buffer.from('a') } }), updated_at: new Date().toISOString() },
+        { user_id: USER_B, auth_state: encryptAuthState({ creds: { noiseKey: Buffer.from('b') } }), updated_at: new Date().toISOString() },
     ];
     await sessionManager.initialize(USER_A);
     await sessionManager.initialize(USER_B);

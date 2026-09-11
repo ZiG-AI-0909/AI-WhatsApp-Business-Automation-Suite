@@ -147,6 +147,9 @@ require.cache[resendModulePath] = {
 // ---- Quiet the routes' dependency on env/AI service ----
 process.env.SUPABASE_URL = 'https://mock.supabase.co';
 process.env.SUPABASE_SECRET_KEY = 'mock-secret';
+// Secret-bearing settings (RESEND_API_KEY) are encrypted at rest on save
+// and decrypted on read — encryption must be available for this test.
+process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
 
 const settingsRoute = require('../../routes/settings');
 const resendService = require('../../email/resendService');

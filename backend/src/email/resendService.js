@@ -11,6 +11,7 @@
 // campaign sending arrives in Phase 2 and will reuse loadUserConfig().
 // =============================================================
 const db = require('../database/db');
+const { decryptSettingIfSecret } = require('../utils/encryption');
 
 // Keys as stored in app_settings. They match the env-var names on purpose:
 // mergedSetting()/env fallback only needs the raw key string.
@@ -33,7 +34,10 @@ class ResendService {
         if (db.isAvailable()) {
             try {
                 const rows = await db.select('app_settings', '*', 'user_id = ?', [userId], 'key', 100, 0);
-                for (const row of rows) stored[row.key] = row.value;
+                // Secret-bearing values (RESEND_API_KEY) are stored encrypted;
+                // decrypt here so sends use the real key. Legacy plaintext
+                // rows pass through until migrated.
+                for (const row of rows) stored[row.key] = decryptSettingIfSecret(row.key, row.value);
             } catch (error) {
                 console.error('[resend] failed to load app_settings:', error.message);
             }

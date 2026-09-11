@@ -37,7 +37,11 @@ async function getUserSettings(userId) {
     try {
         if (db.isAvailable()) {
             const rows = await db.select('app_settings', 'key, value', 'user_id = ?', [userId], '', 100, 0);
-            for (const row of rows) settings[row.key] = row.value;
+            // Secret-bearing values (e.g. AI_API_KEY) are stored encrypted;
+            // decrypt here so the AI request path gets the real key.
+            // Legacy plaintext rows pass through until migrated.
+            const { decryptSettingIfSecret } = require('../utils/encryption');
+            for (const row of rows) settings[row.key] = decryptSettingIfSecret(row.key, row.value);
         }
     } catch (error) {
         console.error(`[incoming] failed to load settings for user ${userId}:`, error.message);
@@ -181,3 +185,4 @@ class IncomingMessageService {
 }
 
 module.exports = new IncomingMessageService();
+module.exports.getUserSettings = getUserSettings; // exported for tests (settings decrypt path)

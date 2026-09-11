@@ -71,8 +71,11 @@ async function collectAppSecrets() {
         const db = require('../database/db');
         if (db.isAvailable()) {
             const rows = await db.select('app_settings', 'value', 'key = ?', ['APP_SECRET'], '', 100, 0);
+            const { decryptSettingIfSecret } = require('../utils/encryption');
             for (const row of rows) {
-                const value = typeof row?.value === 'string' ? row.value : '';
+                // APP_SECRET is a secret-bearing key → decrypt (legacy
+                // plaintext passes through unchanged).
+                const value = decryptSettingIfSecret('APP_SECRET', typeof row?.value === 'string' ? row.value : '');
                 if (!value) continue;
                 try {
                     const parsed = JSON.parse(value);
@@ -104,9 +107,12 @@ router.get('/', async (req, res) => {
                     "key IN ('WEBHOOK_VERIFY_TOKEN','WABA_WEBHOOK_VERIFY_TOKEN')",
                     [], 'key', 100, 0,
                 );
+                const { decryptSettingIfSecret } = require('../utils/encryption');
                 storedTokens = rows
                     .map((row) => {
-                        const value = typeof row?.value === 'string' ? row.value : '';
+                        // Stored tokens are secret-bearing → decrypt (legacy
+                        // plaintext passes through unchanged).
+                        const value = decryptSettingIfSecret(row?.key ?? '', typeof row?.value === 'string' ? row.value : '');
                         try { return JSON.parse(value)?.verifyToken || ''; } catch { return value; }
                     })
                     .filter(Boolean);

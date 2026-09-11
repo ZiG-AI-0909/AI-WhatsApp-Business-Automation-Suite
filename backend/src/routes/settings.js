@@ -3,6 +3,7 @@ const router = express.Router();
 const aiService = require('../ai/aiService');
 const resendService = require('../email/resendService');
 const db = require('../database/db');
+const { encryptSettingIfSecret, decryptSettingIfSecret } = require('../utils/encryption');
 
 // Settings persistence now uses Supabase app_settings table
 // instead of local settings.json file (which doesn't survive Render free tier restarts)
@@ -38,7 +39,9 @@ async function loadSettings(userId) {
         const rows = await db.select('app_settings', '*', 'user_id = ?', [userId], 'key', 100, 0);
         const settings = {};
         for (const row of rows) {
-            settings[row.key] = row.value;
+            // Secret-bearing values (API keys) are stored encrypted; decrypt
+            // on read. Legacy plaintext values pass through until migrated.
+            settings[row.key] = decryptSettingIfSecret(row.key, row.value);
         }
         return settings;
     } catch (error) {
@@ -51,9 +54,10 @@ async function saveSetting(userId, key, value) {
     if (!db.isAvailable()) {
         throw new Error('Supabase is not configured');
     }
+    const storedValue = encryptSettingIfSecret(key, value); // API keys never stored as plaintext
     await db.insert('app_settings', {
         key,
-        value,
+        value: storedValue,
         user_id: userId,
         updated_at: new Date(),
     }).then(() => {
@@ -61,7 +65,7 @@ async function saveSetting(userId, key, value) {
     }).catch(() => {
         // If insert fails (duplicate (user_id, key)), update instead
         db.update('app_settings', {
-            value,
+            value: storedValue,
             updated_at: new Date(),
         }, 'user_id = ? AND key = ?', [userId, key]);
     });
