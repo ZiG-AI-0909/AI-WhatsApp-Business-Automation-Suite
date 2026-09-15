@@ -1,7 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const axios = require('axios');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const db = require('../database/db');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
 
@@ -526,12 +526,35 @@ function exportRows(includeAll = false, userId) {
   })));
 }
 
+// exceljs-based export helpers (xlsx package removed — 2 unpatched high
+// severity advisories). toCsv is a small RFC-4180 serializer (exceljs's CSV
+// writer is stream-oriented, awkward for an in-memory HTTP response);
+// toXlsxBuffer uses exceljs's documented writeBuffer() promise.
+function toCsv(rows) {
+  const headers = Object.keys(rows[0]);
+  const escapeCell = (value) => {
+    const s = value === null || value === undefined ? '' : String(value);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.map(escapeCell).join(',')];
+  for (const row of rows) lines.push(headers.map((h) => escapeCell(row[h])).join(','));
+  return lines.join('\r\n') + '\r\n';
+}
+
+async function toXlsxBuffer(rows) {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Leads');
+  worksheet.addRow(Object.keys(rows[0]));
+  for (const row of rows) worksheet.addRow(Object.values(row));
+  return workbook.xlsx.writeBuffer();
+}
+
 router.get('/export/csv', async (req, res) => {
   try {
     const isAll = req.query.all === 'true' || req.query.scope === 'all';
     const rows = await exportRows(isAll, req.user.id);
     const data = rows.length ? rows : [{ Message: 'No leads found' }];
-    const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(data));
+    const csv = toCsv(data);
     const filename = isAll ? 'all-leads.csv' : 'lead-image-extractor.csv';
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.type('text/csv').send(csv);
@@ -545,9 +568,7 @@ router.get('/export/excel', async (req, res) => {
     const isAll = req.query.all === 'true' || req.query.scope === 'all';
     const rows = await exportRows(isAll, req.user.id);
     const data = rows.length ? rows : [{ Message: 'No leads found' }];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(data), 'Leads');
-    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const buffer = await toXlsxBuffer(data);
     const filename = isAll ? 'all-leads.xlsx' : 'lead-image-extractor.xlsx';
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(buffer);
