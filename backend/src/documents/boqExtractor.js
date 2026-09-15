@@ -27,9 +27,16 @@ async function extractText(buffer, ext) {
             return result.value || '';
         }
         case '.pdf': {
-            const pdfParse = require('pdf-parse');
-            const parsed = await pdfParse(buffer);
-            return parsed.text || '';
+            // pdf-parse v2 exports a PDFParse class; the v1 callable default
+            // is gone (calling the module throws "pdfParse is not a function").
+            const { PDFParse } = require('pdf-parse');
+            const parser = new PDFParse({ data: buffer });
+            try {
+                const parsed = await parser.getText();
+                return parsed.text || '';
+            } finally {
+                await parser.destroy(); // release the worker thread
+            }
         }
         case '.txt':
         case '.md':

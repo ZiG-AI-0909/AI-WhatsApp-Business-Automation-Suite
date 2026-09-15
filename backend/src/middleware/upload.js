@@ -68,7 +68,18 @@ async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentTy
 }
 
 /**
- * Download a file from Supabase Storage
+ * Download a file from Supabase Storage as a Buffer.
+ *
+ * supabase-js .download() resolves to a Web Blob, NOT a Node Buffer —
+ * even on Node, where Buffer is not a subclass of Blob. Every caller
+ * here needs bytes: the knowledge route calls .toString('utf8') on the
+ * result (a Blob's toString() is Object.prototype.toString → the
+ * literal string "[object Blob]", which was stored as the document
+ * content and made retrieval match nothing), and the Excel paths feed
+ * it to exceljs's workbook.xlsx.load(Buffer).
+ *
+ * Accepts Blob | ArrayBuffer | Buffer so it also tolerates a future
+ * supabase-js that returns array buffers.
  */
 async function downloadFromStorage(bucket, filePath) {
     if (!isStorageAvailable()) {
@@ -92,7 +103,21 @@ async function downloadFromStorage(bucket, filePath) {
         throw new Error(`Failed to download file: ${error.message}`);
     }
 
-    return data;
+    if (Buffer.isBuffer(data)) return data;
+    if (data instanceof ArrayBuffer) return Buffer.from(data);
+    if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        return Buffer.from(await data.arrayBuffer());
+    }
+    // Typed-array views (e.g. Uint8Array) have no .arrayBuffer(); copy via
+    // their underlying buffer with correct offset/length.
+    if (ArrayBuffer.isView(data)) {
+        return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    }
+    // Last resort: any Blob-like exposing arrayBuffer().
+    if (data && typeof data.arrayBuffer === 'function') {
+        return Buffer.from(await data.arrayBuffer());
+    }
+    throw new Error(`Failed to download file: unexpected storage response type ${typeof data}`);
 }
 
 /**

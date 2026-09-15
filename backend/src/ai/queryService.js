@@ -15,6 +15,12 @@
 const db = require('../database/db');
 const { resolveAiConfig } = require('../utils/aiConfig');
 
+// Ask AI can be the first authenticated page a user opens (it is reachable
+// without loading the Knowledge Base view first), so the KB pre-flight
+// (repair corrupted/chunk-less docs + seed the default profile) runs here
+// rather than only on the Knowledge Base routes. Guarded to run at most
+// once per user per server lifetime and never throws.
+
 // Same tokenization as knowledgeBase.getRelevantContext: lowercase,
 // strip punctuation, keep words > 2 chars.
 function tokenize(query) {
@@ -98,11 +104,24 @@ async function ask(userId, question, { maxChunks = 5 } = {}) {
     if (!trimmed) throw new Error('Type a question first.');
     if (trimmed.length > 2000) throw new Error('Question is too long (max 2000 characters).');
 
+    try {
+        await require('../knowledge/seedKnowledgeService').ensureReadyForAsk(userId);
+    } catch { /* never block a question on maintenance */ }
+
     const sources = await retrieveSources(userId, trimmed, maxChunks);
     if (sources.length === 0) {
+        // Distinguish "KB is empty" from "KB has documents but none match"
+        // so the user gets an actionable message.
+        let docCount = 0;
+        try {
+            docCount = await db.count('knowledge_documents', 'user_id = ? AND status = ?', [userId, 'active']);
+        } catch { /* fall through with generic message */ }
+        const answer = docCount === 0
+            ? 'Your Knowledge Base is empty, so there is nothing to search yet. Add or upload a document (e.g. product specs, pricing) — a default company profile is seeded automatically on your first Knowledge Base load — then ask again.'
+            : 'No matching documents were found in your Knowledge Base for this question. Add or check the relevant document (e.g. product specs, pricing) and try again.';
         return {
             id: null,
-            answer: 'No matching documents were found in your Knowledge Base for this question. Add or check the relevant document (e.g. product specs, pricing) and try again.',
+            answer,
             sources: [],
             stored: false,
         };

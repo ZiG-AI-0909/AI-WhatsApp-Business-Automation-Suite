@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const knowledgeBase = require('../ai/knowledgeBase');
 const seedKnowledgeService = require('../knowledge/seedKnowledgeService');
 const {
@@ -81,9 +82,31 @@ router.post('/upload', uploadKnowledge.single('file'), async (req, res) => {
             req.file.mimetype,
         );
 
-        // Download the stored file to extract its text content.
-        const fileData = await downloadFromStorage(knowledgeStorageConfig.bucket, stored.filename);
-        const content = fileData.toString('utf8');
+        // Extract the file's TEXT for retrieval. Multer's memoryStorage gave
+        // us a real Buffer — decode it per file type (PDF/DOCX/XLSX need real
+        // extraction, not a utf8 decode of binary bytes).
+        //
+        // ROOT CAUSE (fixed here + in middleware/upload.js): this used to
+        // download the file and call .toString('utf8') on the result, but
+        // supabase-js .download() resolves to a Web Blob whose toString() is
+        // Object.prototype.toString → the literal string "[object Blob]" was
+        // stored as the document content. The doc looked fine in the KB list
+        // yet could never match a single query in Ask AI / auto-replies.
+        const ext = path.extname(req.file.originalname || '').toLowerCase();
+        let content;
+        try {
+            content = await require('../documents/boqExtractor').extractText(req.file.buffer, ext);
+        } catch (extractionError) {
+            // Plain-text formats decode directly; anything else has no fallback.
+            if (!['.txt', '.md', '.csv'].includes(ext)) throw extractionError;
+            content = req.file.buffer.toString('utf8');
+        }
+        content = String(content || '').trim();
+        if (!content) {
+            return res.status(400).json({
+                error: 'No readable text found in this file. Scanned or image-only PDFs cannot be searched — paste the text manually or upload a text-based file.',
+            });
+        }
 
         const docName = name?.trim() || req.file.originalname;
         const id = await knowledgeBase.addDocument(req.user.id, docName, category || 'general', content, stored.path);

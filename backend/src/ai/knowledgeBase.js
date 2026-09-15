@@ -83,6 +83,11 @@ class KnowledgeBase {
                 content,
                 file_path: filePath,
                 user_id: userId,
+                // Explicit, not relied-upon-column-default: retrieval filters
+                // status = 'active', and a table created before the DB
+                // default existed would silently insert NULL rows that are
+                // listed in the UI but invisible to retrieval.
+                status: 'active',
             });
             docId = result.id;
         }

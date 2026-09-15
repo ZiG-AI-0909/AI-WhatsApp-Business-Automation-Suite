@@ -80,6 +80,54 @@ const checked = new Set();
 // and a user who emptied their own KB is not surprised with it either.
 const SEED_MARKER_KEY = 'KB_DEFAULT_SEEDED';
 
+// Retrieval can never match this text, so a document made of only such
+// chunks is unusable. "[object Blob]" is the corruption signature this
+// codebase produced: knowledge uploads used to call .toString('utf8') on
+// supabase-js's Web Blob download result, whose toString() is
+// Object.prototype.toString → the literal string "[object Blob]". Kept
+// generic ("[object ...]") so any future stringified-object bug is
+// caught the same way.
+function isCorruptChunkText(text) {
+    const s = String(text || '').trim();
+    return s.length === 0 || /^\[object .+\]$/.test(s);
+}
+
+/**
+ * Best-effort recovery of a document's real text.
+ *  1. The doc row itself holds usable text (content is fine but the
+ *     chunk insert failed) → just re-chunk from it.
+ *  2. The original upload is still in Storage → re-extract it with the
+ *     FIXED download path (Buffer conversion + per-type text extraction).
+ * Returns null when nothing usable exists.
+ */
+async function recoverDocumentContent(doc) {
+    const content = typeof doc.content === 'string' ? doc.content : '';
+    if (content.trim() && !isCorruptChunkText(content)) return content;
+
+    if (doc.file_path && String(doc.file_path).startsWith('https://')) {
+        try {
+            const { downloadFromStorage, getBucketForPath } = require('../middleware/upload');
+            const buffer = await downloadFromStorage(getBucketForPath(doc.file_path, 'knowledge'), doc.file_path);
+            // The stored object name keeps the original upload's extension;
+            // the display name may not (e.g. "Sudarshan pipes").
+            let storageName = doc.file_path;
+            try { storageName = decodeURIComponent(new URL(doc.file_path).pathname.split('/').pop() || ''); } catch { /* keep raw */ }
+            const ext = require('path').extname(storageName).toLowerCase()
+                || require('path').extname(String(doc.name || '')).toLowerCase();
+            let text;
+            try {
+                text = require('../documents/boqExtractor').extractText(buffer, ext);
+            } catch {
+                text = buffer.toString('utf8'); // plain-text files and unknown extensions
+            }
+            if (String(text || '').trim()) return text;
+        } catch (error) {
+            console.warn(`[seed] could not recover doc "${doc.name}" (#${doc.id}) from storage: ${error.message}`);
+        }
+    }
+    return null;
+}
+
 class SeedKnowledgeService {
     /**
      * Seed THIS user's knowledge base if they have no documents yet AND
@@ -119,6 +167,84 @@ class SeedKnowledgeService {
             await db.insert('app_settings', { key: SEED_MARKER_KEY, value: 'true', user_id: userId, updated_at: new Date() });
         } catch {
             await db.update('app_settings', { value: 'true', updated_at: new Date() }, 'user_id = ? AND key = ?', [userId, SEED_MARKER_KEY]);
+        }
+    }
+
+    /**
+     * Repair THIS user's UNUSABLE knowledge documents. A document is
+     * unusable when retrieval can never match it:
+     *   - it has no chunks (doc insert succeeded but the chunk insert
+     *     failed — seedIfEmpty's marker logic would otherwise exempt
+     *     this user from repair forever), or
+     *   - every chunk is garbage — the "[object Blob]" corruption the
+     *     upload path used to store (fixed at the source in
+     *     middleware/upload.js; this ladder cleans existing rows).
+     * Unrecoverable garbage docs are deleted so the user sees an
+     * honest empty KB instead of a document that can never answer.
+     */
+    async repairUnusableDocuments(userId) {
+        if (!userId || !db.isAvailable()) return;
+        const docs = await db.select(
+            'knowledge_documents',
+            'id, name, content, file_path',
+            'user_id = ?',
+            [userId],
+            'id',
+            1000,
+            0
+        );
+        for (const doc of docs) {
+            const chunks = await db.select(
+                'knowledge_chunks',
+                'content',
+                'document_id = ?',
+                [doc.id],
+                'chunk_index',
+                1000,
+                0
+            );
+            const unusable = chunks.length === 0 || chunks.every(c => isCorruptChunkText(c.content));
+            if (!unusable) continue;
+
+            const recovered = await recoverDocumentContent(doc);
+            if (!recovered) {
+                console.warn(`[seed] doc "${doc.name}" (#${doc.id}) is unusable with no recovery source; deleting it`);
+                await db.del('knowledge_documents', 'id = ? AND user_id = ?', [doc.id, userId]);
+                // The user never truly had usable knowledge, so re-allow
+                // seeding: seedIfEmpty's marker would otherwise exempt them
+                // forever (the exact production trap — the corrupt upload
+                // existed when the marker check ran, so the marker was
+                // written without the user ever getting the default
+                // profile). If the user still has healthy documents, the
+                // next seedIfEmpty just re-marks them without seeding.
+                await db.del('app_settings', "user_id = ? AND key IN ('KB_DEFAULT_SEEDED')", [userId]);
+                continue;
+            }
+            const knowledgeBase = require('../ai/knowledgeBase'); // lazy: avoids require cycle
+            await knowledgeBase.updateDocument(doc.id, userId, { content: recovered });
+            console.log(`[seed] repaired unusable knowledge doc #${doc.id} "${doc.name}" for user ${userId}`);
+        }
+    }
+
+    /**
+     * One-call pre-flight for the Ask AI route: repair broken docs,
+     * then seed the default profile for a first-time user. Ask AI can
+     * be the FIRST authenticated page a user opens (it is reachable
+     * without loading the Knowledge Base view), so without this a new
+     * account asked questions against an empty KB. The once-per-user
+     * guard keeps steady-state queries at zero extra queries. Never
+     * throws — an Ask AI query must not fail because maintenance did.
+     */
+    async ensureReadyForAsk(userId) {
+        const guardKey = `ready:${userId}`;
+        if (!userId || checked.has(guardKey) || !db.isAvailable()) return;
+        checked.add(guardKey);
+        try {
+            await this.repairUnusableDocuments(userId);
+            await this.seedIfEmpty(userId);
+        } catch (error) {
+            checked.delete(guardKey); // allow a retry on the next query
+            console.error(`[seed] ensureReadyForAsk failed for ${userId}:`, error.message);
         }
     }
 
