@@ -201,6 +201,57 @@ async function test5_rfqRowsShape() {
     console.log('✅ Test 5 passed\n');
 }
 
+// Realistic BOQ: 28 line items like a mid-size real-world sheet. Every row
+// one line of pipe-delimited text (as extractXlsxText emits).
+function buildRealisticBoqText(itemCount = 28) {
+    const products = ['HDPE Pipe', 'uPVC Pipe', 'Ductile Iron Pipe', 'Compression Fitting', 'GI Pipe', 'CPVC Pipe'];
+    const specs = ['IS 4985:2020 PN10', 'PE100 PN10', 'IS 4984:2016 PN10', 'PN16', 'IS 1239', 'Sch 40'];
+    const units = ['m', 'nos'];
+    const rows = ['Item | Description | Size | Specification | Quantity | Unit'];
+    for (let i = 1; i <= itemCount; i++) {
+        const product = products[i % products.length];
+        const size = `${60 + (i % 6) * 25}mm`;
+        rows.push(`${i} | ${product} ${size} | ${size} | ${specs[i % specs.length]} | ${100 * i} | ${units[i % 2]}`);
+    }
+    return rows.join('\n');
+}
+
+async function test7_chunkSplittingRealisticSize() {
+    console.log('▶ Test 7: chunk splitting preserves every row across boundaries');
+    // Realistic 28-item BOQ first: measure the real characteristic —
+    // ~60 chars/row means a 28-row sheet is ~1.7k chars and fits ONE
+    // chunk at the default cap (single AI call, no chunking needed).
+    const realistic = buildRealisticBoqText(28);
+    const realisticChunks = boqExtractor.splitIntoChunks(realistic);
+    assert.strictEqual(realisticChunks.length, 1, `28-row BOQ stays one chunk (was ${realisticChunks.length}, ${realistic.length} chars)`);
+
+    // Multi-chunk: ~300 rows ≈ 17k chars → 2 chunks at the default cap.
+    const text = buildRealisticBoqText(300);
+    assert.ok(text.length > boqExtractor.CHUNK_MAX_CHARS, `fixture exceeds one chunk (${text.length} chars)`);
+    const chunks = boqExtractor.splitIntoChunks(text);
+    assert.ok(chunks.length >= 2, 'large document splits into multiple chunks');
+    assert.ok(chunks.every((c) => c.length <= boqExtractor.CHUNK_MAX_CHARS), 'every chunk is within the char cap');
+    // No content lost: reassembly (accounting for the one-line boundary
+    // overlap) covers every input line.
+    const inputLines = text.split('\n');
+    const covered = new Set();
+    for (const chunk of chunks) for (const line of chunk.split('\n')) covered.add(line);
+    for (const line of inputLines) assert.ok(covered.has(line), `line preserved across chunks: "${line.slice(0, 40)}"`);
+    // No data rows dropped at boundaries (the overlap repeats, not skips).
+    const dataRowCount = chunks.reduce((n, c) => n + c.split('\n').filter((l) => /^\d+ \|/.test(l)).length, 0);
+    assert.ok(dataRowCount >= 300, `all 300 data rows present across chunks (saw ${dataRowCount})`);
+    console.log(`✅ Test 7 passed (28-row = 1 chunk @ ${realistic.length} chars; 300-row = ${chunks.length} chunks @ ${text.length} chars)\n`);
+}
+
+async function test8_smallDocumentSingleChunk() {
+    console.log('▶ Test 8: small documents stay a single chunk (legacy behavior)');
+    const text = buildRealisticBoqText(3);
+    const chunks = boqExtractor.splitIntoChunks(text);
+    assert.strictEqual(chunks.length, 1, 'small doc = one chunk, one AI call');
+    assert.strictEqual(chunks[0], text, 'small doc chunk is byte-identical to input');
+    console.log('✅ Test 8 passed\n');
+}
+
 async function test6_tenantScopedSave() {
     console.log('▶ Test 6: review-save is tenant-scoped (PUT path logic)');
     // Simulate the route's scoping rule directly: db.update where id AND user_id.
@@ -237,6 +288,8 @@ async function main() {
         await test4_inconsistentUnits();
         await test5_rfqRowsShape();
         await test6_tenantScopedSave();
+        await test7_chunkSplittingRealisticSize();
+        await test8_smallDocumentSingleChunk();
         console.log('🎉 ALL BOQ SMOKE TESTS PASSED');
         process.exit(0);
     } catch (error) {

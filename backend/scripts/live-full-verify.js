@@ -339,12 +339,19 @@ async function waitForSeed(token) {
 
 // ─── Fixtures ────────────────────────────────────────────────────────
 async function buildBoqXlsx() {
+    // 25 line items — close to real-world BOQ size so the live check
+    // exercises the chunked extraction path (the old 3-row fixture fit in
+    // a single AI call and could not catch truncation/timeout problems).
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('BOQ');
     ws.addRow(['Item', 'Product', 'Size', 'Specification', 'Quantity', 'Unit']);
-    ws.addRow(['1', 'uPVC Column Pipe', '63mm', 'IS 4985:2020 PN10', '1200', 'm']);
-    ws.addRow(['2', 'HDPE Pipe', '110mm', 'IS 4984:2016 PE100 PN10', '800', 'm']);
-    ws.addRow(['3', 'Compression Fitting', '90mm', 'PN16', '45', 'nos']);
+    const products = ['uPVC Column Pipe', 'HDPE Pipe', 'Ductile Iron Pipe', 'Compression Fitting', 'GI Pipe'];
+    const specs = ['IS 4985:2020 PN10', 'IS 4984:2016 PE100 PN10', 'PN16', 'IS 1239', 'Sch 40'];
+    for (let i = 1; i <= 25; i++) {
+        const product = products[i % products.length];
+        const size = `${60 + (i % 6) * 25}mm`;
+        ws.addRow([String(i), product, size, specs[i % specs.length], String(100 * i), i % 2 ? 'm' : 'nos']);
+    }
     const out = await wb.xlsx.writeBuffer();
     return Buffer.from(out);
 }

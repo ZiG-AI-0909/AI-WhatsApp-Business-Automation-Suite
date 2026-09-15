@@ -43,17 +43,47 @@ async function authHeader() {
   return {}
 }
 
+// Long-running AI endpoints get their own budget instead of hanging until
+// the browser/server gives up. Server-side counterparts (per-chunk AI call
+// timeouts) keep each side bounded; the client budget must exceed the
+// server's worst case so the server's precise error message wins.
+const REQUEST_TIMEOUT_MS = 30000
+const ENDPOINT_TIMEOUT_MS = {
+  '/boq/process': 110000, // chunked AI extraction: up to 4 × 25s server-side + parsing/db
+}
+
+function timeoutSignal(ms) {
+  return (typeof AbortSignal !== 'undefined' && AbortSignal.timeout)
+    ? AbortSignal.timeout(ms)
+    : undefined // older browsers: no client timeout (same as before)
+}
+
 export async function apiFetch(path, options = {}) {
   // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
   const authHeaders = await authHeader()
 
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      ...authHeaders,
-      ...(options.headers || {}),
-    },
-  })
+  const budget = ENDPOINT_TIMEOUT_MS[path] || REQUEST_TIMEOUT_MS
+  let response
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      signal: options.signal || timeoutSignal(budget),
+      headers: {
+        ...authHeaders,
+        ...(options.headers || {}),
+      },
+    })
+  } catch (fetchError) {
+    // AbortSignal.timeout aborts produce a DOMException — convert to a
+    // readable error so the UI says "timed out" instead of a raw
+    // "signal is aborted without reason".
+    if (fetchError?.name === 'TimeoutError' || fetchError?.name === 'AbortError') {
+      const timeoutError = new Error(`Request timed out after ${Math.round(budget / 1000)}s. Try again or use a smaller file.`)
+      timeoutError.status = 0
+      throw timeoutError
+    }
+    throw fetchError
+  }
 
   const data = await response.json().catch(() => ({}))
 

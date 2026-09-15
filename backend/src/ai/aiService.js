@@ -50,6 +50,13 @@ class AIService {
         const baseURL = options.baseURL || this.baseURL;
         if (!apiKey) throw new Error('AI_API_KEY is not configured.');
 
+        // Per-call wall-time budget = timeoutMs × retries. Long extraction
+        // flows (BOQ) pass retries: 1 and their own timeoutMs so the route
+        // fails fast with a clear error instead of stacking retries on top
+        // of a hung provider (old behavior: 30s × 3 ≈ 97s worst case).
+        const timeoutMs = Number(options.timeoutMs) || 30000;
+        const maxRetries = Math.max(1, Number(options.retries) || this.maxRetries);
+
         const payload = {
             model,
             messages,
@@ -60,12 +67,15 @@ class AIService {
 
         if (model === 'deepseek-ai/deepseek-v4-flash-0731') {
             payload.chat_template_kwargs = {
-                thinking: true,
-                reasoning_effort: options.reasoningEffort || 'high',
+                // BOQ-style structured extraction wants raw JSON, not
+                // deliberation: reasoningEffort: 'none' skips the thinking
+                // phase entirely (default stays 'high' for chat paths).
+                thinking: options.reasoningEffort !== 'none',
+                reasoning_effort: options.reasoningEffort === 'none' ? 'low' : (options.reasoningEffort || 'high'),
             };
         }
 
-        for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 const response = await axios.post(
                     `${baseURL}/chat/completions`,
@@ -75,16 +85,19 @@ class AIService {
                             Authorization: `Bearer ${apiKey}`,
                             'Content-Type': 'application/json',
                         },
-                        timeout: 30000,
+                        timeout: timeoutMs,
                     }
                 );
                 return response.data.choices[0].message.content.trim();
             } catch (error) {
-                const isLast = attempt === this.maxRetries - 1;
+                const isLast = attempt === maxRetries - 1;
                 if (isLast) {
                     const providerDetail = error.response?.data?.detail || error.response?.data?.error?.message;
                     if (providerDetail) {
                         throw new Error(`NVIDIA AI provider error: ${providerDetail}`);
+                    }
+                    if (error.code === 'ECONNABORTED') {
+                        throw new Error(`AI provider timed out after ${Math.round(timeoutMs / 1000)}s.`);
                     }
                     throw error;
                 }

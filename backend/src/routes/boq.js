@@ -46,11 +46,23 @@ async function loadUserSettings(userId) {
     return settings;
 }
 
+// Per-chunk AI budget and chunk cap. With BOQ_MAX_CHUNKS × BOQ_CHUNK_MAX_CHARS
+// characters covered, the server's worst-case wall time stays bounded well
+// under the frontend's request timeout for this endpoint (see api.js).
+const BOQ_AI_TIMEOUT_MS = Number(process.env.BOQ_AI_TIMEOUT_MS || 25000);
+const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS || 4);
+
 /**
  * Run AI extraction over the document text with the user's own AI
  * credentials (same never-mix guard as every other AI path).
+ *
+ * The document is extracted CHUNK BY CHUNK (see boqExtractor.splitIntoChunks):
+ * one giant call truncates its JSON output on real-world BOQs (~25+ rows
+ * exceed the maxTokens budget) and looked like an inexplicable hang/500.
+ * Each chunk gets a hard per-call timeout and NO retries so a hung provider
+ * fails fast with a clear, attributable error instead of stacking 3 retries.
  */
-async function extractItemsWithAI(userId, documentText) {
+async function extractItemsWithAI(userId, documentText, filename = 'document') {
     const rows = await loadUserSettings(userId);
     const aiConfig = resolveAiConfig({
         storedKey: rows.AI_API_KEY,
@@ -60,37 +72,84 @@ async function extractItemsWithAI(userId, documentText) {
     });
     if (!aiConfig.apiKey) throw new Error('AI is not configured. Set AI_API_KEY on the server or in Settings.');
     const aiService = require('../ai/aiService');
-    const content = await aiService._complete(
-        [{ role: 'user', content: boqExtractor.buildExtractionPrompt(documentText) }],
-        {
-            apiKey: aiConfig.apiKey,
-            baseURL: aiConfig.baseURL,
-            model: rows.AI_MODEL || process.env.AI_MODEL,
-            temperature: 0.1,
-            maxTokens: 3000,
+
+    const chunks = boqExtractor.splitIntoChunks(documentText);
+    if (chunks.length > BOQ_MAX_CHUNKS) {
+        const error = new Error(`Document is too large to extract in one request (${chunks.length} sections, max ${BOQ_MAX_CHUNKS}). Split it into smaller parts and upload each separately.`);
+        error.statusCode = 413;
+        throw error;
+    }
+    console.log(`[boq:${userId}] AI extraction: "${filename}" → ${chunks.length} chunk(s) (${documentText.length} chars total, timeout ${Math.round(BOQ_AI_TIMEOUT_MS / 1000)}s per chunk)`);
+
+    const items = [];
+    for (let i = 0; i < chunks.length; i++) {
+        const chunkStart = Date.now();
+        console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, model ${rows.AI_MODEL || process.env.AI_MODEL || 'default'})`);
+        let content;
+        try {
+            content = await aiService._complete(
+                [{ role: 'user', content: boqExtractor.buildExtractionPrompt(chunks[i]) }],
+                {
+                    apiKey: aiConfig.apiKey,
+                    baseURL: aiConfig.baseURL,
+                    model: rows.AI_MODEL || process.env.AI_MODEL,
+                    temperature: 0.1,
+                    maxTokens: 3000,
+                    timeoutMs: BOQ_AI_TIMEOUT_MS,
+                    retries: 1, // per-chunk: fail fast, the loop is the retry story
+                    reasoningEffort: 'none', // raw JSON out; thinking burned the old token budget
+                }
+            );
+        } catch (error) {
+            console.error(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} FAILED after ${Date.now() - chunkStart}ms: ${error.message}`);
+            error.message = `Section ${i + 1} of ${chunks.length} of "${filename}" could not be extracted: ${error.message}`;
+            error.statusCode = error.statusCode || 502; // upstream AI/provider failure
+            throw error;
         }
-    );
-    return boqExtractor.normalizeResponse(content).map(boqExtractor.cleanItem);
+        let chunkItems;
+        try {
+            chunkItems = boqExtractor.normalizeResponse(content).map(boqExtractor.cleanItem);
+        } catch (error) {
+            console.error(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} returned unparseable output (${String(content || '').length} chars) after ${Date.now() - chunkStart}ms`);
+            const parseError = new Error(`Section ${i + 1} of ${chunks.length} of "${filename}" did not return structured data (AI output truncated or malformed). Try again, or split the document into smaller parts.`);
+            parseError.statusCode = 502;
+            throw parseError;
+        }
+        console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} completed in ${Date.now() - chunkStart}ms → ${chunkItems.length} item(s)`);
+        items.push(...chunkItems);
+    }
+    return items;
 }
 
 // POST /api/boq/process — upload a requirement document, extract text,
 // run AI extraction, flag suspicious rows, and store everything for review.
 router.post('/process', upload.single('file'), async (req, res) => {
+    const startedAt = Date.now();
+    const userId = req.user?.id;
     if (!req.file) return res.status(400).json({ error: 'Upload an XLSX, DOCX, PDF, TXT, or CSV document.' });
     if (!respondIfInvalidUpload(req, res)) return;
+
+    const ext = extOf(req.file.originalname);
+    console.log(`[boq:${userId}] process START: "${req.file.originalname}" (${req.file.size} bytes, ${ext})`);
     try {
-        const ext = extOf(req.file.originalname);
+        const textStart = Date.now();
         const documentText = await boqExtractor.extractText(req.file.buffer, ext);
+        const lineCount = documentText.split('\n').filter((l) => l.trim()).length;
+        console.log(`[boq:${userId}] text extraction done in ${Date.now() - textStart}ms: ${documentText.length} chars / ${lineCount} non-empty lines`);
+
         if (!documentText.trim()) {
+            console.log(`[boq:${userId}] rejected: no readable text (scanned/image-only document?)`);
             return res.status(400).json({ error: 'No readable text found in this document. Scanned/image-only PDFs are not supported — try the original Excel or Word file.' });
         }
         if (documentText.length > 60000) {
+            console.log(`[boq:${userId}] rejected: document too large (${documentText.length} chars > 60000)`);
             return res.status(400).json({ error: 'Document is too large to process in one pass (over ~60k characters). Split it into sections and upload each part.' });
         }
 
-        const items = await extractItemsWithAI(req.user.id, documentText);
+        const items = await extractItemsWithAI(userId, documentText, req.file.originalname);
         const warnings = boqExtractor.flagAll(items);
 
+        const dbStart = Date.now();
         const created = await db.insert('boq_documents', {
             filename: req.file.originalname,
             file_ext: ext,
@@ -101,10 +160,16 @@ router.post('/process', upload.single('file'), async (req, res) => {
             user_id: req.user.id,
         });
 
+        const warnRows = warnings.filter((w) => Array.isArray(w) && w.length).length;
+        console.log(`[boq:${userId}] process COMPLETE in ${Date.now() - startedAt}ms: ${items.length} item(s), ${warnRows} row(s) flagged, saved as #${created?.id ?? '?'} (db ${Date.now() - dbStart}ms)`);
         res.status(201).json(serializeDoc(created));
     } catch (error) {
-        console.error('[boq] process failed:', error.message);
-        res.status(500).json({ error: error.message });
+        const status = error.statusCode || 500;
+        // Full stack — this line is the whole point of the logging pass:
+        // the original incident produced ZERO log lines, so the failure
+        // stage and cause were invisible in Render's logs.
+        console.error(`[boq:${userId}] process FAILED after ${Date.now() - startedAt}ms (HTTP ${status}):`, error.stack || error.message);
+        res.status(status).json({ error: error.message });
     }
 });
 

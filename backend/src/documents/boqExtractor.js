@@ -218,8 +218,50 @@ function flagAll(items) {
     return items.map((item, index) => flagItem(item, seenKeys, index, items));
 }
 
+// ─── Document chunking ────────────────────────────────────────
+// The extraction AI call has a finite output budget (maxTokens). A real
+// BOQ's per-row JSON costs ~80-150 tokens, so a whole 60k-char document
+// in one call truncates past ~25 rows and the response stops being valid
+// JSON. Splitting the document into bounded chunks (on row boundaries) and
+// extracting per-chunk keeps every single AI response well inside budget.
+
+const CHUNK_MAX_CHARS = Number(process.env.BOQ_CHUNK_MAX_CHARS || 12000);
+
+/**
+ * Split document text into chunks of at most maxChars, breaking on line
+ * boundaries (BOQ rows are one line each) and keeping blank separator
+ * lines with the preceding chunk. The first line of each chunk after the
+ * first may repeat the previous chunk's last line so column headers are
+ * never orphaned at a boundary.
+ */
+function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
+    const text = String(documentText || '');
+    if (text.length <= maxChars) return [text];
+    const lines = text.split('\n');
+    const chunks = [];
+    let current = [];
+    let length = 0;
+    for (const line of lines) {
+        // A single overlong line still gets its own chunk (never dropped).
+        if (length + line.length + 1 > maxChars && current.length) {
+            chunks.push(current.join('\n'));
+            // Repeat the previous line into the new chunk so a table
+            // header that landed at the end of the last chunk is present.
+            current = [current[current.length - 1], line];
+            length = current[0].length + line.length + 1;
+        } else {
+            current.push(line);
+            length += line.length + 1;
+        }
+    }
+    if (current.length) chunks.push(current.join('\n'));
+    return chunks;
+}
+
 module.exports = {
     ITEM_SCHEMA_KEYS,
+    CHUNK_MAX_CHARS,
+    splitIntoChunks,
     extractText,
     extractXlsxText,
     buildExtractionPrompt,
