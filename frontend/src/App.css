@@ -620,3 +620,25 @@
   .landing-cta-row .landing-btn-secondary { width: 100%; }
   .landing-hero-points { flex-direction: column; align-items: center; gap: 8px; }
 }
+
+/* ── Ask AI (Technical Query Resolver) ─────────────────────── */
+.ask-answer { white-space: pre-wrap; margin: 4px 0 12px; }
+.ask-sources { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border-subtle); padding-top: 12px; }
+.ask-sources .tag { font-size: .78rem; }
+
+/* ── Image Extractor mode tabs (Extract Leads / Identify Product) ── */
+.extractor-mode-tabs { display: flex; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.extractor-mode-tabs button { padding: 8px 16px; border: 1px solid var(--border); background: transparent; border-radius: 999px; cursor: pointer; color: var(--text-secondary); font-size: .85rem; font-weight: 500; }
+.extractor-mode-tabs button.active { background: var(--surface-subtle); border-color: var(--brand, #0ea5e9); color: var(--text-primary, inherit); }
+
+/* ── Document Intelligence (BOQ processing) ────────────────── */
+.warning-list { margin: 2px 0 0; padding-left: 16px; color: #b45309; font-size: .78rem; }
+tr.row-warnings { background: rgba(245, 158, 11, 0.08); }
+.file-note-inline { margin-left: 10px; }
+
+/* ── Salesperson Copilot ───────────────────────────────────── */
+.copilot-panel { border: 1px solid var(--border-subtle); }
+.copilot-section { margin: 10px 0; }
+.copilot-section h4 { margin: 0 0 4px; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.copilot-section p, .copilot-section li { font-size: .85rem; white-space: pre-wrap; }
+.copilot-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }

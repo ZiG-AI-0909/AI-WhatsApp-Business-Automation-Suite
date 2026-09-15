@@ -54,6 +54,16 @@ const _aiExtract = rateLimit({
     ...json429('Image extraction limit reached. Try again in a few minutes.'),
 });
 
+// Text AI queries (Ask AI, copilot briefs) — one paid AI call per request;
+// tighter than mutations but looser than image extraction.
+function aiQueryLimiter(req, res, next) { return _aiQuery(req, res, next); }
+const _aiQuery = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 15,
+    keyGenerator: keyByUser,
+    ...json429('AI query limit reached. Wait a minute and try again.'),
+});
+
 // General authenticated mutations — coarse cost/cost-abuse backstop.
 function mutationLimiter(req, res, next) { return _mutation(req, res, next); }
 const _mutation = rateLimit({
@@ -63,4 +73,4 @@ const _mutation = rateLimit({
     ...json429('Too many requests. Slow down.'),
 });
 
-module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, mutationLimiter };
+module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter };

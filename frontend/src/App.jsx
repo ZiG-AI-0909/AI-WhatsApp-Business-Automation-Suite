@@ -5,6 +5,7 @@ import LandingPage from './LandingPage.jsx'
 import OnboardingChecklist from './OnboardingChecklist.jsx'
 import WelcomeAuthPage from './WelcomeAuthPage.jsx'
 import ImageExtractorView from './ImageExtractorView.jsx'
+import AskAiView from './AskAiView.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
 // API helpers (apiFetch, socketAuth, session-invalidation event) now live in
@@ -24,6 +25,7 @@ const navItems = [
   'Contacts',
   'Templates',
   'Knowledge Base',
+  'Ask AI',
   'Analytics',
   'Settings',
   'Image Extractor',
@@ -1132,6 +1134,7 @@ function App() {
     if (activeView === 'Contacts') return <ContactsView />
     if (activeView === 'Templates') return <TemplatesView />
     if (activeView === 'Knowledge Base') return <KnowledgeBaseView />
+    if (activeView === 'Ask AI') return <AskAiView />
     if (activeView === 'Analytics') return <AnalyticsView />
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
