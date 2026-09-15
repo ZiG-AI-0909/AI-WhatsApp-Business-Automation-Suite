@@ -49,6 +49,22 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true }));
 
+// ─── HTTP caching policy ─────────────────────────────────────────────────────
+// Express's default ETag header makes browsers revalidate every GET with
+// If-None-Match; identical API responses then come back as a body-less 304.
+// apiFetch() treats any non-2xx as an error (response.json() → {}), so a 304
+// surfaced to the UI as "Request failed (304) / trouble connecting" even
+// though nothing was wrong. Everything under /api is user-scoped, mutable
+// data that must never be cached by shared caches either, so: no ETag on API
+// responses, and Cache-Control: no-store so no intermediary serves a stale
+// copy. The static frontend bundle keeps default ETag caching — it is
+// content-hashed by Vite and safe to revalidate.
+app.set('etag', false);
+app.use('/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+});
+
 // Keep the RAW request body for the Meta webhook: X-Hub-Signature-256 is
 // an HMAC over the exact bytes Meta sent, so signature verification uses
 // req.rawBody (captured by body-parser's verify callback), never the

@@ -57,6 +57,11 @@ export async function apiFetch(path, options = {}) {
 
   const data = await response.json().catch(() => ({}))
 
+  // 304 carries no body and response.ok is false for it, yet the browser
+  // already has the cached copy — a revalidated 304 is a success, not an
+  // error (it used to surface as "Request failed (304) / trouble connecting").
+  if (response.status === 304) return data
+
   if (!response.ok) {
     // 401 means the JWT we sent is expired/invalid and cannot be recovered
     // client-side. Clear the dead session from storage so auth-js stops

@@ -38,6 +38,9 @@ export async function request(path, options = {}) {
     },
   })
   const data = await response.json().catch(() => ({}))
+  // A revalidated 304 is a success — the browser already has the cached
+  // response body; don't fall into the !response.ok error path.
+  if (response.status === 304) return data
   if (!response.ok) {
     // Keep the HTTP status so friendlyErrorMessage() can map 401/404/429/5xx
     // to human-readable text.
