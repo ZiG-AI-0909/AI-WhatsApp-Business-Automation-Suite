@@ -2,6 +2,7 @@ const db = require('../database/db');
 const excelParser = require('./excelParser');
 const campaignService = require('./campaignService');
 const cronParser = require('cron-parser');
+const { resolveCountryCode } = require('../utils/countryCodes');
 
 const { CronExpressionParser } = cronParser;
 
@@ -42,8 +43,12 @@ class SchedulerService {
         return this._toDbDate(CronExpressionParser.parse(cron, { currentDate: from }).next().toDate());
     }
 
-    async create(userId, { name, templateMessage, filePath, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], settings = {}, allowMissingFields = false, scheduleType, runAt, recurrenceCron }) {
-        const result = excelParser.parse(filePath);
+    async create(userId, { name, templateMessage, filePath, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], settings = {}, allowMissingFields = false, scheduleType, runAt, recurrenceCron, countryCode = null }) {
+        // Resolve the code ONCE at schedule creation (per-upload override →
+        // account default) so the validation-time parse and the campaign the
+        // schedule later fires both use the same code.
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(filePath, { countryCode: resolvedCode });
         if (excelParser.getValidRows(result).length === 0) throw new Error('No valid contacts found in the Excel file.');
 
         const nextRunAt = scheduleType === 'once' ? this._toDbDate(runAt) : this._nextCron(recurrenceCron);
@@ -59,7 +64,7 @@ class SchedulerService {
             media_filename: mediaFilename,
             media_mimetype: mediaMimetype,
             buttons: JSON.stringify(safeButtons),
-            settings: JSON.stringify(settings),
+            settings: JSON.stringify({ ...settings, countryCode: resolvedCode }),
             allow_missing_fields: allowMissingFields ? 1 : 0,
             schedule_type: scheduleType,
             run_at: scheduleType === 'once' ? new Date(nextRunAt) : null,
@@ -222,6 +227,9 @@ class SchedulerService {
                         buttons: JSON.parse(schedule.buttons || '[]'),
                         settings: JSON.parse(schedule.settings || '{}'),
                         allowMissingFields: !!schedule.allow_missing_fields,
+                        // The schedule's stored code wins over the account default
+                        // so the fired campaign matches the numbers it validated.
+                        countryCode: JSON.parse(schedule.settings || '{}').countryCode || null,
                     });
                     await campaignService.start(campaign.id, this._io, schedule.user_id);
 

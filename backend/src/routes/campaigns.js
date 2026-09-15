@@ -1,5 +1,6 @@
 const express = require('express');
 const campaignService = require('../campaigns/campaignService');
+const { formattingNotice } = require('../utils/countryCodes');
 const {
     uploadExcel,
     uploadCampaignMedia,
@@ -89,10 +90,22 @@ router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
             req.file.mimetype,
         );
 
+        // Per-upload country override arrives as a form field on the same
+        // multipart request. When absent, the account's Settings default is used.
+        const countryCode = req.body?.countryCode || null;
+
         // Download the stored file and parse it to validate the contact columns.
         const fileData = await downloadFromStorage(excelStorageConfig.bucket, stored.filename);
-        const result = campaignService.validateExcelBuffer(fileData);
-        res.json({ filePath: stored.path, filename: stored.filename, ...result });
+        const result = await campaignService.validateExcelBuffer(fileData, { countryCode }, req.user.id);
+        res.json({
+            filePath: stored.path,
+            filename: stored.filename,
+            ...result,
+            // Plain-language confirmation for the UI, e.g. "342 contacts found.
+            // Numbers will be formatted as +91 XXXXXXXXXX unless they already
+            // include a country code."
+            formattingNotice: formattingNotice(result.valid, result.countryCode),
+        });
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -127,10 +140,10 @@ router.post('/media', uploadCampaignMedia.single('file'), async (req, res) => {
 
 // POST /api/campaigns/preview
 router.post('/preview', async (req, res) => {
-    const { filePath, template, count = 5 } = req.body;
+    const { filePath, template, count = 5, countryCode } = req.body;
     if (!filePath || !template) return res.status(400).json({ error: 'filePath and template required' });
     try {
-        res.json(await campaignService.previewMessages(filePath, template, +count));
+        res.json(await campaignService.previewMessages(filePath, template, +count, { countryCode }, req.user.id));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -138,7 +151,7 @@ router.post('/preview', async (req, res) => {
 
 // POST /api/campaigns
 router.post('/', async (req, res) => {
-    const { name, templateMessage, filePath, settings, allowMissingFields, mediaPath, mediaType, mediaFilename, mediaMimetype, buttons } = req.body;
+    const { name, templateMessage, filePath, settings, allowMissingFields, mediaPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode } = req.body;
     if (!name?.trim() || !templateMessage?.trim() || !filePath) {
         return res.status(400).json({ error: 'name, templateMessage, and filePath required' });
     }
@@ -147,7 +160,7 @@ router.post('/', async (req, res) => {
         const resolvedFilePath = filePath;
         const resolvedMediaPath = mediaPath || null;
 
-        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons });
+        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode });
         res.status(201).json(campaign);
     } catch (err) {
         res.status(400).json({ error: err.message });

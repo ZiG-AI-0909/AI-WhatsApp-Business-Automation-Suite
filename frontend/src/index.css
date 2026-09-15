@@ -421,7 +421,15 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .notice.success { background: var(--success-bg); color: var(--success-text); border: 1px solid var(--success-border); }
 .notice.error { background: var(--danger-bg); color: var(--danger-text); border: 1px solid var(--danger-border); }
 .notice.warning { background: var(--warning-bg); color: var(--warning-text); border: 1px solid var(--warning-border); }
+.notice.info { background: var(--accent-bg); color: var(--text-secondary); border: 1px solid var(--accent-border); }
 .notice.warning button { margin-left: 6px; color: inherit; background: transparent; border: 0; text-decoration: underline; cursor: pointer; }
+/* Country selector (Settings + Campaigns upload) — matches input styling and
+   stays full-width inside form grids on small screens. */
+.country-select { width: 100%; max-width: 420px; min-height: 44px; border: 1px solid var(--border); background: var(--surface); color: var(--text-primary); border-radius: 10px; padding: 11px 12px; font-size: .95rem; }
+@media (max-width: 767px) {
+  .country-select { max-width: none; }
+  .upload-formatting-notice { font-size: .85rem; }
+}
 .preview-list { display: flex; flex-direction: column; gap: 10px; max-height: 430px; overflow: auto; }
 .message-preview { border-left: 3px solid var(--accent); padding: 10px 12px; background: var(--surface-subtle); }
 .message-preview strong, .message-preview small { display: block; }

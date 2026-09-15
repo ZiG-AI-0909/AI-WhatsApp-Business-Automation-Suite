@@ -9,6 +9,7 @@ const router = express.Router();
 function validateSchedule(body) {
     if (!['once', 'recurring'].includes(body.scheduleType)) return 'scheduleType must be once or recurring';
     if (!body.name?.trim() || !body.templateMessage?.trim() || !body.filePath) return 'name, templateMessage, and filePath required';
+    if (body.countryCode != null && body.countryCode !== '' && !/^[0-9+\s-]{1,5}$/.test(String(body.countryCode))) return 'countryCode must be a dial code like 91 or +44';
     // Skip file existence check for remote files (Supabase Storage)
     if (!isRemotePath(body.filePath) && !fs.existsSync(body.filePath)) return 'Uploaded file not found';
     if (body.scheduleType === 'once') {

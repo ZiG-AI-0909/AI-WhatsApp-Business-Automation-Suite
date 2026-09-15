@@ -4,6 +4,7 @@ const excelParser = require('./excelParser');
 const { downloadFromStorage, isRemotePath } = require('../middleware/upload');
 const fieldRenderer = require('./fieldRenderer');
 const messageQueue = require('./messageQueue');
+const { resolveCountryCode, findCountry } = require('../utils/countryCodes');
 
 class CampaignService {
     _parseCampaign(campaign) {
@@ -47,14 +48,19 @@ class CampaignService {
         return filePath; // local path during transition
     }
 
-    validateExcel(filePath) {
-        const result = excelParser.parse(filePath);
+    async validateExcel(filePath, { countryCode = null } = {}, userId = null) {
+        // Per-upload override wins; otherwise fall back to the account's
+        // Settings default (per-user app_settings → env → '91').
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(filePath, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
         const dynamicFields = excelParser.getDynamicFields(result);
         return {
             ...result.validation,
             dynamicFields,
             phoneColumn: result.phoneColumn,
+            countryCode: resolvedCode,
+            countryName: findCountry(resolvedCode)?.name || null,
             previewRows: validRows.slice(0, 3).map(r => {
                 const preview = { ...r };
                 delete preview._rowIndex;
@@ -64,14 +70,17 @@ class CampaignService {
         };
     }
 
-    validateExcelBuffer(fileBuffer) {
-        const result = excelParser.parseBuffer(fileBuffer);
+    async validateExcelBuffer(fileBuffer, { countryCode = null } = {}, userId = null) {
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parseBuffer(fileBuffer, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
         const dynamicFields = excelParser.getDynamicFields(result);
         return {
             ...result.validation,
             dynamicFields,
             phoneColumn: result.phoneColumn,
+            countryCode: resolvedCode,
+            countryName: findCountry(resolvedCode)?.name || null,
             previewRows: validRows.slice(0, 3).map(r => {
                 const preview = { ...r };
                 delete preview._rowIndex;
@@ -81,9 +90,12 @@ class CampaignService {
         };
     }
 
-    async previewMessages(filePath, template, previewCount = 5) {
+    async previewMessages(filePath, template, previewCount = 5, { countryCode = null } = {}, userId = null) {
         const source = await this._resolveExcelSource(filePath);
-        const result = excelParser.parse(source);
+        // Use the same code resolution as validation/create so the previewed
+        // numbers match what will actually be stored.
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(source, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
         const requiredFields = fieldRenderer.extractFields(template);
         return {
@@ -94,9 +106,13 @@ class CampaignService {
         };
     }
 
-    async create(userId, { name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [] }) {
+    async create(userId, { name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], countryCode = null }) {
         const source = await this._resolveExcelSource(filePath);
-        const result = excelParser.parse(source);
+        // Same resolution order as validate*: per-upload override → account
+        // Settings default → env → '91'. The resolved code is stored on the
+        // campaign row's settings for traceability.
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(source, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
 
         if (validRows.length === 0) {
@@ -119,7 +135,7 @@ class CampaignService {
             name,
             template_message: templateMessage,
             total_contacts: validRows.length,
-            settings: JSON.stringify(settings),
+            settings: JSON.stringify({ ...settings, countryCode: resolvedCode }),
             // Provider is resolved per user at creation time: business if
             // THIS user has the Cloud API connected, otherwise web.
             provider: require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected' ? 'business' : 'web',

@@ -4,6 +4,7 @@ const aiService = require('../ai/aiService');
 const resendService = require('../email/resendService');
 const db = require('../database/db');
 const { encryptSettingIfSecret, decryptSettingIfSecret } = require('../utils/encryption');
+const { COUNTRIES, FALLBACK_COUNTRY_CODE, sanitizeDialCode } = require('../utils/countryCodes');
 
 // Settings persistence now uses Supabase app_settings table
 // instead of local settings.json file (which doesn't survive Render free tier restarts)
@@ -19,6 +20,9 @@ const fieldKeys = {
     RESEND_API_KEY: 'resendApiKey',
     RESEND_FROM_EMAIL: 'resendFromEmail',
     RESEND_FROM_NAME: 'resendFromName',
+    // Default country code for phone normalization on new contacts
+    // (Excel uploads without a per-upload override, manual contact creation).
+    DEFAULT_COUNTRY_CODE: 'defaultCountryCode',
 };
 
 // Reverse mapping for lookups
@@ -94,6 +98,10 @@ async function getSettings(userId) {
             name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || 'Sudarshan Pipes',
             tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
         },
+        // Default country code used to normalize phone numbers. Existing
+        // accounts with no stored value resolve to India (+91), which        // preserves the historical DEFAULT_COUNTRY_CODE=91 behavior.
+        countries: COUNTRIES,
+        defaultCountryCode: sanitizeDialCode(stored?.DEFAULT_COUNTRY_CODE) || sanitizeDialCode(process.env.DEFAULT_COUNTRY_CODE) || FALLBACK_COUNTRY_CODE,
         // Email (Resend) — mirrors the `ai` section's shape: booleans for
         // secret presence, plain values for sender identity fields.
         email,

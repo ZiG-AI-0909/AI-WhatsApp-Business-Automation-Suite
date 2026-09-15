@@ -1,5 +1,6 @@
 const express = require('express');
 const contactService = require('../contacts/contactService');
+const { ensureCountryCode, resolveCountryCode } = require('../utils/countryCodes');
 
 const router = express.Router();
 
@@ -10,11 +11,18 @@ function validIds(ids) {
 // POST /api/contacts — manual contact creation (empty-state "Add contact"
 // CTA). The service upserts by phone, so re-adding an existing number safely
 // updates it instead of duplicating.
+// Numbers without a country code get the account's Settings default
+// (app_settings DEFAULT_COUNTRY_CODE → env → '91') prepended; numbers that
+// already look international are left untouched. There is no per-action
+// override in this context — change the account default in Settings.
 router.post('/', async (req, res) => {
     const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
     if (!phone) return res.status(400).json({ error: 'A phone number is required.' });
     try {
-        const created = await contactService.upsert(phone, {
+        const countryCode = await resolveCountryCode(req.user.id);
+        const normalizedPhone = ensureCountryCode(phone, countryCode);
+        if (!normalizedPhone) return res.status(400).json({ error: 'A valid phone number is required.' });
+        const created = await contactService.upsert(normalizedPhone, {
             name: req.body?.name || '',
             company: req.body?.company || '',
             marketing_opt_in: req.body?.marketing_opt_in !== false,

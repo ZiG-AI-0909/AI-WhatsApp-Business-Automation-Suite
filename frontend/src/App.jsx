@@ -12,6 +12,7 @@ import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import { BACKEND_URL, apiFetch, socketAuth, dispatchSessionInvalidated, SESSION_INVALIDATED_EVENT } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
+import { COUNTRIES } from './countries.js'
 
 // Socket auth moved to ./api.js (socketAuth).
 
@@ -84,6 +85,10 @@ function CampaignsView({ onNavigate }) {
   const [mediaPreview, setMediaPreview] = useState('')
   const [buttons, setButtons] = useState([])
   const [upload, setUpload] = useState(null)
+  // Per-upload country override: defaults to the account's Settings choice,
+  // changeable per file. null until settings load; sent with every upload.
+  const [uploadCountryCode, setUploadCountryCode] = useState('')
+  const [accountCountries, setAccountCountries] = useState(COUNTRIES)
   const [template, setTemplate] = useState(defaultTemplate)
   const [name, setName] = useState('')
   const [scheduleType, setScheduleType] = useState('now')
@@ -214,6 +219,17 @@ function CampaignsView({ onNavigate }) {
     return () => window.clearInterval(interval)
   }, [])
 
+  // Load the account's default country code (Settings → Default country code)
+  // once, to pre-select the per-upload selector.
+  useEffect(() => {
+    apiFetch('/settings')
+      .then((settings) => {
+        setUploadCountryCode(settings.defaultCountryCode || '91')
+        if (Array.isArray(settings.countries) && settings.countries.length) setAccountCountries(settings.countries)
+      })
+      .catch(() => setUploadCountryCode((current) => current || '91'))
+  }, [])
+
   useEffect(() => {
     if (!selectedCampaign) { setCampaignContacts([]); return }
     apiFetch(`/campaigns/${selectedCampaign.id}/contacts?limit=100`).then((data) => setCampaignContacts(data.data || [])).catch(() => setCampaignContacts([]))
@@ -227,18 +243,34 @@ function CampaignsView({ onNavigate }) {
     setPreviews([])
     setMissingByField({})
     setMessage({ type: '', text: '' })
+    await validateWithCountry(nextFile, uploadCountryCode)
+  }
+
+  // Re-validate the already-uploaded file against a (new) country code.
+  // The backend re-uploads + re-parses, so changing the selector re-formats
+  // every phone number without requiring the user to re-pick the file.
+  const validateWithCountry = async (targetFile, countryCode) => {
+    if (!targetFile) return
     const formData = new FormData()
-    formData.append('file', nextFile)
+    formData.append('file', targetFile)
+    if (countryCode) formData.append('countryCode', countryCode)
     setBusy(true)
     try {
       const data = await apiFetch('/campaigns/validate-excel', { method: 'POST', body: formData })
       setUpload(data)
-      setMessage({ type: 'success', text: `${data.valid} valid contacts ready.` })
+      setMessage({ type: 'success', text: data.formattingNotice || `${data.valid} valid contacts ready.` })
     } catch (error) {
       setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
       setBusy(false)
     }
+  }
+
+  const changeUploadCountry = (event) => {
+    setUploadCountryCode(event.target.value)
+    // Only re-validate when a file is already loaded; otherwise the choice
+    // is simply remembered for the next upload.
+    if (file) validateWithCountry(file, event.target.value)
   }
 
   const uploadMedia = async (event) => {
@@ -299,14 +331,14 @@ function CampaignsView({ onNavigate }) {
       if (scheduleType !== 'now') {
         if (scheduleType === 'once' && (!runAt || new Date(runAt) <= new Date())) throw new Error('Choose a future date and time.')
         const recurrenceCron = scheduleType === 'recurring' ? (recurrenceMode === 'custom' ? customCron.trim() : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()) : undefined
-        await apiFetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, scheduleType, runAt: scheduleType === 'once' ? new Date(runAt).toISOString() : undefined, recurrenceCron }) })
+        await apiFetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, scheduleType, runAt: scheduleType === 'once' ? new Date(runAt).toISOString() : undefined, recurrenceCron, countryCode: uploadCountryCode || undefined }) })
         setMessage({ type: 'success', text: scheduleType === 'once' ? 'Campaign scheduled.' : 'Recurring campaign schedule created.' })
         await loadSchedules()
       } else {
         const campaign = await apiFetch('/campaigns', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload }),
+          body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, countryCode: uploadCountryCode || undefined }),
         })
         setSelectedCampaign(campaign)
         setMessage({ type: 'success', text: `Campaign created with ${campaign.total_contacts} queued contacts.` })
@@ -392,6 +424,7 @@ function CampaignsView({ onNavigate }) {
           <form onSubmit={createCampaign}>
             {(whatsappStatus.provider === 'WhatsApp Web' || whatsappStatus.provider === 'web') && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
             <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
+            <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
             <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Now</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
             {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
             {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
@@ -415,6 +448,7 @@ function CampaignsView({ onNavigate }) {
               </>}
             </div>
             {upload && <div className="validation-summary"><strong>{upload.valid} valid</strong><span>{upload.invalid} invalid</span><span>{upload.duplicates} duplicates</span><span>Phone column: {upload.phoneColumn}</span></div>}
+            {upload && <div className="notice info upload-formatting-notice">{upload.formattingNotice || `${upload.valid} contacts found. Numbers will be formatted as +${upload.countryCode || uploadCountryCode || '91'} XXXXXXXXXX unless they already include a country code.`} Change the country selector above to re-format against a different code.</div>}
             {Object.entries(missingByField).filter(([, count]) => count > 0).map(([field, count]) => <div className="missing-warning" key={field}>Warning: {count} contacts have no value for {`{{${field}}}`}. Creating this campaign requires explicit approval.</div>)}
             {Object.values(missingByField).some((count) => count > 0) && <label className="check-label"><input type="checkbox" checked={allowMissingFields} onChange={(event) => setAllowMissingFields(event.target.checked)} /> Allow unresolved fields to remain in messages</label>}
             {(whatsappStatus.provider === 'WhatsApp Web' || whatsappStatus.provider === 'web') && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
@@ -662,6 +696,9 @@ function ContactsView() {
   // Excel uploads or incoming WhatsApp messages.
   const [showAddForm, setShowAddForm] = useState(false)
   const [addForm, setAddForm] = useState({ phone: '', name: '', company: '', marketing_opt_in: true })
+  // Account-level default dial code (Settings → Default country code) shown
+  // as a hint next to the phone field; the backend applies it on save.
+  const [accountDefaultCode, setAccountDefaultCode] = useState('91')
   const limit = 50
 
   const load = async () => {
@@ -677,6 +714,10 @@ function ContactsView() {
   }
 
   useEffect(() => { load() }, [search, page])
+
+  useEffect(() => {
+    apiFetch('/settings').then((settings) => { if (settings?.defaultCountryCode) setAccountDefaultCode(settings.defaultCountryCode) }).catch(() => {})
+  }, [])
 
   const selectContact = (contact) => {
     setSelected(contact)
@@ -734,7 +775,7 @@ function ContactsView() {
   const pageCount = Math.max(1, Math.ceil(total / limit))
   return <div className="view-workspace">
     <div className="view-toolbar"><div><p className="eyebrow">Customer directory</p><h2>Contacts</h2><p className="muted-copy">Keep customer details, consent, and conversation context in one place.</p></div><div className="button-row"><input className="search-input" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search contacts" /><button type="button" className="primary-btn" onClick={() => setShowAddForm((open) => !open)}>Add contact</button></div></div>
-    {showAddForm && <section className="panel editor-panel"><div className="panel-header"><div><p className="eyebrow">New contact</p><h2>Add a contact manually</h2></div><button className="secondary-btn" onClick={() => setShowAddForm(false)}>Close</button></div><form className="form-grid" onSubmit={createContact}><label className="form-label">Phone number<input value={addForm.phone} onChange={(event) => setAddForm({ ...addForm, phone: event.target.value })} placeholder="+91 98765 43210" required /><small>Include the country code, e.g. +91…</small></label><label className="form-label">Name<input value={addForm.name} onChange={(event) => setAddForm({ ...addForm, name: event.target.value })} placeholder="Customer name" /></label><label className="form-label">Company<input value={addForm.company} onChange={(event) => setAddForm({ ...addForm, company: event.target.value })} placeholder="Company (optional)" /></label><label className="check-label full-field"><input type="checkbox" checked={addForm.marketing_opt_in} onChange={(event) => setAddForm({ ...addForm, marketing_opt_in: event.target.checked })} /> Marketing opt-in</label><div className="button-row full-field"><button className="primary-btn" disabled={busy || !addForm.phone.trim()}>Save contact</button></div></form></section>}
+    {showAddForm && <section className="panel editor-panel"><div className="panel-header"><div><p className="eyebrow">New contact</p><h2>Add a contact manually</h2></div><button className="secondary-btn" onClick={() => setShowAddForm(false)}>Close</button></div><form className="form-grid" onSubmit={createContact}><label className="form-label">Phone number<input value={addForm.phone} onChange={(event) => setAddForm({ ...addForm, phone: event.target.value })} placeholder="98765 43210 or +44 7700 900123" required /><small>Numbers without a country code get your account default from Settings (currently +{accountDefaultCode}).</small></label><label className="form-label">Name<input value={addForm.name} onChange={(event) => setAddForm({ ...addForm, name: event.target.value })} placeholder="Customer name" /></label><label className="form-label">Company<input value={addForm.company} onChange={(event) => setAddForm({ ...addForm, company: event.target.value })} placeholder="Company (optional)" /></label><label className="check-label full-field"><input type="checkbox" checked={addForm.marketing_opt_in} onChange={(event) => setAddForm({ ...addForm, marketing_opt_in: event.target.checked })} /> Marketing opt-in</label><div className="button-row full-field"><button className="primary-btn" disabled={busy || !addForm.phone.trim()}>Save contact</button></div></form></section>}
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
     <div className="stats-grid compact-stats">{[['Total contacts', stats.total, 'green'], ['Opted in', stats.optedIn, 'blue'], ['Opted out', stats.optedOut, 'amber']].map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
     {selected && <section className="panel editor-panel"><div className="panel-header"><div><p className="eyebrow">Editing contact</p><h2>{selected.name || selected.phone}</h2></div><button className="secondary-btn" onClick={() => setSelected(null)}>Close</button></div><form className="form-grid" onSubmit={save}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label className="form-label">Email<input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="name@example.com" /><small>Optional — used for email campaigns.</small></label><label className="form-label">Company<input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></label><label className="form-label">City<input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></label><label className="form-label">Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="dealer, priority" /></label><label className="form-label full-field">Notes<textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><label className="check-label full-field"><input type="checkbox" checked={form.marketing_opt_in} onChange={(event) => setForm({ ...form, marketing_opt_in: event.target.checked })} /> Marketing opt-in</label><div className="button-row full-field"><button className="primary-btn" disabled={busy}>Save changes</button></div></form></section>}
@@ -819,7 +860,7 @@ function AnalyticsView() {
 
 function SettingsView({ userEmail }) {
   const [settings, setSettings] = useState(null)
-  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', resendApiKey: '', resendFromEmail: '', resendFromName: '' })
+  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91' })
   const [showKey, setShowKey] = useState(false)
   const [showResendKey, setShowResendKey] = useState(false)
   const [notice, setNotice] = useState({ type: '', text: '' })
@@ -827,8 +868,8 @@ function SettingsView({ userEmail }) {
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
   useEffect(() => { apiFetch('/settings').then(setSettings).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
-  useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '' })) }, [settings])
-  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, defaultCountryCode: settings.defaultCountryCode || '91', resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '' })) }, [settings])
+  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
   const testResend = async () => {
     setTesting(true); setTestNotice({ type: '', text: '' })
     try {
@@ -844,7 +885,7 @@ function SettingsView({ userEmail }) {
   }
   if (!settings) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <div className="panel empty-preview">Loading settings...</div>}</div>
   const update = (field) => (event) => setForm({ ...form, [field]: event.target.value })
-  return <div className="view-workspace"><div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update the AI connection, email sender, and business details for your account.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<form onSubmit={save}><section className="panel settings-panel"><div className="panel-header"><h2>AI assistant</h2><span className={`campaign-status ${settings.ai.available ? 'running' : 'stopped'}`}>{settings.ai.available ? 'Available' : 'Unavailable'}</span></div><div className="settings-grid"><label className="form-label">API key<div className="input-with-action"><input type={showKey ? 'text' : 'password'} value={form.aiApiKey} onChange={update('aiApiKey')} placeholder="Leave blank to keep current key" autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button></div><small>Configured via the server's .env file. Leave blank to keep the current key.</small></label><label className="form-label">Base URL<input value={form.aiBaseURL} onChange={update('aiBaseURL')} /><small>Configured via the server's .env file.</small></label><label className="form-label">Model<input value={form.aiModel} onChange={update('aiModel')} /><small>Configured via the server's .env file.</small></label></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Email (Resend)</h2><span className={`campaign-status ${settings.email?.configured ? 'running' : 'stopped'}`}>{settings.email?.configured ? 'Configured' : 'Not configured'}</span></div><div className="settings-grid"><label className="form-label">API key<div className="input-with-action"><input type={showResendKey ? 'text' : 'password'} value={form.resendApiKey} onChange={update('resendApiKey')} placeholder={settings.email?.apiKeySet ? 'Leave blank to keep current key' : 're_...'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowResendKey(!showResendKey)}>{showResendKey ? 'Hide' : 'Show'}</button></div><small>Your own Resend API key from resend.com/api-keys. Leave blank to keep the current key.</small></label><label className="form-label">From email<input value={form.resendFromEmail} onChange={update('resendFromEmail')} placeholder="hello@yourdomain.com" /><small>Your verified sender address in Resend (e.g. hello@theirdomain.com).</small></label><label className="form-label">From name<input value={form.resendFromName} onChange={update('resendFromName')} placeholder="Your Business Name" /><small>Display name shown in the inbox — optional.</small></label></div>{testNotice.text && <div className={`notice ${testNotice.type}`} style={{ margin: '0.75rem 0 0' }}>{testNotice.text}</div>}<div className="button-row"><button type="button" className="secondary-btn" onClick={testResend} disabled={testing || busy}>{testing ? 'Sending test email...' : 'Test Connection'}</button><small className="help-note">Sends one test email to your own account address ({userEmail || 'not available'}) using the saved credentials. Save your settings first.</small></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Business information</h2></div><div className="settings-grid"><label className="form-label">Business name<input value={form.businessName} onChange={update('businessName')} /><small>Configured via the server's .env file.</small></label><label className="form-label">Tagline<input value={form.businessTagline} onChange={update('businessTagline')} /><small>Configured via the server's .env file.</small></label></div></section><div className="button-row"><button className="primary-btn" disabled={busy}>{busy ? 'Saving...' : 'Save settings'}</button></div></form></div>
+  return <div className="view-workspace"><div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update the AI connection, email sender, business details, and default country code for your account.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<form onSubmit={save}><section className="panel settings-panel"><div className="panel-header"><h2>AI assistant</h2><span className={`campaign-status ${settings.ai.available ? 'running' : 'stopped'}`}>{settings.ai.available ? 'Available' : 'Unavailable'}</span></div><div className="settings-grid"><label className="form-label">API key<div className="input-with-action"><input type={showKey ? 'text' : 'password'} value={form.aiApiKey} onChange={update('aiApiKey')} placeholder="Leave blank to keep current key" autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button></div><small>Configured via the server's .env file. Leave blank to keep the current key.</small></label><label className="form-label">Base URL<input value={form.aiBaseURL} onChange={update('aiBaseURL')} /><small>Configured via the server's .env file.</small></label><label className="form-label">Model<input value={form.aiModel} onChange={update('aiModel')} /><small>Configured via the server's .env file.</small></label></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Email (Resend)</h2><span className={`campaign-status ${settings.email?.configured ? 'running' : 'stopped'}`}>{settings.email?.configured ? 'Configured' : 'Not configured'}</span></div><div className="settings-grid"><label className="form-label">API key<div className="input-with-action"><input type={showResendKey ? 'text' : 'password'} value={form.resendApiKey} onChange={update('resendApiKey')} placeholder={settings.email?.apiKeySet ? 'Leave blank to keep current key' : 're_...'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowResendKey(!showResendKey)}>{showResendKey ? 'Hide' : 'Show'}</button></div><small>Your own Resend API key from resend.com/api-keys. Leave blank to keep the current key.</small></label><label className="form-label">From email<input value={form.resendFromEmail} onChange={update('resendFromEmail')} placeholder="hello@yourdomain.com" /><small>Your verified sender address in Resend (e.g. hello@theirdomain.com).</small></label><label className="form-label">From name<input value={form.resendFromName} onChange={update('resendFromName')} placeholder="Your Business Name" /><small>Display name shown in the inbox — optional.</small></label></div>{testNotice.text && <div className={`notice ${testNotice.type}`} style={{ margin: '0.75rem 0 0' }}>{testNotice.text}</div>}<div className="button-row"><button type="button" className="secondary-btn" onClick={testResend} disabled={testing || busy}>{testing ? 'Sending test email...' : 'Test Connection'}</button><small className="help-note">Sends one test email to your own account address ({userEmail || 'not available'}) using the saved credentials. Save your settings first.</small></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Business information</h2></div><div className="settings-grid"><label className="form-label">Business name<input value={form.businessName} onChange={update('businessName')} /><small>Configured via the server's .env file.</small></label><label className="form-label">Tagline<input value={form.businessTagline} onChange={update('businessTagline')} /><small>Configured via the server's .env file.</small></label></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Default country code</h2></div><div className="settings-grid"><label className="form-label">Default country code<select value={form.defaultCountryCode} onChange={update('defaultCountryCode')} className="country-select">{(settings.countries || COUNTRIES).map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>Prepended to phone numbers that don't already include a country code — Excel uploads without a per-upload override, and manually added contacts. The Campaigns upload lets you pick a different code per file.</small></label></div></section><div className="button-row"><button className="primary-btn" disabled={busy}>{busy ? 'Saving...' : 'Save settings'}</button></div></form></div>
 }
 
 function App() {
