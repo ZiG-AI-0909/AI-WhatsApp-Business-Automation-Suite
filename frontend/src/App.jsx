@@ -150,6 +150,16 @@ function CampaignsView({ onNavigate }) {
     const scheduleFailed = (event) => { setMessage({ type: 'error', text: `Schedule "${event.name}" failed: ${event.error}` }); loadSchedules() }
     socket.on('schedule:failed', scheduleFailed)
 
+    // Handle schedule:waiting_connection — a due schedule whose owner's
+    // WhatsApp session is down (auto-reconnect was attempted and failed).
+    // Surface it so the wait isn't silent; the schedules table also shows
+    // the same reason via schedule.last_error.
+    const scheduleWaiting = (event) => {
+      setMessage({ type: 'warning', text: `Scheduled campaign "${event.name || ''}" is waiting: ${event.error || 'WhatsApp is not connected.'}` })
+      loadSchedules()
+    }
+    socket.on('schedule:waiting_connection', scheduleWaiting)
+
     // Handle campaign:progress events — update state directly for instant UI response
     const campaignProgress = (campaign) => {
       setCampaignList((current) => {
@@ -196,6 +206,7 @@ function CampaignsView({ onNavigate }) {
 
     return () => {
       socket.off('schedule:failed', scheduleFailed)
+      socket.off('schedule:waiting_connection', scheduleWaiting)
       socket.off('campaign:progress', campaignProgress)
       socket.off('campaign:started', campaignStatusChange)
       socket.off('campaign:paused', campaignStatusChange)

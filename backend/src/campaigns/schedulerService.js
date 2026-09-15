@@ -185,21 +185,43 @@ class SchedulerService {
             for (const schedule of dueSchedules) {
                 // Per-user connection check: the schedule fires only if ITS
                 // OWNER's own WhatsApp connection is live. Background sending
-                // never depends on the browser being open.
-                const ownerConnected = await (async () => {
-                    try {
-                        const provider = schedule.provider || 'web';
-                        if (provider === 'business') {
-                            const businessApiProvider = require('../whatsapp/businessApiProvider');
-                            return businessApiProvider.getStatus(schedule.user_id) === 'connected';
-                        }
+                // never depends on the browser being open. If the owner's
+                // session is down (e.g. the 2h idle timeout dropped it), we
+                // first TRY to revive it from the stored Supabase auth state
+                // — scheduled sends must not silently wait for a human to
+                // open the app. Only when revival fails do we skip, and we
+                // record WHY on the schedule row so the wait is visible in
+                // the UI instead of being a silent limbo.
+                let ownerConnected = false;
+                try {
+                    const provider = schedule.provider || 'web';
+                    if (provider === 'business') {
+                        const businessApiProvider = require('../whatsapp/businessApiProvider');
+                        ownerConnected = businessApiProvider.getStatus(schedule.user_id) === 'connected';
+                    } else {
                         const sessionManager = require('../whatsapp/sessionManager');
-                        return sessionManager.getStatus(schedule.user_id) === 'connected';
-                    } catch { return false; }
-                })();
+                        if (sessionManager.getStatus(schedule.user_id) === 'connected') {
+                            ownerConnected = true;
+                        } else {
+                            ownerConnected = await sessionManager.ensureConnected(
+                                schedule.user_id,
+                                Number(process.env.WA_SCHEDULE_REVIVE_TIMEOUT_MS || 45000)
+                            );
+                        }
+                    }
+                } catch { ownerConnected = false; }
                 if (!ownerConnected) {
-                    console.log(`Schedule ${schedule.id} waiting: owner ${schedule.user_id} has no connected WhatsApp session.`);
-                    this._emitToUser(schedule.user_id, 'schedule:waiting_connection', { scheduleId: schedule.id });
+                    console.log(`Schedule ${schedule.id} waiting: owner ${schedule.user_id} has no connected WhatsApp session (auto-reconnect attempted).`);
+                    const waitReason = 'Waiting for WhatsApp connection. Reconnect WhatsApp (Settings → Connection) to let this schedule run.';
+                    await db.update('campaign_schedules', {
+                        last_error: waitReason,
+                        updated_at: new Date(),
+                    }, 'id = ? AND user_id = ? AND status IN (\'pending\', \'active\')', [schedule.id, schedule.user_id]).catch(() => {});
+                    this._emitToUser(schedule.user_id, 'schedule:waiting_connection', {
+                        scheduleId: schedule.id,
+                        name: schedule.name,
+                        error: waitReason,
+                    });
                     continue;
                 }
                 if (schedule.schedule_type === 'recurring' && schedule.last_campaign_id) {

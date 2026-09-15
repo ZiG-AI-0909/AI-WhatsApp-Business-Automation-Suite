@@ -107,7 +107,18 @@ class MessageQueue {
         }
         const sessionManager = require('../whatsapp/sessionManager');
         if (sessionManager.getStatus(userId) !== 'connected') {
-            throw new Error('Your WhatsApp session is not connected. Reconnect WhatsApp to continue this campaign.');
+            // Unattended revival: a scheduled campaign may fire after the
+            // 2h idle timeout dropped the socket. Try reconnecting from the
+            // stored Supabase auth state BEFORE giving up — the existing
+            // error message stays so the queue's retry/backoff and any
+            // failure record look exactly like before when revival fails.
+            const revived = await sessionManager.ensureConnected(
+                userId,
+                Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000)
+            );
+            if (!revived) {
+                throw new Error('Your WhatsApp session is not connected. Reconnect WhatsApp to continue this campaign.');
+            }
         }
         return (phone, body, media) => sessionManager.sendMessage(userId, phone, body, null, media);
     }

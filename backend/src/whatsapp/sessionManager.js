@@ -45,6 +45,13 @@ class SessionManager {
         this._io = null;
         this._baileys = null;
         this._baileysPromise = null;
+        // userId -> Promise<boolean>: in-flight background revival, so a
+        // burst of scheduled sends for the same offline user triggers ONE
+        // reconnect, not a stampede.
+        this._revivePromises = new Map();
+        // userId -> Promise<boolean>: cached hasAuthState lookup (Supabase
+        // round-trip) so we don't hit the DB on every ensureConnected call.
+        this._linkCheckPromises = new Map();
     }
 
     setIO(io) { this._io = io; }
@@ -87,6 +94,100 @@ class SessionManager {
         const session = this.sessions.get(userId);
         if (!session) return 'disconnected';
         return session.status;
+    }
+
+    /**
+     * True if this user has linked a number before (stored auth state) —
+     * used to decide whether an automatic reconnect can succeed without
+     * a fresh QR scan. Resolves via the in-memory session when available,
+     * otherwise via a single-flight Supabase lookup (cached).
+     */
+    _hasLinkedBefore(userId) {
+        const session = this.sessions.get(userId);
+        if (session?.authState?.state?.creds?.registered) return Promise.resolve(true);
+        if (!this._linkCheckPromises.has(userId)) {
+            const authStateStore = require('./authStateStore');
+            this._linkCheckPromises.set(
+                userId,
+                authStateStore.hasAuthState(userId).catch((error) => {
+                    console.error(`[wa:${userId}] hasAuthState check failed:`, error.message);
+                    return false;
+                })
+            );
+        }
+        return this._linkCheckPromises.get(userId);
+    }
+
+    /**
+     * Revive a dead/idle-disconnected session using the STORED auth state
+     * (Supabase row) — the same mechanism as reconnect-on-use. Never
+     * requires a human in the browser; used by background send paths
+     * (scheduled campaigns) that fire while nobody is watching.
+     *
+     * - No stored auth state (never linked / logged out): resolves false.
+     * - Session still connecting/reconnecting: waits for it briefly.
+     * - Otherwise: re-runs initialize(), which reloads auth state and
+     *   reconnects without a QR scan, then waits for `connected`.
+     *
+     * Returns true only when the session is actually connected.
+     * @param {string} userId owner
+     * @param {number} timeoutMs budget for the whole revival attempt
+     */
+    async ensureConnected(userId, timeoutMs = 45000) {
+        if (!userId) throw new Error('[sessionManager] userId is required');
+        const deadline = Date.now() + timeoutMs;
+        const linked = await this._hasLinkedBefore(userId);
+        if (!linked) {
+            console.log(`[wa:${userId}] ensureConnected: no stored auth state — cannot auto-reconnect (QR scan required)`);
+            return false;
+        }
+
+        const settled = () => {
+            const status = this.getStatus(userId);
+            return status === 'connected';
+        };
+
+        // A revival is already in flight (a concurrent ensureConnected or a
+        // send-path burst for the same user): wait for it, don't stack a
+        // second initialize() on top.
+        if (this._revivePromises.has(userId)) {
+            console.log(`[wa:${userId}] ensureConnected: revival already in flight — waiting`);
+            await this._waitForSettled(userId, deadline);
+            return settled();
+        }
+
+        const status = this.getStatus(userId);
+        if (status === 'connected') return true;
+        if (status === 'logged_out') {
+            console.log(`[wa:${userId}] ensureConnected: session is logged out — QR scan required`);
+            return false;
+        }
+
+        const promise = (async () => {
+            try {
+                console.log(`[wa:${userId}] ensureConnected: attempting background reconnection from stored auth state (status: ${status})`);
+                await this.initialize(userId);
+            } catch (error) {
+                console.error(`[wa:${userId}] ensureConnected: initialize failed:`, error.message);
+            }
+            await this._waitForSettled(userId, deadline);
+            const ok = settled();
+            console.log(`[wa:${userId}] ensureConnected: ${ok ? 'SUCCESS — session reconnected' : 'FAILED — still ' + this.getStatus(userId)}`);
+            return ok;
+        })();
+        this._revivePromises.set(userId, promise);
+        try { return await promise; } finally { this._revivePromises.delete(userId); }
+    }
+
+    /** Poll until connected/terminal or deadline passes. */
+    async _waitForSettled(userId, deadline) {
+        while (Date.now() < deadline) {
+            const status = this.getStatus(userId);
+            if (status === 'connected') return true;
+            if (status === 'logged_out') return false;
+            await new Promise(r => setTimeout(r, 500));
+        }
+        return this.getStatus(userId) === 'connected';
     }
 
     getQRDataUrl(userId) {
@@ -353,6 +454,9 @@ class SessionManager {
         // Remove local session record entirely.
         try { session?.authState?.destroy(); } catch {}
         if (userId) this.sessions.delete(userId);
+        // Invalidate the cached hasAuthState result so background send
+        // paths stop attempting revivals that would need a fresh QR scan.
+        this._linkCheckPromises?.delete(userId);
 
         // Delete stored auth state — this is what makes the logout real.
         try { await authStateStore.deleteAuthState(userId); }
