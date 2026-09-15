@@ -577,4 +577,8 @@ router.get('/export/excel', async (req, res) => {
   }
 });
 
+// Product Identification (second mode of this page) shares the same
+// auth + rate-limit envelope and NVIDIA vision service as lead extraction.
+router.use('/', require('./productIdentification').router);
+
 module.exports = router;

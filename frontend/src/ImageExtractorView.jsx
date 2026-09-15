@@ -2,54 +2,10 @@ import { useEffect, useState } from 'react';
 import Card from './components/Card';
 import Button from './components/Button';
 import Badge from './components/Badge';
-import { supabase } from './supabaseClient.js'
-import { friendlyErrorMessage } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
-
-const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
-const API = `${BACKEND_URL}/api/image-extractor`
-
-// Attach the Supabase session JWT the same way App.jsx's apiFetch does, so
-// the backend requireAuth middleware can verify these requests. Without it
-// every call returns 401 "Authentication required.".
-async function authHeaders() {
-  if (!supabase) return {}
-  try {
-    const {
-      data: { session },
-      error,
-    } = await supabase.auth.getSession()
-    if (error) console.error('Supabase session error:', error)
-    if (session?.access_token) {
-      return { Authorization: `Bearer ${session.access_token}` }
-    }
-  } catch (error) {
-    console.error('Failed to get Supabase session:', error)
-  }
-  return {}
-}
-
-async function request(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
-    ...options,
-    headers: {
-      ...(await authHeaders()),
-      ...(options.headers || {}),
-    },
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    // Keep the HTTP status so friendlyErrorMessage() can map 401/404/429/5xx
-    // to human-readable text.
-    const error = new Error(data.error || `Request failed (${response.status})`)
-    error.status = response.status
-    throw error
-  }
-
-  return data
-}
-
-const navItems = []
+import ProductIdentifyView from './ProductIdentifyView.jsx'
+// Shared auth/request helpers (also used by the Identify Product mode).
+import { request, friendlyErrorMessage } from './imageExtractorApi.js'
 
 const listValue = (value) => Array.isArray(value) ? value.join(', ') : value || '-'
 const MAX_FILES = 100
@@ -66,6 +22,8 @@ const groupLeads = (leads) => {
 }
 
 export default function ImageExtractorView() {
+  // Two modes: the original lead extraction and product identification.
+  const [mode, setMode] = useState('leads')
   const [files, setFiles] = useState([])
   const [leads, setLeads] = useState([])
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -222,12 +180,34 @@ export default function ImageExtractorView() {
     }
   }
 
+  if (mode === 'identify') {
+    return (
+      <div className="view-workspace">
+        <div>
+          <p className="eyebrow">Image to structured data</p>
+          <h2>Product Identification</h2>
+          <p className="muted-copy">Upload a photo of a pipe or product — the AI suggests its category, size, and readable markings. Every result is a suggestion to verify manually, not a certain fact.</p>
+        </div>
+        <div className="extractor-mode-tabs">
+          <button type="button" onClick={() => setMode('leads')}>Extract Leads</button>
+          <button type="button" className="active">Identify Product</button>
+        </div>
+        <ProductIdentifyView />
+      </div>
+    )
+  }
+
   return (
     <div className="view-workspace">
       <div>
         <p className="eyebrow">Image to structured data</p>
         <h2>Lead Image Extractor</h2>
         <p className="muted-copy">Upload business cards, listing screenshots, or directory images. NVIDIA Vision captures every readable value.</p>
+      </div>
+
+      <div className="extractor-mode-tabs">
+        <button type="button" className="active">Extract Leads</button>
+        <button type="button" onClick={() => setMode('identify')}>Identify Product</button>
       </div>
 
       {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
