@@ -84,6 +84,7 @@ app.use('/api/settings', requireAuth, require('./middleware/rateLimiterMiddlewar
 app.use('/api/schedules', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/schedules'));
 app.use('/api/image-extractor', requireAuth, require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
 app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
+app.use('/api/boq', requireAuth, require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/boq').router);
 
 app.use('/api', requireAuth, (req, res) => {
     res.status(404).json({ error: 'Route not found' });

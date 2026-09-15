@@ -16,10 +16,7 @@ export function dispatchSessionInvalidated(reason) {
   window.dispatchEvent(new CustomEvent(SESSION_INVALIDATED_EVENT, { detail: { reason } }))
 }
 
-export async function apiFetch(path, options = {}) {
-  // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
-  let authHeader = {}
-
+async function authHeader() {
   if (supabase) {
     try {
       const {
@@ -35,7 +32,7 @@ export async function apiFetch(path, options = {}) {
       }
 
       if (session?.access_token) {
-        authHeader = {
+        return {
           Authorization: `Bearer ${session.access_token}`,
         }
       }
@@ -43,11 +40,17 @@ export async function apiFetch(path, options = {}) {
       console.error('Failed to get Supabase session:', error)
     }
   }
+  return {}
+}
+
+export async function apiFetch(path, options = {}) {
+  // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
+  const authHeaders = await authHeader()
 
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
-      ...authHeader,
+      ...authHeaders,
       ...(options.headers || {}),
     },
   })
@@ -71,6 +74,19 @@ export async function apiFetch(path, options = {}) {
   }
 
   return data
+}
+
+// Same as apiFetch but returns the raw Response — for binary downloads
+// (Excel/PDF exports) that must be read as a blob, not JSON.
+export async function apiFetchRaw(path, options = {}) {
+  const authHeaders = await authHeader()
+  return fetch(`${API_URL}${path}`, {
+    ...options,
+    headers: {
+      ...authHeaders,
+      ...(options.headers || {}),
+    },
+  })
 }
 
 export function socketAuth() {
