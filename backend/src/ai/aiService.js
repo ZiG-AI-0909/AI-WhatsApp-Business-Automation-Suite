@@ -1,4 +1,5 @@
-require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '..', '.env') });
+// NOTE: env vars are loaded once by src/server.js from backend/.env —
+// do not add a dotenv.config() here.
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');

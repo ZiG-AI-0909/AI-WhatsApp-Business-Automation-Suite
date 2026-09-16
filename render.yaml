@@ -12,7 +12,8 @@ services:
       - key: NODE_ENV
         value: production
       # Render injects PORT automatically — do not hardcode it.
-      # Supabase (already configured in your .env, set these in Render dashboard)
+      # Supabase (set these in the Render dashboard — Render never reads
+      # backend/.env; env vars must be configured in the dashboard or render.yaml)
       # - key: SUPABASE_URL
       #   value: your-supabase-project-url
       # - key: SUPABASE_SECRET_KEY

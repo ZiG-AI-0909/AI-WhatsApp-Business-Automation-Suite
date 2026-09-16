@@ -11,9 +11,9 @@
 //   4. Cleans up: disconnects and deletes the test row again.
 //
 // Run: node scripts/verify-fresh-qr.js
-// (from the backend/ directory; loads the repo-root .env)
+// (from the backend/ directory; loads backend/.env)
 // =============================================================
-require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const sessionManager = require('../src/whatsapp/sessionManager');
 const authStateStore = require('../src/whatsapp/authStateStore');

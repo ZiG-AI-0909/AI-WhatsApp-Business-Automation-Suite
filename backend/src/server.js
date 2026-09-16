@@ -1,4 +1,8 @@
-require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+// ─── Environment ────────────────────────────────────────────────────────────
+// The ONE dotenv load point for the whole backend process: backend/.env,
+// colocated with package.json. Every module required below sees the env
+// vars in process.env — individual modules must NOT call dotenv themselves.
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const express = require('express');
 const http = require('http');

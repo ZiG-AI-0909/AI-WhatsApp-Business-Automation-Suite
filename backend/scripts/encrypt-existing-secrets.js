@@ -30,7 +30,7 @@
 // Encrypted with a different key, the data becomes unreadable to the
 // app (decryption fails loudly rather than returning garbage).
 // =============================================================
-require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const { supabase, isAvailable } = require('../src/database/supabaseClient');
 const {

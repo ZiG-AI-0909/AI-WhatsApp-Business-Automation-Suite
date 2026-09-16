@@ -117,9 +117,9 @@ require.cache[clientPath] = {
 };
 
 process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
-// Deliberately NO AI key: tests 1-4 must pass without one. The real .env
-// (loaded by aiService's dotenv) may define AI_API_KEY — remove it so the
-// deterministic path is what's under test. Test 5 sets its own key.
+// Deliberately NO AI key: tests 1-4 must pass without one. The local
+// backend/.env may define AI_API_KEY — remove it so the deterministic
+// path is what's under test. Test 5 sets its own key.
 delete process.env.AI_API_KEY;
 delete process.env.AI_BASE_URL;
 

@@ -10,7 +10,7 @@
 //   node scripts/live-full-verify.js            # read-only
 //   LIVE=1 node scripts/live-full-verify.js     # full E2E incl. writes
 //
-// Uses the LOCAL .env (SUPABASE_URL, SUPABASE_SECRET_KEY,
+// Uses the local backend/.env (SUPABASE_URL, SUPABASE_SECRET_KEY,
 // VITE_SUPABASE_PUBLISHABLE_KEY) to mint an ephemeral Supabase test
 // user (admin API), sign in with the publishable key to get a real
 // JWT, then exercise the live Render deployment as that user:
@@ -34,7 +34,7 @@
 //   8. Cleanup: boq docs, KB docs (+ their Storage objects), ask history
 //      rows, ephemeral user — no side effects between runs
 // =============================================================
-require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const { createClient } = require('@supabase/supabase-js');
 const ExcelJS = require('exceljs');
