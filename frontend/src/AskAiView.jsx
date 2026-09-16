@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 
-// Ask AI — conversational assistant. A chat that helps with TWO things:
-// Sudarshan Pipes products/company facts, and how to use this platform.
-// Grounded in the Knowledge Base (with the company website as a fallback
-// for product questions the KB doesn't cover). The server is stateless:
+// Ask AI — conversational assistant for employees. A chat that helps with
+// TWO things: how to use this platform, and company profile facts.
+// Fully SEPARATE from the Knowledge Base: grounding comes from built-in
+// guides on the server (with the company website as a fallback for
+// company questions the guides don't cover). The server is stateless:
 // the recent conversation is replayed with every message so follow-ups
 // like "how about bulk sends?" keep their context.
 
@@ -97,7 +98,7 @@ export default function AskAiView() {
         <div>
           <p className="eyebrow">Assistant</p>
           <h2>Ask AI</h2>
-          <p className="muted-copy">Chat with your built-in assistant — Sudarshan Pipes products, or how to use this platform. Grounded in your Knowledge Base (and the company website when the KB doesn't cover it). Internal tool: this does not message customers.</p>
+          <p className="muted-copy">Chat with your internal assistant — how to use this platform, or company profile questions. Built-in guides only: this is separate from the Knowledge Base and never messages customers.</p>
         </div>
         <div className="button-row">
           <button type="button" className="secondary-btn" onClick={openHistory}>{showHistory ? 'Hide history' : 'History'}</button>
@@ -111,7 +112,7 @@ export default function AskAiView() {
         <div className="chat-scroll">
           {!thread.length && (
             <div className="chat-empty">
-              <p>👋 Hi! I can help you use this platform or answer questions about Sudarshan Pipes products. Try one of these:</p>
+              <p>👋 Hi! I can help you use this platform or answer company profile questions. Try one of these:</p>
               <div className="chat-suggestions">
                 {SUGGESTIONS.map((s) => (
                   <button key={s} type="button" className="chat-suggestion" onClick={() => send(s)} disabled={busy}>{s}</button>
@@ -154,13 +155,13 @@ export default function AskAiView() {
           <input
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder={busy ? 'The assistant is replying…' : 'Ask about products, or how to use the platform…'}
+            placeholder={busy ? 'The assistant is replying…' : 'Ask how to use the platform, or about the company…'}
             disabled={busy}
             aria-label="Message the assistant"
           />
           <button type="submit" className="primary-btn" disabled={busy || !input.trim()}>Send</button>
         </form>
-        <small className="help-note">Answers come from your Knowledge Base — with the company website as a fallback for product questions the KB doesn't cover. If neither has the answer, the assistant says so rather than guessing.</small>
+        <small className="help-note">Answers come from the assistant's built-in guides (platform how-to + company profile), with the company website as a fallback. Separate from your Knowledge Base, which powers the customer WhatsApp auto-reply.</small>
       </section>
 
       {showHistory && (

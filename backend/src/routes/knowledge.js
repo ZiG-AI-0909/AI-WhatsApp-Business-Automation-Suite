@@ -22,8 +22,14 @@ function validIds(ids) {
 // First load for a brand-new account seeds the default company-profile
 // document (no-op for anyone who already has documents). Awaited so the
 // seeded doc is visible in the very first list response.
+// The once-per-user repair ladder (fix/delete corrupt or chunk-less
+// docs — the "[object Blob]" regression) also runs here: the Knowledge
+// Base feeds the customer WhatsApp auto-reply, so repairs belong on its
+// own routes. Ask AI no longer triggers any of this — it is decoupled
+// from the Knowledge Base entirely.
 router.get('/', async (req, res) => {
     try {
+        await seedKnowledgeService.repairUnusableDocuments(req.user.id);
         await seedKnowledgeService.seedIfEmpty(req.user.id);
         res.json(await knowledgeBase.listDocuments(req.user.id));
     } catch (err) {

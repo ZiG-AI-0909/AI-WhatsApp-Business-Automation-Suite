@@ -20,8 +20,8 @@
 //   1. Auth: real JWT from the live Supabase project
 //   2. Connectivity: whatsapp/status, analytics/dashboard,
 //      conversations?limit=5, knowledge — all HTTP 200, JSON body, timed
-//   3. Ask AI positive: seeded KB answers "manufacturing capacity" with
-//      a cited source (LIVE=1)
+//   3. Ask AI positive: built-in guides answer "manufacturing capacity"
+//      with a cited source (LIVE=1)
 //   4. Ask AI negative: unanswerable question fails honestly — either
 //      the canned zero-retrieval message (path A) or an AI-generated
 //      refusal with no fabricated specs (path B); the result records
@@ -152,20 +152,17 @@ async function main() {
     if (process.env.LIVE !== '1') {
         console.log('\n⏭️  LIVE=1 not set — skipping checks 3, 4, 5 (they write data).');
     } else {
-        const seedWaitMs = await waitForSeed(global.__TOKEN);
-        if (seedWaitMs >= 0) {
-            console.log(`   (fresh-user KB seed confirmed, waited ${seedWaitMs}ms)`);
-        } else {
-            console.log('   (WARN: seeded doc not confirmed — Ask AI positive case may fail)');
-        }
+        // Ask AI grounds in BUILT-IN knowledge (ai/builtInKnowledge.js) and
+        // no longer depends on the Knowledge Base seed — no seed wait is
+        // needed before the Ask AI checks.
+        console.log('   (Ask AI uses built-in knowledge — no KB seed wait)');
 
         // ── 3. ASK AI — POSITIVE ────────────────────────────────────────
         try {
-            const r = await apiPost('/api/ask-ai/ask', { question: 'What is Sudarshan Pipes\' manufacturing capacity?' }, global.__TOKEN);
+            const r = await apiPost('/api/ask-ai/ask', { question: 'How do I schedule a campaign for later?' }, global.__TOKEN);
             const body = r.body || {};
-            const honestNoDocs = typeof body.answer === 'string' && body.answer.startsWith('Your Knowledge Base is empty');
-            const noMatch = typeof body.answer === 'string' && body.answer.startsWith('No matching documents');
-            const pass = r.status === 200 && !honestNoDocs && !noMatch &&
+            const noMatch = typeof body.answer === 'string' && body.answer.startsWith("I couldn't find anything in my built-in guides");
+            const pass = r.status === 200 && !noMatch &&
                 typeof body.answer === 'string' && body.answer.length > 20 &&
                 Array.isArray(body.sources) && body.sources.length > 0;
             if (pass && body.id) cleanup.askHistoryIds.push(body.id);
@@ -202,8 +199,7 @@ async function main() {
             // ASCII phrase matching.
             const lowered = answer.toLowerCase().replace(/[’‘]/g, "'");
 
-            const cannedMessage = answer.startsWith('No matching documents') ||
-                answer.startsWith('Your Knowledge Base is empty');
+            const cannedMessage = answer.startsWith("I couldn't find anything in my built-in guides");
 
             const refusalPhrases = [
                 "don't have", "do not have", "no information", "cannot find",

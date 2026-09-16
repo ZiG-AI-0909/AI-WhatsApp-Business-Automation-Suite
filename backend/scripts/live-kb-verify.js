@@ -4,7 +4,7 @@
 // for affected users so they get re-seeded).
 const db = require('../src/database/db');
 const seedService = require('../src/knowledge/seedKnowledgeService');
-const queryService = require('../src/ai/queryService');
+const { retrieveBuiltInSources } = require('../src/ai/builtInKnowledge');
 
 const LIVE = process.env.LIVE === '1';
 
@@ -70,7 +70,7 @@ function preview(s, n = 80) {
         if (!active.length) { console.log(`user ${String(userId).slice(0, 8)}…: no active docs`); continue; }
         const words = String(active[0].name + ' ' + (active[0].content || '')).toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 3);
         const probe = words[0] || active[0].name;
-        const sources = await queryService.retrieveSources(userId, probe, 5);
+        const sources = retrieveBuiltInSources(probe, 5);
         console.log(`user ${String(userId).slice(0, 8)}… probe="${probe}" → ${sources.length} source(s)`);
         for (const s of sources.slice(0, 2)) console.log(`   [${s.docName}] score=${s.score} ${preview(s.content, 70)}`);
     }

@@ -1,46 +1,41 @@
 // =============================================================
-// Smoke test — Ask AI (internal Technical Query Resolver).
+// Smoke test — Ask AI (internal assistant, DECOUPLED from the KB).
 //
-// Proves, WITHOUT real Supabase or a real AI call:
-//   1. Retrieval is tenant-isolated: only the asking user's ACTIVE
-//      knowledge chunks are scored, and only their documents come
-//      back as sources (another tenant's documents never appear).
-//   2. Inactive documents are excluded from retrieval.
-//   3. The AI prompt includes the retrieved [Document] context and
-//      instructs the model to cite sources and admit gaps.
-//   4. The full ask() flow stores the question in ai_queries scoped
-//      by user_id, with source doc ids/names, and returns the answer
-//      plus sources.
-//   5. History list is scoped: user A never sees user B's queries.
-//   6. Empty knowledge base returns a clear "no documents" answer
-//      without calling the AI and without storing anything.
+// Ask AI no longer reads the Knowledge Base: its grounding is the
+// code-owned built-in knowledge (builtInKnowledge.js). Proves, WITHOUT
+// real Supabase or a real AI call:
+//   1. ask() answers platform how-to questions from built-in knowledge,
+//      cites the built-in guide, and stores scoped history.
+//   2. The Knowledge Base is NEVER consulted: a KB full of documents
+//      (even ones matching the query) does not change Ask AI answers,
+//      and a fact that exists ONLY in the KB gets the honest no-match
+//      answer with zero AI calls.
+//   3. Deploy-failure regression: a corrupted "[object Blob]" KB doc,
+//      a missing app_settings table, and a missing ai_queries table do
+//      NOT break ask() — no seed/repair pre-flight runs, and history
+//      persistence degrades gracefully instead of returning 500.
+//   4. Empty retrieval returns the honest no-match answer without
+//      calling the AI and without storing anything.
+//   5. History list is scoped: user A never sees user B's queries, and
+//      delete is tenant-scoped.
+//   6. chat() keeps multi-turn context and persists per turn.
 //
 // Run: node backend/src/ai/__tests__/ask-ai-smoke.test.js
 // =============================================================
 const assert = require('assert');
 
 // ── Minimal in-memory Supabase mock injected BEFORE modules load ──
-// Tables: knowledge_documents (id, user_id, name, status),
-//         knowledge_chunks (document_id, user_id, content),
-//         ai_queries (question, answer, sources, user_id),
-//         app_settings (key, value, user_id)
 const USER_A = '11111111-1111-1111-1111-111111111111';
 const USER_B = '22222222-2222-2222-2222-222222222222';
 
 const state = {
     rows: {
-        knowledge_documents: [
-            { id: 1, user_id: USER_A, name: 'HDPE Specs', status: 'active' },
-            { id: 2, user_id: USER_A, name: 'Pricing Notes', status: 'inactive' },
-            { id: 3, user_id: USER_B, name: 'B Rival Specs', status: 'active' },
-        ],
-        knowledge_chunks: [
-            { document_id: 1, user_id: USER_A, content: 'Our 6-inch HDPE pipe has a pressure class of PN10 and meets IS 4985:2020.' },
-            { document_id: 2, user_id: USER_A, content: 'Dealer discount is 12% on bulk PE orders.' },
-            { document_id: 3, user_id: USER_B, content: 'Rival HDPE pipe pressure class is PN16.' },
-        ],
+        // Ask AI must never touch these; they exist to PROVE that.
+        knowledge_documents: [],
+        knowledge_chunks: [],
         ai_queries: [],
         app_settings: [],
+        app_settings_missing: true, // flag for the failing-mock variant below
     },
 };
 
@@ -80,7 +75,11 @@ function table(name) {
                 select() {
                     return {
                         single: async () => {
-                            const stored = { ...row, id: (state.rows[name].length + 1) };
+                            // Emulate the deploy failure: ai_queries missing → error.
+                            if (name === 'ai_queries' && state.rows.ai_queries === null) {
+                                return { data: null, error: { message: 'relation "ai_queries" does not exist' } };
+                            }
+                            const stored = { ...row, id: (state.rows[name]?.length || 0) + 1 };
                             state.rows[name].push(stored);
                             return { data: stored, error: null };
                         },
@@ -122,82 +121,87 @@ require.cache[clientPath] = {
 const realAiService = require('../aiService');
 realAiService._complete = async (messages, options) => {
     aiCalls.push({ messages, options });
-    return 'The 6-inch HDPE pipe has a pressure class of PN10 [HDPE Specs].';
+    return 'Go to Campaigns and schedule for later [Platform Guide (built-in)].';
 };
 
 process.env.AI_API_KEY = 'env-test-key';
 process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
 
 const queryService = require('../queryService');
+const knowledgeBase = require('../knowledgeBase');
 
-async function test1_retrievalIsTenantIsolated() {
-    console.log('▶ Test 1: retrieval only scores the asking user\u2019s active chunks');
-    const sources = await queryService.retrieveSources(USER_A, 'What is the pressure class of our 6-inch HDPE pipe?');
-    assert.ok(sources.length > 0, 'sources found for user A');
-    assert.ok(sources.every((s) => s.docId !== 3), 'user B document never appears');
-    assert.ok(sources.every((s) => s.docId !== 2), 'inactive document excluded');
-    assert.strictEqual(sources[0].docName, 'HDPE Specs', 'top source is the matching active doc');
-    assert.ok(sources[0].content.includes('PN10'), 'chunk content carries the fact');
-
-    // Same question from user B: only B's OWN document is scored (its words
-    // happen to match), and none of user A's chunks leak into the results.
-    const sourcesB = await queryService.retrieveSources(USER_B, 'What is the pressure class of our 6-inch HDPE pipe?');
-    assert.ok(sourcesB.length > 0, 'user B gets results from their own knowledge');
-    assert.ok(sourcesB.every((s) => s.docId === 3), 'only user B documents appear — user A chunks never leak');
-    assert.ok(sourcesB.every((s) => s.content.includes('Rival')), 'returned content is B own chunk, not A content');
-
-    // User B's own document IS retrievable with their own question.
-    const sourcesB2 = await queryService.retrieveSources(USER_B, 'rival pressure class PN16');
-    assert.strictEqual(sourcesB2.length, 1, 'user B finds their own document');
-    assert.strictEqual(sourcesB2[0].docName, 'B Rival Specs');
-    console.log('✅ Test 1 passed\n');
-}
-
-async function test2_promptGrounding() {
-    console.log('▶ Test 2: answer prompt embeds sources and demands citations');
-    const sources = await queryService.retrieveSources(USER_A, 'pressure class 6-inch HDPE');
-    const prompt = queryService.buildAnswerPrompt('What is the pressure class of our 6-inch HDPE pipe?', sources);
-    assert.ok(prompt.includes('[HDPE Specs]'), 'document name embedded in context');
-    assert.ok(prompt.includes('PN10'), 'chunk content embedded in context');
-    assert.ok(prompt.includes('ONLY'), 'instructs grounding to provided knowledge');
-    assert.ok(prompt.includes('square brackets'), 'instructs source citation');
-    assert.ok(prompt.includes('does not contain the answer'), 'instructs honest gap admission');
-    console.log('✅ Test 2 passed\n');
-}
-
-async function test3_askStoresScopedHistory() {
-    console.log('▶ Test 3: ask() answers with sources and stores scoped history');
+async function test1_askAnswersFromBuiltInKnowledge() {
+    console.log('▶ Test 1: ask() answers platform questions from built-in knowledge');
     aiCalls = [];
-    const result = await queryService.ask(USER_A, 'What is the pressure class of our 6-inch HDPE pipe?');
+    const result = await queryService.ask(USER_A, 'How do I schedule a campaign for later?');
     assert.strictEqual(result.stored, true, 'result persisted');
     assert.ok(result.id, 'stored row id returned');
-    assert.ok(result.answer.includes('PN10'), 'answer returned');
-    assert.ok(result.sources.some((s) => s.name === 'HDPE Specs'), 'source docs returned alongside answer');
-    assert.strictEqual(aiCalls.length, 1, 'exactly one AI call');
-    assert.strictEqual(aiCalls[0].options.apiKey, 'env-test-key', 'env key used when no user key stored');
+    assert.ok(aiCalls.length === 1, 'exactly one AI call');
+    const prompt = aiCalls[0].messages[0].content;
+    assert.ok(prompt.includes('Platform Guide (built-in)'), 'built-in guide embedded in the prompt');
+    assert.ok(prompt.includes('schedule for later'), 'relevant guide section embedded in the prompt');
+    assert.ok(result.sources.some((s) => s.name === 'Platform Guide (built-in)'), 'built-in guide cited as source');
 
     const stored = state.rows.ai_queries.find((q) => q.id === result.id);
     assert.strictEqual(stored.user_id, USER_A, 'query stored with owner user_id');
-    assert.ok(stored.source_doc_names.includes('HDPE Specs'), 'source doc names stored');
-    assert.ok(!stored.source_doc_names.includes('B Rival Specs'), 'no cross-tenant source stored');
+    console.log('✅ Test 1 passed\n');
+}
 
-    // History is scoped: A sees their query, B sees nothing of it.
-    const historyA = await queryService.listHistory(USER_A);
-    assert.strictEqual(historyA.length, 1, 'user A sees their own query');
-    assert.strictEqual(historyA[0].question, 'What is the pressure class of our 6-inch HDPE pipe?');
-    const historyB = await queryService.listHistory(USER_B);
-    assert.strictEqual(historyB.length, 0, 'user B sees none of user A history');
+async function test2_knowledgeBaseNeverConsulted() {
+    console.log('▶ Test 2: the Knowledge Base is never consulted by Ask AI');
+    // A KB document whose content matches the question EXACTLY must not
+    // change the answer or its sources.
+    await knowledgeBase.addDocument(USER_A, 'KB Campaign Notes', 'notes', 'To schedule a campaign for later, open Campaigns, pick your template, and choose Schedule.');
+    aiCalls = [];
+    const result = await queryService.ask(USER_A, 'How do I schedule a campaign for later?');
+    assert.ok(aiCalls.length === 1, 'AI still called exactly once');
+    const prompt = aiCalls[0].messages[0].content;
+    assert.ok(!prompt.includes('KB Campaign Notes'), 'KB document content NEVER enters the Ask AI prompt');
+    assert.ok(result.sources.every((s) => !s.name.includes('KB Campaign Notes')), 'KB document never cited as a source');
+
+    // A fact that exists ONLY in the KB gets the honest no-match answer
+    // and NO AI call — Ask AI does not fall through to the KB.
+    aiCalls = [];
+    const kbOnly = await queryService.ask(USER_A, 'What dealer discount applies to bulk PE orders?');
+    assert.strictEqual(aiCalls.length, 0, 'no AI call for KB-only facts');
+    assert.strictEqual(kbOnly.stored, false, 'nothing stored without built-in sources');
+    assert.match(kbOnly.answer, /couldn't find anything in my built-in guides/i, 'honest no-match answer');
+    console.log('✅ Test 2 passed\n');
+}
+
+async function test3_deployFailuresDoNotBreakAsk() {
+    console.log('▶ Test 3: corrupt KB + missing tables never break ask()');
+    // The deployed "Something went wrong" shape: corrupted KB doc present
+    // while Ask AI ran its old seed/repair pre-flight.
+    state.rows.knowledge_documents.push({ id: 901, user_id: USER_B, name: 'Sudarshan pipes', status: 'active', content: '[object Blob]' });
+    state.rows.knowledge_chunks.push({ document_id: 901, user_id: USER_B, content: '[object Blob]', chunk_index: 0 });
+
+    // Corrupt doc present + empty settings → ask still works.
+    aiCalls = [];
+    const ok = await queryService.ask(USER_B, 'How do I schedule a campaign for later?');
+    assert.strictEqual(ok.stored, true, 'answer produced despite corrupt KB doc');
+
+    // ai_queries table missing → answer still produced, history degrades.
+    state.rows.ai_queries = null;
+    try {
+        aiCalls = [];
+        const degraded = await queryService.ask(USER_A, 'How do I schedule a campaign for later?');
+        assert.strictEqual(aiCalls.length, 1, 'AI called once despite history store failure');
+        assert.strictEqual(degraded.stored, false, 'history degrades to not-stored');
+        assert.strictEqual(degraded.id, null, 'no id when not stored');
+    } finally {
+        state.rows.ai_queries = [];
+    }
     console.log('✅ Test 3 passed\n');
 }
 
 async function test4_noSourcesNoAiCall() {
-    console.log('▶ Test 4: empty retrieval returns honest no-documents answer');
+    console.log('▶ Test 4: empty retrieval returns the honest no-match answer');
     aiCalls = [];
-    const result = await queryService.ask(USER_B, 'what diameter copper fittings are available');
+    const result = await queryService.ask(USER_A, 'what diameter copper fittings are available');
     assert.strictEqual(result.stored, false, 'nothing stored without sources');
     assert.strictEqual(result.sources.length, 0, 'no fabricated sources');
-    assert.strictEqual(aiCalls.length, 0, 'no AI call when the knowledge base has no match');
-    assert.ok(/No matching documents/i.test(result.answer), 'answer says no documents matched');
+    assert.strictEqual(aiCalls.length, 0, 'no AI call when nothing matches');
 
     await assert.rejects(
         () => queryService.ask(USER_A, '   '),
@@ -242,33 +246,34 @@ async function test5_chatFlow() {
     console.log('✅ Test 5 passed\n');
 }
 
-async function test5_deleteHistoryScoped() {
-    console.log('▶ Test 6: history delete is tenant-scoped');
-    // Fresh user so earlier ask/chat turns don't affect the counts.
-    const USER_C = '33333333-3333-3333-3333-333333333333';
-    state.rows.knowledge_documents.push({ id: 10, user_id: USER_C, name: 'C Specs', status: 'active' });
-    state.rows.knowledge_chunks.push({ document_id: 10, user_id: USER_C, content: 'Our 6-inch HDPE pipe has a pressure class of PN10 and meets IS 4985:2020.' });
-    const stored = await queryService.ask(USER_C, 'What is the pressure class of our 6-inch HDPE pipe?');
-    assert.ok(stored.id, 'precondition: one stored query for the fresh user');
+async function test6_historyScoped() {
+    console.log('▶ Test 6: history is tenant-scoped (list + delete)');
+    const historyA = await queryService.listHistory(USER_A);
+    assert.ok(historyA.length > 0, 'user A sees their own queries');
+    assert.ok(historyA.every((q) => state.rows.ai_queries.some((s) => s.id === q.id && s.user_id === USER_A)), 'only own queries listed');
+    const historyB = await queryService.listHistory(USER_B);
+    assert.ok(historyB.every((q) => !historyA.some((a) => a.id === q.id)), 'user B never sees user A history');
+
+    // Delete is scoped: B cannot delete A's row.
+    const aRow = historyA[0];
     await assert.rejects(
-        () => queryService.deleteHistory(stored.id, USER_B),
+        () => queryService.deleteHistory(aRow.id, USER_B),
         /Query not found/,
-        'user B cannot delete user C query',
+        'user B cannot delete user A query',
     );
-    await queryService.deleteHistory(stored.id, USER_C);
-    const afterC = await queryService.listHistory(USER_C);
-    assert.strictEqual(afterC.length, 0, 'user C deleted their own query');
+    await queryService.deleteHistory(aRow.id, USER_A);
+    assert.ok(!state.rows.ai_queries.some((q) => q.id === aRow.id), 'user A deleted their own query');
     console.log('✅ Test 6 passed\n');
 }
 
 async function main() {
     try {
-        await test1_retrievalIsTenantIsolated();
-        await test2_promptGrounding();
-        await test3_askStoresScopedHistory();
+        await test1_askAnswersFromBuiltInKnowledge();
+        await test2_knowledgeBaseNeverConsulted();
+        await test3_deployFailuresDoNotBreakAsk();
         await test4_noSourcesNoAiCall();
         await test5_chatFlow();
-        await test5_deleteHistoryScoped();
+        await test6_historyScoped();
         console.log('🎉 ALL ASK-AI SMOKE TESTS PASSED');
         process.exit(0);
     } catch (error) {

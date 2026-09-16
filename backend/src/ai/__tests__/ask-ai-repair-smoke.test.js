@@ -1,5 +1,5 @@
 // =============================================================
-// Smoke test — Ask AI end-to-end repair + upload fixes.
+// Smoke test — KB repair ladder + Ask AI decoupling.
 //
 // Proves, WITHOUT real Supabase or a real AI call:
 //   1. downloadFromStorage converts supabase-js's Web Blob download
@@ -9,19 +9,21 @@
 //      KB list, and retrieval could never match a single query.
 //   2. The knowledge upload route stores REAL extracted text (decoded
 //      from the multer memory buffer, per file type) and chunks it.
-//   3. A pre-existing corrupted "[object Blob]" document with no
-//      recovery source is deleted by the Ask AI pre-flight, and the
-//      default company profile is then seeded — the exact production
-//      failure shape (corrupt upload existed → seed marker written
-//      without the user ever getting the seed doc).
+//   3. GET /api/knowledge runs the repair ladder: a pre-existing
+//      corrupted "[object Blob]" doc is deleted and the default
+//      company profile is seeded.
 //   4. A chunk-less document with valid content is repaired by
 //      re-chunking; a user already holding the KB_DEFAULT_SEEDED
 //      marker is not re-seeded on top of it.
 //   5. addDocument sets status explicitly — docs it creates are
 //      visible to retrieval even if the DB column default is missing
 //      (the mock deliberately does NOT emulate a status default).
-//   6. Empty-KB and no-matching-document answers are distinct and
-//      actionable.
+//   6. Ask AI is DECOUPLED from all of this: ask() answers from
+//      built-in knowledge even while the user's KB is fully corrupted,
+//      and never triggers seeding or repairs itself.
+//   7. Empty-KB and no-matching-document states no longer produce
+//      Ask AI failures at all (Ask AI doesn't read the KB), but the
+//      KB list still works with zero documents.
 //
 // Run: node backend/src/ai/__tests__/ask-ai-repair-smoke.test.js
 // =============================================================
@@ -178,12 +180,11 @@ const realAiService = require('../../ai/aiService');
 let aiCalls = [];
 realAiService._complete = async (messages, options) => {
     aiCalls.push({ messages, options });
-    return 'Answered from the knowledge base.';
+    return 'Go to Campaigns and schedule for later [Platform Guide (built-in)].';
 };
 
 const CORRUPT_USER = 'cccccccc-1111-1111-1111-111111111111';
 const CHUNKLESS_USER = 'cccccccc-2222-2222-2222-222222222222';
-const DELETED_SEED_USER = 'cccccccc-3333-3333-3333-333333333333';
 const FRESH_USER = 'cccccccc-4444-4444-4444-444444444444';
 const UPLOAD_USER = 'cccccccc-5555-5555-5555-555555555555';
 
@@ -246,19 +247,13 @@ async function test2_uploadRouteStoresRealText() {
     const chunks = state.rows.knowledge_chunks.filter(c => c.user_id === UPLOAD_USER);
     assert.ok(chunks.length >= 1, 'document chunked for retrieval');
     assert.ok(chunks.some(c => c.content.includes('PN10')), 'chunks contain the real spec text');
-
-    const sources = await queryService.retrieveSources(UPLOAD_USER, 'PN10 pressure class');
-    assert.ok(sources.length > 0, 'uploaded doc is immediately retrievable');
-    assert.strictEqual(sources[0].docName, 'product-specs.txt');
     console.log('✅ Test 2 passed\n');
 }
 
-async function test3_corruptDocDeletedThenSeeded() {
-    console.log('▶ Test 3: "[object Blob]" doc deleted by pre-flight, then seed fills the gap');
+async function test3_kbRouteRepairsCorruptDoc() {
+    console.log('▶ Test 3: GET /api/knowledge repairs "[object Blob]" docs and seeds the profile');
     // Production shape: doc row exists (marker already written because the
     // corrupt doc counted as "user has documents"), one garbage chunk.
-    // Explicit high ids: rows pushed directly bypass the mock's auto-id
-    // insert and must not collide with ids assigned by earlier tests.
     state.rows.knowledge_documents.push({
         id: 901,
         user_id: CORRUPT_USER, name: 'Sudarshan pipes', category: 'general',
@@ -267,29 +262,30 @@ async function test3_corruptDocDeletedThenSeeded() {
     state.rows.knowledge_chunks.push({ document_id: 901, user_id: CORRUPT_USER, content: '[object Blob]', chunk_index: 0 });
     state.rows.app_settings.push({ key: 'KB_DEFAULT_SEEDED', value: 'true', user_id: CORRUPT_USER });
 
-    const before = await queryService.retrieveSources(CORRUPT_USER, 'manufacturing capacity MTPA');
-    assert.strictEqual(before.length, 0, 'precondition: corrupted doc matches nothing');
+    // Ask AI decoupling proof: BEFORE any KB repair runs, ask() already
+    // works for this user — built-in knowledge needs no KB repair.
+    aiCalls = [];
+    const preRepair = await queryService.ask(CORRUPT_USER, 'How do I schedule a campaign for later?');
+    assert.strictEqual(aiCalls.length, 1, 'Ask AI answers BEFORE the KB repair ladder runs');
+    assert.strictEqual(preRepair.stored, true, 'history stored');
+    assert.ok(preRepair.sources.some((s) => s.name === 'Platform Guide (built-in)'), 'grounded in built-in knowledge');
+    assert.ok(state.rows.knowledge_documents.some(d => d.id === 901), 'Ask AI did NOT touch the corrupt KB doc');
 
-    await seedService.ensureReadyForAsk(CORRUPT_USER);
+    // Now the KB route does the repair.
+    const listHandler = findRoute(knowledgeRoute, 'get', '/');
+    await listHandler(
+        { user: { id: CORRUPT_USER } },
+        { json: (d) => { body = d; }, status() { return { json: (d) => { body = d; } }; } },
+    );
 
     const docsAfter = state.rows.knowledge_documents.filter(d => d.user_id === CORRUPT_USER);
-    assert.strictEqual(docsAfter.length, 2, 'corrupt doc deleted, both seed docs created (profile + platform help)');
-    assert.ok(docsAfter.some(d => d.name === seedService.SEED_DOC_NAME), 'replacement includes the default company profile');
-    assert.ok(docsAfter.some(d => d.name === seedService.PLATFORM_DOC_NAME), 'replacement includes the platform help doc');
-
-    const sources = await queryService.retrieveSources(CORRUPT_USER, 'manufacturing capacity MTPA');
-    assert.ok(sources.length > 0, 'post-repair retrieval works');
-    assert.ok(sources.some(s => s.content.includes('MTPA')), 'sources carry the capacity facts');
-
-    // Platform question retrieves the platform doc with the profile present.
-    const platformSources = await queryService.retrieveSources(CORRUPT_USER, 'schedule campaign Excel contacts');
-    assert.ok(platformSources.length > 0, 'platform question retrieves sources');
-    assert.ok(platformSources.some(s => s.docName === seedService.PLATFORM_DOC_NAME), 'platform doc cited for platform questions');
+    assert.strictEqual(docsAfter.length, 1, 'corrupt doc deleted, default profile seeded');
+    assert.ok(docsAfter.some(d => d.name === seedService.SEED_DOC_NAME), 'replacement is the default company profile');
     console.log('✅ Test 3 passed\n');
 }
 
-async function test4_chunklessDocRepaired() {
-    console.log('▶ Test 4: chunk-less doc with valid content is re-chunked; marker respected');
+async function test4_chunklessDocRepairedOnKbLoad() {
+    console.log('▶ Test 4: chunk-less doc with valid content is re-chunked on KB load; marker respected');
     state.rows.knowledge_documents.push({
         id: 902,
         user_id: CHUNKLESS_USER, name: 'My Specs', category: 'general',
@@ -297,35 +293,22 @@ async function test4_chunklessDocRepaired() {
     });
     state.rows.app_settings.push({ key: 'KB_DEFAULT_SEEDED', value: 'true', user_id: CHUNKLESS_USER });
 
-    await seedService.ensureReadyForAsk(CHUNKLESS_USER);
+    let body = null;
+    const listHandler = findRoute(knowledgeRoute, 'get', '/');
+    await listHandler(
+        { user: { id: CHUNKLESS_USER } },
+        { json: (d) => { body = d; }, status() { return { json: (d) => { body = d; } }; } },
+    );
 
-    // Marker prevents the company profile, but the NEWER platform doc is
-    // backfilled ONCE for existing accounts (its own marker guards it).
+    // Marker prevents the company profile; nothing else is injected
+    // (the old platform-doc backfill is gone — it lives in Ask AI now).
     const docs = state.rows.knowledge_documents.filter(d => d.user_id === CHUNKLESS_USER);
-    assert.strictEqual(docs.length, 2, 'existing user doc + backfilled platform doc');
-    assert.ok(docs.some(d => d.name === 'My Specs'), 'seed profile NOT injected (marker present)');
-    assert.ok(docs.some(d => d.name === seedService.PLATFORM_DOC_NAME), 'platform doc backfilled');
+    assert.strictEqual(docs.length, 1, 'no seed or platform doc injected (marker present)');
+    assert.ok(docs.some(d => d.name === 'My Specs'), 'user own doc untouched');
 
     const chunks = state.rows.knowledge_chunks.filter(c => c.user_id === CHUNKLESS_USER);
     assert.ok(chunks.length >= 1, 'chunks rebuilt from the doc content');
-
-    const sources = await queryService.retrieveSources(CHUNKLESS_USER, 'pressure class PN10');
-    assert.ok(sources.length > 0, 'repaired doc is retrievable');
-    assert.strictEqual(sources[0].docName, 'My Specs');
     console.log('✅ Test 4 passed\n');
-}
-
-async function test4b_platformDocSeededOnce() {
-    console.log('▶ Test 4b: platform doc is seeded exactly once (idempotent backfill)');
-    const countBefore = state.rows.knowledge_documents.filter(d => d.user_id === CHUNKLESS_USER && d.name === seedService.PLATFORM_DOC_NAME).length;
-    assert.strictEqual(countBefore, 1, 'exactly one platform doc exists after first backfill');
-
-    seedService._reset();
-    await seedService.ensureReadyForAsk(CHUNKLESS_USER); // second pre-flight
-
-    const countAfter = state.rows.knowledge_documents.filter(d => d.user_id === CHUNKLESS_USER && d.name === seedService.PLATFORM_DOC_NAME).length;
-    assert.strictEqual(countAfter, 1, 'no duplicate platform doc on subsequent loads');
-    console.log('✅ Test 4b passed\n');
 }
 
 async function test5_addDocumentSetsStatusExplicitly() {
@@ -333,41 +316,27 @@ async function test5_addDocumentSetsStatusExplicitly() {
     await knowledgeBase.addDocument(FRESH_USER, 'Explicit status doc', 'general', 'Compression fittings come in PN16 rated variants.');
     const doc = state.rows.knowledge_documents.find(d => d.user_id === FRESH_USER);
     assert.strictEqual(doc.status, 'active', 'status written by the application, not a column default');
-
-    const sources = await queryService.retrieveSources(FRESH_USER, 'compression fittings PN16');
-    assert.ok(sources.length > 0, 'doc visible to retrieval');
     console.log('✅ Test 5 passed\n');
 }
 
-async function test6_emptyVsNoMatchAnswers() {
-    console.log('▶ Test 6: empty-KB and no-matching-doc answers are distinct');
+async function test6_askAiIndependentOfKbState() {
+    console.log('▶ Test 6: Ask AI answers from built-in knowledge regardless of KB state');
     aiCalls = [];
 
-    // Marker present but zero documents (user deleted everything) → the
-    // honest "your KB is empty" message.
-    state.rows.app_settings.push({ key: 'KB_DEFAULT_SEEDED', value: 'true', user_id: DELETED_SEED_USER });
-    const empty = await queryService.ask(DELETED_SEED_USER, 'what is your delivery lead time');
-    assert.strictEqual(empty.stored, false, 'nothing stored without sources');
-    assert.match(empty.answer, /Knowledge Base is empty/i, 'empty KB gets the seeding hint');
+    // Empty KB → Ask AI still answers (it never reads the KB).
+    const empty = await queryService.ask(FRESH_USER, 'How do I schedule a campaign for later?');
+    assert.strictEqual(empty.stored, true, 'answered despite empty KB');
+    assert.ok(empty.sources.some(s => s.name === 'Platform Guide (built-in)'), 'built-in guide cited');
 
-    // A user WITH documents but no lexical match → "no matching documents".
-    // (Every token is deliberately absent from the uploaded uPVC doc.)
-    const noMatch = await queryService.ask(UPLOAD_USER, 'galvanized steel conduit coil prices');
-    assert.match(noMatch.answer, /No matching documents/i, 'non-empty KB gets the no-match message');
+    // Zero documents stay zero: Ask AI must not have seeded anything.
+    const kbCount = state.rows.knowledge_documents.filter(d => d.user_id === FRESH_USER).length;
+    assert.strictEqual(kbCount, 1, 'KB untouched by Ask AI (only the doc from test 5)');
 
-    // Full happy path still reaches the AI exactly once and stores history.
+    // Second ask does no repair/seed work — steady state is zero extra
+    // DB reads for Ask AI beyond settings/history.
     aiCalls = [];
-    const answered = await queryService.ask(FRESH_USER, 'compression fittings PN16');
-    assert.strictEqual(answered.stored, true, 'answered query persisted');
-    assert.ok(answered.sources.some(s => s.name === 'Explicit status doc'), 'sources returned with answer');
-    assert.strictEqual(aiCalls.length, 1, 'exactly one AI call');
-
-    // Pre-flight ran once per user: a second ask does no repair/seed work
-    // (no extra app_settings marker writes beyond the first call).
-    const markersBefore = state.rows.app_settings.filter(r => r.user_id === FRESH_USER && r.key === 'KB_DEFAULT_SEEDED').length;
-    await queryService.ask(FRESH_USER, 'compression fittings PN16');
-    const markersAfter = state.rows.app_settings.filter(r => r.user_id === FRESH_USER && r.key === 'KB_DEFAULT_SEEDED').length;
-    assert.strictEqual(markersAfter, markersBefore, 'steady-state asks perform no seeding work');
+    await queryService.ask(FRESH_USER, 'How do I schedule a campaign for later?');
+    assert.strictEqual(aiCalls.length, 1, 'steady-state ask does one AI call');
     console.log('✅ Test 6 passed\n');
 }
 
@@ -375,11 +344,10 @@ async function main() {
     try {
         await test1_downloadConvertsBlobToBuffer();
         await test2_uploadRouteStoresRealText();
-        await test3_corruptDocDeletedThenSeeded();
-        await test4_chunklessDocRepaired();
-        await test4b_platformDocSeededOnce();
+        await test3_kbRouteRepairsCorruptDoc();
+        await test4_chunklessDocRepairedOnKbLoad();
         await test5_addDocumentSetsStatusExplicitly();
-        await test6_emptyVsNoMatchAnswers();
+        await test6_askAiIndependentOfKbState();
         console.log('🎉 ALL ASK-AI REPAIR SMOKE TESTS PASSED');
         process.exit(0);
     } catch (error) {

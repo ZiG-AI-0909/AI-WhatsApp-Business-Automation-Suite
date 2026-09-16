@@ -20,8 +20,10 @@ class KnowledgeBase {
             // pricing) must NEVER be eligible here regardless of retrieval
             // score — the filter is applied at the document-listing stage, so
             // internal chunks are never even fetched, let alone sent to a
-            // customer. The internal Ask AI path (queryService.retrieveSources)
-            // deliberately does NOT apply this filter.
+            // customer. The internal Ask AI assistant is fully decoupled
+            // from this store (it answers from ai/builtInKnowledge.js),
+            // so a user's own internal_only docs are likewise excluded
+            // from every customer reply.
             const docWhere = userId
                 ? 'user_id = ? AND status = ? AND internal_only = ?'
                 : 'status = ? AND internal_only = ?';

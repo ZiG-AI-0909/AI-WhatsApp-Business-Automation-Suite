@@ -6,6 +6,10 @@
 //      the "Sudarshan Pipes — Company Profile" document on their
 //      first Knowledge Base load — a normal, editable document row
 //      plus retrieval chunks, nothing special/protected about it.
+//   1b. The platform how-to guide is NOT seeded into the Knowledge
+//      Base anymore: it lives in the Ask AI built-in knowledge module
+//      (ai/builtInKnowledge.js), which is staff-audience-only and
+//      cannot leak into a customer's WhatsApp auto-reply by design.
 //   2. An existing user with their OWN documents and customized
 //      app_settings is NOT touched by seeding (seed only runs when
 //      the knowledge base is completely empty).
@@ -159,13 +163,12 @@ async function test1_freshUserSeeded() {
     await handler(req, res);
 
     const docs = state.rows.knowledge_documents.filter(d => d.user_id === FRESH_USER);
-    assert.strictEqual(docs.length, 2, 'both seed documents created (company profile + platform help)');
+    assert.strictEqual(docs.length, 1, 'only the company profile is seeded (platform doc lives in Ask AI built-in knowledge)');
     assert.ok(docs.some(d => d.name === 'Sudarshan Pipes — Company Profile' && d.category === 'Company Profile'), 'company profile seeded');
-    assert.ok(docs.some(d => d.name === 'How to Use This Platform' && d.category === 'Platform Help'), 'platform help doc seeded with its distinct category');
     assert.ok(docs.every(d => d.status === 'active'), 'normal active documents — not locked/protected');
 
-    // The first list response already includes both seed docs.
-    assert.ok(Array.isArray(responseBody) && responseBody.length === 2, 'seeds visible in the very first list response');
+    // The first list response already includes the seed doc.
+    assert.ok(Array.isArray(responseBody) && responseBody.length === 1, 'seed visible in the very first list response');
 
     // Retrieval chunks were created so getRelevantContext works.
     const chunks = state.rows.knowledge_chunks.filter(c => c.user_id === FRESH_USER);
@@ -179,18 +182,10 @@ async function test1_freshUserSeeded() {
     const context = await knowledgeBase.getRelevantContext('HDPE pipes manufacturing capacity', 4, FRESH_USER);
     assert.ok(context.includes('Sudarshan Pipes'), 'AI context includes the seed document');
 
-    // The platform doc is seeded INTERNAL-ONLY (staff audience): the
-    // customer-facing getRelevantContext must NOT retrieve it — its
-    // content must never reach a WhatsApp customer — while Ask AI's
-    // user-scoped retrieval still sees it (covered in the ask-ai suites).
-    // (Content-phrase assertion: the mock's select() has no embedded
-    // documents(name) join, so doc_name renders as 'Unknown' in context.)
-    const platformContext = await knowledgeBase.getRelevantContext('schedule a recurring campaign Excel import', 4, FRESH_USER);
-    assert.ok(!platformContext.includes('recurring campaigns'), 'platform how-to doc is EXCLUDED from customer-facing retrieval');
-    const platformDoc = docs.find(d => d.name === 'How to Use This Platform');
-    assert.strictEqual(platformDoc.internal_only, true, 'platform doc is flagged internal_only');
-    const profileDoc = docs.find(d => d.name === 'Sudarshan Pipes — Company Profile');
-    assert.strictEqual(profileDoc.internal_only, false, 'company profile stays customer-visible');
+    // The platform doc is NOT in the Knowledge Base at all — Ask AI
+    // carries it as built-in knowledge (staff audience), so there is
+    // nothing to exclude from customer retrieval by construction.
+    assert.ok(!docs.some(d => d.name === 'How to Use This Platform'), 'platform how-to doc is NOT seeded into the Knowledge Base');
     console.log('✅ Test 1 passed\n');
 }
 
@@ -211,12 +206,12 @@ async function test2_existingUserUntouched() {
     // Load dashboard + knowledge as the existing user (fire-and-forget path).
     await seedService.seedIfEmpty(EXISTING_USER);
 
-    // Backfill behavior: the existing user's own docs are untouched, and
-    // the platform how-to doc is added ONCE (requirement: existing
-    // accounts get it too). The company profile is NOT injected.
+    // Backfill behavior: existing users are left completely untouched —
+    // the platform how-to doc now lives in Ask AI's built-in knowledge,
+    // so there is nothing to backfill into their Knowledge Base.
     const docsAfter = state.rows.knowledge_documents.filter(d => d.user_id === EXISTING_USER);
-    assert.strictEqual(docsAfter.length, docsBefore + 1, 'exactly the platform doc added for existing user');
-    assert.ok(docsAfter.some(d => d.name === seedService.PLATFORM_DOC_NAME), 'platform help doc backfilled');
+    assert.strictEqual(docsAfter.length, docsBefore, 'no documents added for existing user');
+    assert.ok(!docsAfter.some(d => d.name === 'How to Use This Platform'), 'no platform doc backfilled into the KB');
     assert.ok(!docsAfter.some(d => d.name.includes('Sudarshan')), 'company profile seed document NOT injected');
     const customizedAfter = Object.fromEntries(state.rows.app_settings
         .filter(r => r.user_id === EXISTING_USER && r.key !== 'KB_DEFAULT_SEEDED' && r.key !== 'KB_PLATFORM_SEEDED')
@@ -228,9 +223,14 @@ async function test2_existingUserUntouched() {
 async function test3_deletedSeedNotReSeeded() {
     console.log('▶ Test 3: user who deleted the seed is not re-seeded');
     const docs = state.rows.knowledge_documents.filter(d => d.user_id === FRESH_USER);
-    assert.strictEqual(docs.length, 2);
-    // Delete BOTH seeds — the marker must prevent either from coming back.
+    assert.strictEqual(docs.length, 1);
+    // Delete the seed — the marker must prevent it from coming back.
     for (const doc of docs) await knowledgeBase.deleteDocument(doc.id, FRESH_USER);
+
+    seedService._reset();
+    // Two subsequent loads — must stay empty both times.
+    await seedService.seedIfEmpty(FRESH_USER);
+    assert.strictEqual(state.rows.knowledge_documents.filter(d => d.user_id === FRESH_USER).length, 0, 'no re-seed after deletion (1st load)');
 
     seedService._reset();
     // Two subsequent loads — must stay empty both times.
@@ -248,10 +248,13 @@ async function test4_seedContentFraming() {
     assert.ok(seedService.SEED_CONTENT.includes('sales@sudarshanpipes.com'), 'contact info present');
     assert.ok(seedService.SEED_CONTENT.includes('IS 4984:2016'), 'standards present');
 
-    // Platform help seed content sanity.
-    assert.ok(seedService.PLATFORM_CONTENT.includes('HOW TO USE THIS PLATFORM'), 'platform doc title present');
-    assert.ok(seedService.PLATFORM_CONTENT.includes('Document Intelligence'), 'platform doc covers Document Intelligence');
-    assert.ok(seedService.PLATFORM_CONTENT.includes('AI toggle'), 'platform doc covers the inbox AI toggle');
+    // Platform help content now lives in the Ask AI built-in module.
+    const builtIn = require('../../ai/builtInKnowledge');
+    assert.ok(builtIn.PLATFORM_HELP.includes('HOW TO USE THIS PLATFORM'), 'platform guide present in built-in knowledge');
+    assert.ok(builtIn.PLATFORM_HELP.includes('Document Intelligence'), 'built-in platform guide covers Document Intelligence');
+    assert.ok(builtIn.PLATFORM_HELP.includes('AI toggle'), 'built-in platform guide covers the inbox AI toggle');
+    assert.ok(builtIn.retrieveBuiltInSources('schedule a campaign Excel contacts upload').length > 0, 'built-in retrieval matches platform questions');
+    assert.ok(builtIn.retrieveBuiltInSources('HDPE manufacturing capacity MTPA').length > 0, 'built-in retrieval matches company questions');
 
     // Settings route still resolves defaults for a user with nothing stored.
     const settingsRoute = require('../../routes/settings');

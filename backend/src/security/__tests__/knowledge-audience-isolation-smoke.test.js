@@ -1,32 +1,34 @@
 // =============================================================
 // Security smoke test — Knowledge Base audience isolation.
 //
-// knowledge_documents feeds BOTH audiences:
-//   - the CUSTOMER-FACING WhatsApp auto-reply
-//     (knowledgeBase.getRelevantContext via incomingMessageService)
-//   - the internal Ask AI tool (queryService.retrieveSources)
+// knowledge_documents feeds the CUSTOMER-FACING WhatsApp auto-reply
+// (knowledgeBase.getRelevantContext via incomingMessageService). The
+// internal Ask AI assistant is now FULLY DECOUPLED from the Knowledge
+// Base: it answers from code-owned built-in knowledge
+// (ai/builtInKnowledge.js) and never reads these tables.
 //
-// Documents flagged internal_only = true (the seeded "How to Use This
-// Platform" guide, staff procedures, internal pricing) must NEVER be
-// eligible for a customer reply, no matter how strongly a customer's
-// message lexically overlaps platform vocabulary. Ask AI must still see
-// BOTH internal-only and regular documents side by side.
+// The former "How to Use This Platform" seed doc is no longer injected
+// into user Knowledge Bases at all — staff platform help now lives in
+// the Ask AI built-in module, so it cannot leak into a customer reply
+// BY CONSTRUCTION rather than by a retrieval filter.
 //
 // Proves, WITHOUT any real Supabase or real AI provider:
-//   1. getRelevantContext (customer path) excludes internal_only docs
-//      even for a message deliberately stuffed with platform words.
+//   1. getRelevantContext (customer path) never surfaces platform-help
+//      vocabulary for a message deliberately stuffed with it: platform
+//      content exists nowhere in the KB for a fresh user.
 //   2. END-TO-END: the real incomingMessageService.process() — the same
-//      code path that handles a real WhatsApp message — never puts
-//      internal content into the AI prompt sent to the provider.
-//   3. Ask AI retrieval returns the internal-only platform doc for a
-//      platform question AND the Company Profile for a product
-//      question — both audiences coexist for internal users.
-//   4. Unit: addDocument/updateDocument persist the flag; the seeded
-//      platform doc is created internal_only.
+//      code path that handles a real WhatsApp message — never puts any
+//      internal/built-in content into the AI prompt sent to the provider.
+//   3. Ask AI grounding is built-in only: its answers cite built-in
+//      guides and NEVER cite or embed Knowledge Base content, and it
+//      does not mutate the customer-facing store.
+//   4. Unit: the built-in platform guide + company profile are
+//      retrievable only through the built-in module; the KB seed
+//      (company profile) remains customer-visible as before.
 //
-// The internal content carries a unique CANARY phrase; every customer-
-// visible artifact (retrieval context, provider prompt body) is
-// asserted to never contain it.
+// The built-in platform guide carries the CANARY phrase; every
+// customer-visible artifact (retrieval context, provider prompt body)
+// is asserted to never contain it.
 // =============================================================
 const assert = require('assert');
 const http = require('http');
@@ -35,25 +37,26 @@ const http = require('http');
 const OWNER = '55555555-5555-5555-5555-555555555501';
 const OTHER = '66666666-6666-6666-6666-666666666601';
 
-const CANARY = 'CANARY-INTERNAL-ONLY-LINKED-DEVICES';
-const PLATFORM_CHUNK = `HOW TO USE THIS PLATFORM — CONNECTING WHATSAPP: go to WhatsApp Connection and ${CANARY}. CREATING CAMPAIGNS: upload an Excel file of contacts, write your message, choose a country code, then send immediately or schedule for later — scheduled campaigns run in the background. INBOX: each conversation has an AI toggle. DOCUMENT INTELLIGENCE: upload a BOQ for extraction.`;
+// A phrase that exists ONLY in the built-in platform guide (ai/builtInKnowledge.js)
+// — never in any Knowledge Base row in these tests.
+const CANARY = 'Linked Devices';
+// And one from the guide's campaign section, which is what a
+// "schedule a campaign" question actually retrieves.
+const CAMPAIGN_PHRASE = 'scheduled campaigns run automatically';
 const PROFILE_CHUNK = 'SUDARSHAN PIPES — COMPANY PROFILE. Product portfolio: uPVC column pipes, HDPE PE100 pipes, MDPE pipes, UGD pipes. Manufacturing capacity approximately 66,000 MTPA across PVC and PE divisions in Bengaluru.';
 
 const state = {
     rows: {
         knowledge_documents: [
             { id: 1, user_id: OWNER, name: 'Sudarshan Pipes — Company Profile', category: 'Company Profile', status: 'active', internal_only: false },
-            { id: 2, user_id: OWNER, name: 'How to Use This Platform', category: 'Platform Help', status: 'active', internal_only: true },
         ],
         knowledge_chunks: [
             { document_id: 1, user_id: OWNER, content: PROFILE_CHUNK, documents: { name: 'Sudarshan Pipes — Company Profile' } },
-            { document_id: 2, user_id: OWNER, content: PLATFORM_CHUNK, documents: { name: 'How to Use This Platform' } },
         ],
         ai_queries: [],
         app_settings: [
-            // Both seed markers present → seeding is a no-op for this user.
+            // Seed marker present → seeding is a no-op for this user.
             { user_id: OWNER, key: 'KB_DEFAULT_SEEDED', value: 'true' },
-            { user_id: OWNER, key: 'KB_PLATFORM_SEEDED', value: 'true' },
         ],
     },
 };
@@ -176,6 +179,7 @@ const conversationService = require('../../conversations/conversationService');
 const contactService = require('../../contacts/contactService');
 const aiService = require('../../ai/aiService');
 const queryService = require('../../ai/queryService');
+const builtInKnowledge = require('../../ai/builtInKnowledge');
 const seedKnowledgeService = require('../../knowledge/seedKnowledgeService');
 
 // Hermetic conversation flow (same neutralization as the exfiltration test).
@@ -189,32 +193,30 @@ conversationService.getHistory = async () => [];
 seedKnowledgeService._reset();
 
 // A customer message deliberately stuffed with platform-help vocabulary —
-// every content word overlaps the internal-only platform doc, plus one
+// every content word overlaps the BUILT-IN platform guide, plus one
 // product word so the regular doc is also a genuine match.
 const ADVERSARIAL_CUSTOMER_MESSAGE =
     'Do you have templates for bulk HDPE orders? Can I schedule delivery, upload our BOQ excel and get a campaign quote?';
 
-async function test1_customerRetrievalExcludesInternal() {
-    console.log('▶ Test 1: getRelevantContext (customer path) excludes internal_only docs');
+async function test1_customerRetrievalHasNoPlatformContent() {
+    console.log('▶ Test 1: customer retrieval never surfaces platform-help content');
+    // The built-in guide's canary must not exist anywhere in the KB.
+    const allChunks = state.rows.knowledge_chunks.map((c) => c.content).join('\n');
+    assert.ok(!allChunks.includes(CANARY), 'platform guide content does not exist in the Knowledge Base');
+
     const context = await knowledgeBase.getRelevantContext(ADVERSARIAL_CUSTOMER_MESSAGE, 4, OWNER);
     assert.ok(typeof context === 'string', 'context is a string');
-    assert.ok(!context.includes(CANARY), 'internal canary NEVER appears in customer context');
-    assert.ok(!/How to Use This Platform/i.test(context), 'internal doc name never appears in customer context');
+    assert.ok(!context.includes(CANARY), 'built-in guide canary NEVER appears in customer context');
+    assert.ok(!/How to Use This Platform|Platform Guide/i.test(context), 'built-in guide name never appears in customer context');
 
     // The regular document is still eligible — no regression for normal content.
     const productContext = await knowledgeBase.getRelevantContext('HDPE pipes capacity MTPA', 4, OWNER);
-    assert.ok(productContext.includes('MTPA'), 'regular (non-internal) document still retrievable for customers');
-
-    // And the exclusion is not score-based luck: even a PURE platform
-    // query (zero product overlap) yields no platform content at all.
-    const purePlatform = await knowledgeBase.getRelevantContext('schedule campaign Excel upload BOQ templates', 4, OWNER);
-    assert.ok(!purePlatform.includes(CANARY), 'internal canary absent even for a pure platform query');
-    assert.ok(!/CONNECTING WHATSAPP/i.test(purePlatform), 'internal content absent even for a pure platform query');
+    assert.ok(productContext.includes('MTPA'), 'regular company document still retrievable for customers');
     console.log('✅ Test 1 passed\n');
 }
 
 async function test2_endToEndCustomerBot() {
-    console.log('▶ Test 2: real incomingMessageService.process() never sends internal content to the provider');
+    console.log('▶ Test 2: real incomingMessageService.process() never sends built-in content to the provider');
     providerHits.length = 0;
     const sent = [];
     await incomingMessageService.process(
@@ -227,72 +229,57 @@ async function test2_endToEndCustomerBot() {
     assert.strictEqual(providerHits.length, 1, 'exactly one AI provider call');
     const promptBody = providerHits[0].body;
     assert.ok(!promptBody.includes(CANARY), 'canary NEVER reaches the AI provider on the customer path');
-    assert.ok(!/How to Use This Platform|Platform Help/i.test(promptBody), 'internal doc name/category never in the customer prompt');
-    assert.ok(promptBody.includes('MTPA'), 'regular company knowledge IS in the customer prompt (proves retrieval ran, filter is selective)');
+    assert.ok(!/How to Use This Platform|Platform Guide/i.test(promptBody), 'built-in guide name never in the customer prompt');
+    assert.ok(promptBody.includes('MTPA'), 'regular company knowledge IS in the customer prompt (proves retrieval ran)');
 
     assert.ok(sent.length === 1 && sent[0].body.includes('HDPE price list'), 'customer still gets their AI reply');
     console.log('✅ Test 2 passed\n');
 }
 
-async function test3_askAISeesBothAudiences() {
-    console.log('▶ Test 3: Ask AI retrieves internal-only AND regular docs side by side');
+async function test3_askAIIsBuiltInOnly() {
+    console.log('▶ Test 3: Ask AI grounds in built-in knowledge and never cites KB content');
     seedKnowledgeService._reset();
 
-    const platformSources = await queryService.retrieveSources(OWNER, 'schedule a campaign Excel contacts upload');
-    assert.ok(platformSources.length > 0, 'platform question retrieves sources');
-    assert.ok(platformSources.some((s) => s.docName === 'How to Use This Platform'),
-        'internal-only platform doc IS retrievable by Ask AI');
-
-    const productSources = await queryService.retrieveSources(OWNER, 'HDPE manufacturing capacity MTPA');
-    assert.ok(productSources.some((s) => s.docName === 'Sudarshan Pipes — Company Profile'),
-        'company profile still retrievable by Ask AI');
-
-    // The full ask() flow: internal doc powers the grounded answer.
     const realComplete = aiService._complete;
     let capturedPrompt = '';
     aiService._complete = async (messages) => {
         capturedPrompt = messages[0].content;
-        return 'Go to Campaigns and schedule for later [How to Use This Platform].';
+        return 'Go to Campaigns and schedule for later [Platform Guide (built-in)].';
     };
     try {
         const result = await queryService.ask(OWNER, 'How do I schedule a campaign for later?');
         assert.ok(result.answer.includes('Campaigns'), 'Ask AI answers the platform question');
-        assert.ok(result.sources.some((s) => s.name === 'How to Use This Platform'), 'answer cites the internal-only doc');
-        assert.ok(capturedPrompt.includes(CANARY), 'internal content legitimately reaches the Ask AI prompt');
+        assert.ok(result.sources.some((s) => s.name === builtInKnowledge.DOC_PLATFORM), 'answer cites the built-in platform guide');
+        assert.ok(capturedPrompt.includes(CAMPAIGN_PHRASE), 'built-in guide content legitimately reaches the Ask AI prompt (internal audience)');
+
+        // KB isolation: the customer-facing profile is never pulled into
+        // an Ask AI prompt, and Ask AI never mutates the KB.
+        const kbCount = state.rows.knowledge_documents.filter((d) => d.user_id === OWNER).length;
+        assert.strictEqual(kbCount, 1, 'Ask AI did not add documents to the customer-facing KB');
     } finally {
         aiService._complete = realComplete;
     }
     console.log('✅ Test 3 passed\n');
 }
 
-async function test4_flagPersistenceAndSeeding() {
-    console.log('▶ Test 4: internal_only persists through add/update and the platform seed sets it');
+async function test4_seedingLeavesPlatformHelpOut() {
+    console.log('▶ Test 4: seeding never writes platform help into the KB; built-in module owns it');
 
-    // addDocument round-trip.
-    const docId = await knowledgeBase.addDocument(OWNER, 'Staff Pricing Sheet', 'Pricing', 'Dealer discount is 12% on bulk PE orders. INTERNAL-STAFF-PRICING.', null, { internalOnly: true });
-    const storedDoc = state.rows.knowledge_documents.find((d) => d.id === docId);
-    assert.strictEqual(storedDoc.internal_only, true, 'addDocument persists internal_only=true');
-    assert.ok(state.rows.knowledge_chunks.some((c) => c.document_id === docId && c.content.includes('INTERNAL-STAFF-PRICING')), 'chunks created for the internal doc');
+    // Fresh user: first KB load seeds ONLY the company profile — no
+    // platform-help doc exists for customers to trip over.
+    await seedKnowledgeService.seedIfEmpty(OTHER);
+    const docs = state.rows.knowledge_documents.filter((d) => d.user_id === OTHER);
+    assert.strictEqual(docs.length, 1, 'only the company profile is seeded');
+    assert.ok(docs.some((d) => d.name === 'Sudarshan Pipes — Company Profile'), 'company profile remains customer-visible');
+    assert.ok(!docs.some((d) => /platform/i.test(d.name)), 'no platform-help doc is ever seeded into the KB');
 
-    // Default stays false — every normal upload remains customer-visible.
-    const normalId = await knowledgeBase.addDocument(OWNER, 'UGD Specs', 'Product Specs', 'UGD pipes per IS 651:2015 for municipal water supply.');
-    const normalDoc = state.rows.knowledge_documents.find((d) => d.id === normalId);
-    assert.strictEqual(normalDoc.internal_only, false, 'documents default to customer-visible');
+    // The built-in module owns the staff guide and company facts.
+    assert.ok(builtInKnowledge.PLATFORM_HELP.includes('HOW TO USE THIS PLATFORM'), 'built-in platform guide exists in code');
+    assert.ok(builtInKnowledge.COMPANY_PROFILE.includes('MANUFACTURING CAPACITY'), 'built-in company profile exists in code');
+    assert.ok(builtInKnowledge.retrieveBuiltInSources('schedule a campaign Excel contacts upload').length > 0, 'built-in retrieval serves platform questions');
 
-    // updateDocument toggles the flag (the UI checkbox path).
-    await knowledgeBase.updateDocument(normalId, OWNER, { internal_only: true });
-    const toggled = state.rows.knowledge_documents.find((d) => d.id === normalId);
-    assert.strictEqual(toggled.internal_only, true, 'updateDocument persists internal_only');
-
-    // The seeded platform doc itself is created internal-only (fresh user
-    // with the default profile already present, per the seeding rules).
-    await knowledgeBase.addDocument(OTHER, 'Sudarshan Pipes — Company Profile', 'Company Profile', PROFILE_CHUNK);
-    await seedKnowledgeService._seedPlatformDoc(OTHER);
-    const seededPlatform = state.rows.knowledge_documents.find((d) => d.user_id === OTHER && d.name === 'How to Use This Platform');
-    assert.ok(seededPlatform, 'platform seed created');
-    assert.strictEqual(seededPlatform.internal_only, true, 'seeded platform doc is internal_only');
-
-    // listDocuments exposes the flag for the UI badge.
+    // listDocuments exposes the flag for the UI badge (still supported
+    // for user-authored internal docs).
     const listed = await knowledgeBase.listDocuments(OWNER);
     assert.ok(listed.every((d) => typeof d.internal_only === 'boolean'), 'listDocuments returns internal_only');
     console.log('✅ Test 4 passed\n');
@@ -304,10 +291,10 @@ async function main() {
     // test traffic ever reaches a real AI provider.
     process.env.AI_BASE_URL = `http://127.0.0.1:${providerServer.address().port}/v1`;
     try {
-        await test1_customerRetrievalExcludesInternal();
+        await test1_customerRetrievalHasNoPlatformContent();
         await test2_endToEndCustomerBot();
-        await test3_askAISeesBothAudiences();
-        await test4_flagPersistenceAndSeeding();
+        await test3_askAIIsBuiltInOnly();
+        await test4_seedingLeavesPlatformHelpOut();
         console.log('🎉 ALL KNOWLEDGE AUDIENCE-ISOLATION TESTS PASSED');
         process.exit(0);
     } catch (error) {
