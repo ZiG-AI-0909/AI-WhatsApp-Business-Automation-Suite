@@ -53,6 +53,34 @@ const BOQ_AI_TIMEOUT_MS = Number(process.env.BOQ_AI_TIMEOUT_MS || 25000);
 const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS || 4);
 
 /**
+ * Server-level credentials for Document Intelligence, scoped to this
+ * feature: DOCUMENT_INTELLIGENCE_NVIDIA_* wins when set, otherwise the
+ * generic AI_* env pair is used. Both entries are (key, URL) PAIRS that
+ * belong together, so resolveAiConfig's never-mix guarantee still holds:
+ * a tenant's stored key + custom URL always wins, and a custom URL
+ * WITHOUT a stored key never receives a server key.
+ */
+function resolveDocIntelServerConfig() {
+    const featureKey = (process.env.DOCUMENT_INTELLIGENCE_NVIDIA_API_KEY || '').trim();
+    const featureURL = (process.env.DOCUMENT_INTELLIGENCE_NVIDIA_BASE_URL || '').trim();
+    return {
+        envKey: featureKey || process.env.AI_API_KEY,
+        envBaseURL: featureURL || process.env.AI_BASE_URL,
+    };
+}
+
+/**
+ * Model for extraction: per-user stored setting first, then the
+ * Document Intelligence default (DeepSeek), then the generic AI_MODEL.
+ */
+function resolveDocIntelModel(storedModel) {
+    return (storedModel || '').trim()
+        || (process.env.DOCUMENT_INTELLIGENCE_NVIDIA_MODEL || '').trim()
+        || (process.env.AI_MODEL || '').trim()
+        || undefined;
+}
+
+/**
  * Run AI extraction over the document text with the user's own AI
  * credentials (same never-mix guard as every other AI path).
  *
@@ -67,10 +95,10 @@ async function extractItemsWithAI(userId, documentText, filename = 'document') {
     const aiConfig = resolveAiConfig({
         storedKey: rows.AI_API_KEY,
         storedBaseURL: rows.AI_BASE_URL,
-        envKey: process.env.AI_API_KEY,
-        envBaseURL: process.env.AI_BASE_URL,
+        ...resolveDocIntelServerConfig(),
     });
     if (!aiConfig.apiKey) throw new Error('AI is not configured. Set AI_API_KEY on the server or in Settings.');
+    const model = resolveDocIntelModel(rows.AI_MODEL);
     const aiService = require('../ai/aiService');
 
     const chunks = boqExtractor.splitIntoChunks(documentText);
@@ -79,12 +107,12 @@ async function extractItemsWithAI(userId, documentText, filename = 'document') {
         error.statusCode = 413;
         throw error;
     }
-    console.log(`[boq:${userId}] AI extraction: "${filename}" → ${chunks.length} chunk(s) (${documentText.length} chars total, timeout ${Math.round(BOQ_AI_TIMEOUT_MS / 1000)}s per chunk)`);
+    console.log(`[boq:${userId}] AI extraction: "${filename}" → ${chunks.length} chunk(s) (${documentText.length} chars total, timeout ${Math.round(BOQ_AI_TIMEOUT_MS / 1000)}s per chunk, model ${model || 'service default'})`);
 
     const items = [];
     for (let i = 0; i < chunks.length; i++) {
         const chunkStart = Date.now();
-        console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, model ${rows.AI_MODEL || process.env.AI_MODEL || 'default'})`);
+        console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, model ${model || 'default'})`);
         let content;
         try {
             content = await aiService._complete(
@@ -92,7 +120,7 @@ async function extractItemsWithAI(userId, documentText, filename = 'document') {
                 {
                     apiKey: aiConfig.apiKey,
                     baseURL: aiConfig.baseURL,
-                    model: rows.AI_MODEL || process.env.AI_MODEL,
+                    model,
                     temperature: 0.1,
                     maxTokens: 3000,
                     timeoutMs: BOQ_AI_TIMEOUT_MS,

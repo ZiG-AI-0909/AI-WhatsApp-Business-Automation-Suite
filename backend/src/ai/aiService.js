@@ -66,7 +66,12 @@ class AIService {
             max_tokens: options.maxTokens ?? 800,
         };
 
-        if (model === 'deepseek-ai/deepseek-v4-flash-0731') {
+        // Reasoning-capable models burn the token budget on thinking when
+        // asked for raw JSON. reasoningEffort: 'none' suppresses the thinking
+        // phase (mapped to 'low' effort for models that require an effort
+        // value). Applies to any model name containing 'deepseek' — the
+        // provider family, not one hardcoded snapshot id.
+        if (model.toLowerCase().includes('deepseek')) {
             payload.chat_template_kwargs = {
                 // BOQ-style structured extraction wants raw JSON, not
                 // deliberation: reasoningEffort: 'none' skips the thinking
