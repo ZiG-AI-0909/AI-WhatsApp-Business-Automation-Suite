@@ -662,3 +662,6 @@ tr.row-warnings { background: rgba(245, 158, 11, 0.08); }
 .copilot-section h4 { margin: 0 0 4px; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
 .copilot-section p, .copilot-section li { font-size: .85rem; white-space: pre-wrap; }
 .copilot-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+
+/* ── Knowledge Base: internal-only badge ─────────────────────── */
+.internal-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: .68rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; background: rgba(124, 58, 237, .14); color: #7c3aed; border: 1px solid rgba(124, 58, 237, .35); }

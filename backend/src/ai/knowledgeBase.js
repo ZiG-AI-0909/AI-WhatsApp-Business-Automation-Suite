@@ -13,8 +13,19 @@ class KnowledgeBase {
             // Per-user retrieval: only THIS user's active documents and
             // chunks are searched. A user's knowledge never leaks into
             // another user's AI replies.
-            const docWhere = userId ? 'user_id = ? AND status = ?' : 'status = ?';
-            const docParams = userId ? [userId, 'active'] : ['active'];
+            //
+            // AUDIENCE ISOLATION: this method feeds the CUSTOMER-FACING
+            // WhatsApp auto-reply (incomingMessageService). Documents marked
+            // internal_only (platform how-to guide, staff procedures, internal
+            // pricing) must NEVER be eligible here regardless of retrieval
+            // score — the filter is applied at the document-listing stage, so
+            // internal chunks are never even fetched, let alone sent to a
+            // customer. The internal Ask AI path (queryService.retrieveSources)
+            // deliberately does NOT apply this filter.
+            const docWhere = userId
+                ? 'user_id = ? AND status = ? AND internal_only = ?'
+                : 'status = ? AND internal_only = ?';
+            const docParams = userId ? [userId, 'active', false] : ['active', false];
 
             // Fetch active documents first, then their chunks. Alias-prefixed
             // columns and "as" aliases are not valid PostgREST, and the
@@ -63,7 +74,12 @@ class KnowledgeBase {
         }
     }
 
-    async addDocument(userId, name, category, content, filePath = null) {
+    /**
+     * Create (or replace) a document and rebuild its retrieval chunks.
+     * internal_only marks staff-only content: searchable by Ask AI,
+     * excluded from customer-facing auto-replies (see getRelevantContext).
+     */
+    async addDocument(userId, name, category, content, filePath = null, { internalOnly = false } = {}) {
         const existing = await db.getOne('knowledge_documents', 'name', name, userId);
 
         let docId;
@@ -73,6 +89,7 @@ class KnowledgeBase {
                 content,
                 file_path: filePath,
                 status: 'active',
+                internal_only: !!internalOnly,
             }, 'id = ? AND user_id = ?', [existing.id, userId]);
             await db.del('knowledge_chunks', 'document_id = ? AND user_id = ?', [existing.id, userId]);
             docId = existing.id;
@@ -88,6 +105,9 @@ class KnowledgeBase {
                 // default existed would silently insert NULL rows that are
                 // listed in the UI but invisible to retrieval.
                 status: 'active',
+                // Same explicitness for the audience flag: a pre-migration
+                // table default must not decide what customers can see.
+                internal_only: !!internalOnly,
             });
             docId = result.id;
         }
@@ -125,7 +145,7 @@ class KnowledgeBase {
     async listDocuments(userId) {
         const docs = await db.select(
             'knowledge_documents',
-            'id, name, category, status, created_at',
+            'id, name, category, status, internal_only, created_at',
             'user_id = ?',
             [userId],
             'created_at',
@@ -158,11 +178,15 @@ class KnowledgeBase {
         const name = updates.name ?? doc.name;
         const category = updates.category ?? doc.category;
         const content = updates.content ?? doc.content;
+        // internal_only is settable from the UI toggle; unchanged when the
+        // client doesn't send it (undefined ?? doc value).
+        const internalOnly = updates.internal_only ?? doc.internal_only ?? false;
 
         await db.update('knowledge_documents', {
             name,
             category,
             content,
+            internal_only: !!internalOnly,
         }, 'id = ? AND user_id = ?', [id, userId]);
 
         // Re-chunk

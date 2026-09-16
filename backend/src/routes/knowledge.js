@@ -60,8 +60,8 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Name and content required' });
     }
     try {
-        const id = await knowledgeBase.addDocument(req.user.id, name.trim(), category || 'general', content.trim());
-        res.status(201).json(await knowledgeBase.getDocument(id, req.user.id));
+    const id = await knowledgeBase.addDocument(req.user.id, name.trim(), category || 'general', content.trim(), null, { internalOnly: !!req.body?.internal_only });
+    res.status(201).json(await knowledgeBase.getDocument(id, req.user.id));
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -109,7 +109,7 @@ router.post('/upload', uploadKnowledge.single('file'), async (req, res) => {
         }
 
         const docName = name?.trim() || req.file.originalname;
-        const id = await knowledgeBase.addDocument(req.user.id, docName, category || 'general', content, stored.path);
+        const id = await knowledgeBase.addDocument(req.user.id, docName, category || 'general', content, stored.path, { internalOnly: !!req.body?.internal_only });
         const doc = await knowledgeBase.getDocument(id, req.user.id);
         res.status(201).json(doc);
     } catch (err) {

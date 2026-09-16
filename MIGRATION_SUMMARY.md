@@ -28,7 +28,7 @@ Run `supabase-data-migration.sql` in your Supabase dashboard SQL editor to creat
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `knowledge_documents` | Knowledge base docs | id, name, category, content, file_path, status, created_at |
+| `knowledge_documents` | Knowledge base docs | id, name, category, content, file_path, status, internal_only, created_at |
 | `knowledge_chunks` | Text chunks for retrieval | id, document_id (FK), content, chunk_index |
 
 ### Scheduling Tables

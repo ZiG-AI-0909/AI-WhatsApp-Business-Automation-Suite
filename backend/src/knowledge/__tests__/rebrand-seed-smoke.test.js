@@ -179,11 +179,18 @@ async function test1_freshUserSeeded() {
     const context = await knowledgeBase.getRelevantContext('HDPE pipes manufacturing capacity', 4, FRESH_USER);
     assert.ok(context.includes('Sudarshan Pipes'), 'AI context includes the seed document');
 
-    // Platform questions retrieve the platform doc — both categories coexist.
+    // The platform doc is seeded INTERNAL-ONLY (staff audience): the
+    // customer-facing getRelevantContext must NOT retrieve it — its
+    // content must never reach a WhatsApp customer — while Ask AI's
+    // user-scoped retrieval still sees it (covered in the ask-ai suites).
     // (Content-phrase assertion: the mock's select() has no embedded
     // documents(name) join, so doc_name renders as 'Unknown' in context.)
     const platformContext = await knowledgeBase.getRelevantContext('schedule a recurring campaign Excel import', 4, FRESH_USER);
-    assert.ok(platformContext.includes('recurring campaigns'), 'platform how-to doc is retrievable for platform questions');
+    assert.ok(!platformContext.includes('recurring campaigns'), 'platform how-to doc is EXCLUDED from customer-facing retrieval');
+    const platformDoc = docs.find(d => d.name === 'How to Use This Platform');
+    assert.strictEqual(platformDoc.internal_only, true, 'platform doc is flagged internal_only');
+    const profileDoc = docs.find(d => d.name === 'Sudarshan Pipes — Company Profile');
+    assert.strictEqual(profileDoc.internal_only, false, 'company profile stays customer-visible');
     console.log('✅ Test 1 passed\n');
 }
 

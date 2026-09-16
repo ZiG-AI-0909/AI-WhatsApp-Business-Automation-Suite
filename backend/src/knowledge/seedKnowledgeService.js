@@ -34,6 +34,10 @@ const SEED_CATEGORY = 'Company Profile';
 // same retrieval. Distinct category so it stands out in the Knowledge
 // Base list next to the company profile. A completely normal document —
 // editable/deletable through the usual UI, nothing protected.
+// AUDIENCE: seeded internal_only = true — it teaches STAFF how to use
+// the platform, so it powers Ask AI but must never leak into a real
+// customer's WhatsApp auto-reply. The company profile stays visible to
+// both audiences on purpose (customers SHOULD get accurate product info).
 const PLATFORM_DOC_NAME = 'How to Use This Platform';
 const PLATFORM_CATEGORY = 'Platform Help';
 const PLATFORM_MARKER_KEY = 'KB_PLATFORM_SEEDED';
@@ -229,9 +233,9 @@ class SeedKnowledgeService {
             const docCount = await db.count('knowledge_documents', 'user_id = ?', [userId]);
             if (docCount === 0) return; // user emptied their KB — respect it
             const knowledgeBase = require('../ai/knowledgeBase'); // lazy: avoids require cycle
-            await knowledgeBase.addDocument(userId, PLATFORM_DOC_NAME, PLATFORM_CATEGORY, PLATFORM_CONTENT);
+            await knowledgeBase.addDocument(userId, PLATFORM_DOC_NAME, PLATFORM_CATEGORY, PLATFORM_CONTENT, null, { internalOnly: true });
             await this._writeMarker(userId, PLATFORM_MARKER_KEY);
-            console.log(`[seed] platform help document seeded for user ${userId}`);
+            console.log(`[seed] platform help document seeded for user ${userId} (internal_only)`);
         } catch (error) {
             // Same failure tolerance as profile seeding — never break a page load.
             console.error(`[seed] platform help seeding failed for ${userId}:`, error.message);
