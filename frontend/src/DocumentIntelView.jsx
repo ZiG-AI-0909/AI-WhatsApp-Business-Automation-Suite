@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
-import { friendlyErrorMessage } from './utils/errorMessages.js'
+import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : ''
@@ -14,7 +14,7 @@ export default function DocumentIntelView() {
   const [documents, setDocuments] = useState([])
   const [selected, setSelected] = useState(null)
   const [file, setFile] = useState(null)
-  const [notice, setNotice] = useState({ type: '', text: '' })
+  const [notice, setNotice] = useState({ type: '', text: '', retryable: false })
   const [busy, setBusy] = useState(false)
   const [exporting, setExporting] = useState('')
 
@@ -40,11 +40,13 @@ export default function DocumentIntelView() {
     }
   }
 
-  const process = async (event) => {
-    event.preventDefault()
+  // Extraction shares the form handler and the Retry button. The chosen
+  // file stays in state on failure (setFile(null) runs on success only) so
+  // a transient 504 can be retried without re-picking the document.
+  const runExtraction = async () => {
     if (!file) return
     setBusy(true)
-    setNotice({ type: '', text: '' })
+    setNotice({ type: '', text: '', retryable: false })
     try {
       const formData = new FormData()
       formData.append('file', file)
@@ -52,12 +54,24 @@ export default function DocumentIntelView() {
       setSelected(doc)
       setFile(null)
       await load()
-      setNotice({ type: 'success', text: `Extracted ${doc.items.length} line item(s) from ${doc.filename}. Review the rows below — warnings are marked inline.` })
+      setNotice({ type: 'success', text: `Extracted ${doc.items.length} line item(s) from ${doc.filename}. Review the rows below — warnings are marked inline.`, retryable: false })
     } catch (error) {
-      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Document Intelligence · extraction' }) })
+      // Backend messages for this endpoint are already user-facing
+      // ("Section 1 of 1 of \"x.xlsx\" could not be extracted: …") — show
+      // them verbatim instead of the generic friendly fallback.
+      const raw = error?.message || ''
+      const message = raw && !isTechnicalError(raw)
+        ? raw
+        : friendlyErrorMessage(error, { context: 'Document Intelligence · extraction' })
+      setNotice({ type: 'error', text: message, retryable: !!error?.retryable })
     } finally {
       setBusy(false)
     }
+  }
+
+  const process = async (event) => {
+    event.preventDefault()
+    await runExtraction()
   }
 
   const editItem = (index, field, value) => {
@@ -143,7 +157,14 @@ export default function DocumentIntelView() {
         <p className="muted-copy">Upload a BOQ or project requirement document (XLSX, DOCX, PDF, TXT, CSV). The AI extracts sizes, quantities, and specifications into an editable requirement sheet, flags likely errors, and produces a ready-to-review RFQ.</p>
       </div>
 
-      {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
+      {notice.text && (
+        <div className={`notice ${notice.type}`}>
+          <span>{notice.text}</span>
+          {notice.retryable && file && !busy && (
+            <button type="button" className="secondary-btn" onClick={runExtraction}>Retry extraction</button>
+          )}
+        </div>
+      )}
 
       <section className="panel">
         <form className="form-stack" onSubmit={process}>

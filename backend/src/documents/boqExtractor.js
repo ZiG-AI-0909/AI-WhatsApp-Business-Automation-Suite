@@ -101,7 +101,16 @@ ${documentText}`;
 }
 
 function normalizeResponse(content) {
-    const text = String(content || '');
+    // Reasoning models that ignored the "don't think" kwargs open with a
+    // ɵink>…</think> preamble. It often CONTAINS JSON-shaped schema text,
+    // which defeats the brace-slice fallback below — so it must go before
+    // any parsing. A thinking model then degrades to slow-but-correct
+    // instead of an unparseable-output 502.
+    let text = String(content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+    // Unterminated thinking block (cut off by the token budget): drop
+    // everything from the opening tag on — nothing after it can be JSON.
+    const unterminated = text.search(/<think>/i);
+    if (unterminated >= 0) text = text.slice(0, unterminated);
     const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || text;
     const attempt = (input) => {
         try { return JSON.parse(input); } catch { return null; }

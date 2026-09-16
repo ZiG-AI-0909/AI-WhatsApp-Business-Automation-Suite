@@ -44,12 +44,14 @@ async function authHeader() {
 }
 
 // Long-running AI endpoints get their own budget instead of hanging until
-// the browser/server gives up. Server-side counterparts (per-chunk AI call
-// timeouts) keep each side bounded; the client budget must exceed the
-// server's worst case so the server's precise error message wins.
+// the browser/server gives up. Server-side counterpart for '/boq/process' is
+// ONE wall budget, BOQ_TOTAL_BUDGET_MS (default 90s, backend/src/routes/boq.js)
+// that covers every chunk + retry. Keep the two values mirrored as one budget:
+// client = server + ≥15s margin so the server's precise 504/502 always wins
+// over the browser's generic abort.
 const REQUEST_TIMEOUT_MS = 30000
 const ENDPOINT_TIMEOUT_MS = {
-  '/boq/process': 110000, // chunked AI extraction: up to 4 × 25s server-side + parsing/db
+  '/boq/process': 110000, // server AI wall budget is 90s (BOQ_TOTAL_BUDGET_MS) + parsing/db + margin
 }
 
 function timeoutSignal(ms) {
@@ -105,6 +107,14 @@ export async function apiFetch(path, options = {}) {
     // to human-readable text without pattern-matching strings.
     const error = new Error(data.error || `Request failed (${response.status})`)
     error.status = response.status
+    // Long-running endpoints (BOQ extraction) attach a retry hint and the
+    // failure stage so the UI can offer a Retry button instead of guessing.
+    if (typeof data.retryable === 'boolean') error.retryable = data.retryable
+    if (data.stage) error.stage = data.stage
+    if (data.section != null) {
+      error.section = data.section
+      error.of = data.of
+    }
     throw error
   }
 

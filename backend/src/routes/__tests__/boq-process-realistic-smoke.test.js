@@ -96,6 +96,15 @@ process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829
 // Shrink the chunk size (read at module load) so the compact 28-row fixture
 // crosses one chunk boundary and the multi-chunk orchestration is exercised.
 process.env.BOQ_CHUNK_MAX_CHARS = '1500';
+// Shrink the wall-time budget (also read at module load) so the per-chunk
+// division math runs in compressed time: 12s budget, 2s floor, 5s ceiling
+// → derived chunk cap = floor(12000 / 2000) = 6.
+process.env.BOQ_TOTAL_BUDGET_MS = '12000';
+process.env.BOQ_AI_MIN_CALL_MS = '2000';
+process.env.BOQ_AI_MAX_CALL_MS = '5000';
+const BOQ_TOTAL_BUDGET_MS = 12000;
+const BOQ_AI_MAX_CALL_MS = 5000;
+const EXPECTED_MAX_CHUNKS = Math.floor(BOQ_TOTAL_BUDGET_MS / 2000);
 
 const boqExtractor = require('../../documents/boqExtractor');
 const boqRoute = require('../../routes/boq');
@@ -178,8 +187,15 @@ async function test1_realisticBoqEndToEnd() {
     assert.strictEqual(aiCalls.length, boqExtractor.splitIntoChunks(
         await boqExtractor.extractText(buffer, '.xlsx')
     ).length, 'one AI call per chunk');
-    assert.ok(aiCalls.every((c) => c.options.timeoutMs === Number(process.env.BOQ_AI_TIMEOUT_MS || 25000)), 'per-chunk AI timeout applied');
-    assert.ok(aiCalls.every((c) => c.options.retries === 1), 'no retry stacking (fail fast per chunk)');
+    // Budget contract: every attempt fits under the per-call ceiling and
+    // every chunk works against the SAME wall-clock deadline (the route
+    // derives it once from BOQ_TOTAL_BUDGET_MS).
+    assert.ok(aiCalls.every((c) => c.options.timeoutMs > 0 && c.options.timeoutMs <= BOQ_AI_MAX_CALL_MS), `per-call timeout within (${BOQ_AI_MAX_CALL_MS}) ceiling, got ${aiCalls.map((c) => c.options.timeoutMs).join(', ')}`);
+    const deadlines = aiCalls.map((c) => c.options.deadlineMs);
+    assert.ok(deadlines.every((d) => d > 0), 'every chunk call carries a deadline');
+    assert.ok(Math.max(...deadlines) - Math.min(...deadlines) < 1000, 'all chunk calls share one wall-clock deadline');
+    assert.ok(aiCalls.every((c) => c.options.minAttemptMs > 0), 'per-call floor passed through');
+    assert.ok(aiCalls.every((c) => c.options.retries === 1), 'exactly one transient retry allowed per chunk');
     console.log(`   → route wall time ${elapsed}ms, ${aiCalls.length} AI chunk call(s), ${doc.items.length} items extracted`);
     console.log('✅ Test 1 passed\n');
 }
@@ -187,15 +203,16 @@ async function test1_realisticBoqEndToEnd() {
 async function test2_chunkCapSurfaces413() {
     console.log('▶ Test 2: oversized document surfaces a clear 413 (not a hang/500)');
     aiCalls.length = 0; // reset counter shared with test 1
-    // ~52k chars of pipe rows → far more chunks than the cap of 4 →
-    // the route must reject BEFORE calling the AI (it used to accept
-    // anything under 60k chars and then die silently in one giant call).
+    // ~38k chars of pipe rows → far more chunks than the derived cap
+    // (floor(12000/2000) = 6) → the route must reject BEFORE calling the
+    // AI (it used to accept anything under 60k chars and then die
+    // silently in one giant call).
     const lines = ['Item | Description | Size | Specification | Quantity | Unit'];
     for (let i = 1; i <= 450; i++) {
         lines.push(`${i} | HDPE Pipe ${60 + (i % 6) * 25}mm | ${60 + (i % 6) * 25}mm | IS 4984:2016 PE100 PN10 | ${100 * i} | m`);
     }
     const text = lines.join('\n');
-    assert.ok(text.length > 4 * 1500, `fixture sized to exceed the chunk cap (${text.length} chars)`);
+    assert.ok(text.length > EXPECTED_MAX_CHUNKS * 1500, `fixture sized to exceed the chunk cap (${text.length} chars > ${EXPECTED_MAX_CHUNKS} × 1500)`);
     assert.ok(text.length <= 60000, 'fixture stays under the hard 60k reject so the CHUNK cap is what trips');
 
     const { req, res, getStatus, getBody } = makeReqRes({
@@ -213,7 +230,7 @@ async function test2_chunkCapSurfaces413() {
 async function test3_aiFailureSurfacesClearError() {
     console.log('▶ Test 3: chunk AI failure → clear attributed error, HTTP 502');
     const original = aiService._complete;
-    aiService._complete = async () => { throw new Error('AI provider timed out after 25s.'); };
+    aiService._complete = async () => { throw new Error('AI provider error (HTTP 401): invalid key.'); };
     try {
         const smallBuffer = await buildRealisticBoqXlsx(3);
         const { req, res, getStatus, getBody } = makeReqRes({
@@ -224,10 +241,86 @@ async function test3_aiFailureSurfacesClearError() {
         await runProcessHandler(req, res);
         assert.strictEqual(getStatus(), 502, `expected 502, got ${getStatus()}`);
         assert.ok(/Section 1 of 1.*could not be extracted/.test(getBody().error), `attributed error, got: ${getBody().error}`);
+        assert.strictEqual(getBody().retryable, false, 'provider 4xx-class failure is NOT retryable');
+        assert.strictEqual(getBody().stage, 'ai_extraction', 'failure stage reported');
+        assert.strictEqual(getBody().section, 1, 'section reported');
+        assert.strictEqual(getBody().of, 1, 'of reported');
     } finally {
         aiService._complete = original;
     }
     console.log('✅ Test 3 passed\n');
+}
+
+async function test4_timeoutSurfaces504WithRetryHint() {
+    console.log('▶ Test 4: AI timeout → HTTP 504 + retryable:true + stage metadata');
+    const original = aiService._complete;
+    // Mimic the shape the REAL _complete throws on ECONNABORTED
+    // (aiKind drives the route's 504 mapping).
+    aiService._complete = async () => {
+        const e = new Error('AI provider timed out after 3s.');
+        e.aiKind = 'timeout';
+        e.attempts = 2;
+        throw e;
+    };
+    try {
+        const smallBuffer = await buildRealisticBoqXlsx(3);
+        const { req, res, getStatus, getBody } = makeReqRes({
+            originalname: 'boq-timeout.xlsx',
+            size: smallBuffer.length,
+            buffer: smallBuffer,
+        });
+        await runProcessHandler(req, res);
+        assert.strictEqual(getStatus(), 504, `expected 504, got ${getStatus()} — body: ${JSON.stringify(getBody())}`);
+        assert.ok(/Section 1 of 1.*could not be extracted.*timed out/.test(getBody().error), `attributed timeout error, got: ${getBody().error}`);
+        assert.strictEqual(getBody().retryable, true, 'timeout is retryable');
+        assert.strictEqual(getBody().stage, 'ai_extraction');
+        assert.strictEqual(getBody().section, 1);
+        assert.strictEqual(getBody().of, 1);
+    } finally {
+        aiService._complete = original;
+    }
+    console.log('✅ Test 4 passed\n');
+}
+
+async function test5_perChunkBudgetDivision() {
+    console.log('▶ Test 5: per-chunk timeouts divide the remaining wall budget');
+    aiCalls.length = 0;
+    const original = aiService._complete;
+    aiService._complete = async (messages, options = {}) => {
+        aiCalls.push({ options, start: Date.now() });
+        await new Promise((r) => setTimeout(r, 15));
+        return JSON.stringify({ items: [{ product: 'HDPE Pipe', size: '110mm', specification: 'PE100', quantity: '100', unit: 'm', application: '', notes: '' }] });
+    };
+    try {
+        // ~80 rows ≈ 5k chars → 4 chunks at the 1500-char test chunk size
+        // (under the derived cap of 6). Each call's timeout must equal the
+        // remaining budget ÷ remaining chunks (ceiling-clamped).
+        const buffer = await buildRealisticBoqXlsx(80);
+        const { req, res, getStatus, getBody } = makeReqRes({
+            originalname: 'boq-4chunk.xlsx',
+            size: buffer.length,
+            buffer,
+        });
+        await runProcessHandler(req, res);
+        assert.strictEqual(getStatus(), 201, `expected 201, got ${getStatus()} — body: ${JSON.stringify(getBody())}`);
+        assert.ok(aiCalls.length >= 2, `multi-chunk run (got ${aiCalls.length} calls)`);
+        const totalChunks = aiCalls.length;
+        aiCalls.forEach((call, i) => {
+            const chunksLeft = totalChunks - i;
+            const remaining = call.options.deadlineMs - call.start;
+            const expected = Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / chunksLeft)));
+            assert.ok(
+                Math.abs(call.options.timeoutMs - expected) <= 100,
+                `chunk ${i + 1}/${totalChunks}: timeout ${call.options.timeoutMs}ms ≈ remaining ${Math.round(remaining)}ms ÷ ${chunksLeft} = ${expected}ms`
+            );
+        });
+        const consumed = aiCalls.reduce((n, c) => n + c.options.timeoutMs, 0);
+        assert.ok(consumed <= BOQ_TOTAL_BUDGET_MS + BOQ_AI_MAX_CALL_MS, 'sum of per-call budgets stays near the wall budget');
+        console.log(`   → ${totalChunks} chunks, per-call budgets: ${aiCalls.map((c) => c.options.timeoutMs).join(', ')}ms`);
+    } finally {
+        aiService._complete = original;
+    }
+    console.log('✅ Test 5 passed\n');
 }
 
 // The route module exports the router; pull the /process handler out of
@@ -249,6 +342,8 @@ async function main() {
         await test1_realisticBoqEndToEnd();
         await test2_chunkCapSurfaces413();
         await test3_aiFailureSurfacesClearError();
+        await test4_timeoutSurfaces504WithRetryHint();
+        await test5_perChunkBudgetDivision();
         console.log('🎉 ALL BOQ REALISTIC-SIZE SMOKE TESTS PASSED');
         process.exit(0);
     } catch (error) {

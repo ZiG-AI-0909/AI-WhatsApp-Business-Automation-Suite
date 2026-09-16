@@ -46,11 +46,48 @@ async function loadUserSettings(userId) {
     return settings;
 }
 
-// Per-chunk AI budget and chunk cap. With BOQ_MAX_CHUNKS × BOQ_CHUNK_MAX_CHARS
-// characters covered, the server's worst-case wall time stays bounded well
-// under the frontend's request timeout for this endpoint (see api.js).
-const BOQ_AI_TIMEOUT_MS = Number(process.env.BOQ_AI_TIMEOUT_MS || 25000);
-const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS || 4);
+// ─── ONE wall-time budget, shared with the frontend ──────────
+// The browser allows /boq/process 110s (frontend/src/api.js — the two
+// budgets must move together). The server's AI phase is capped at 90s so
+// the server always answers FIRST with a precise error instead of the
+// browser's generic timeout: 90s AI + text extraction + DB insert stays
+// well inside 110s and inside the hosting proxy's idle timeout.
+const BOQ_TOTAL_BUDGET_MS = Number(process.env.BOQ_TOTAL_BUDGET_MS || 90000);
+// Per-call FLOOR: the smallest per-attempt timeout that is still useful.
+// It also derives the default chunk cap (budget ÷ floor) so the cap and
+// the floor can never contradict each other.
+const BOQ_AI_MIN_CALL_MS = Number(process.env.BOQ_AI_MIN_CALL_MS || 20000);
+// Per-call CEILING: one attempt can never hog the budget — a failed
+// attempt always leaves room for the single transient retry.
+const BOQ_AI_MAX_CALL_MS = Math.max(
+    BOQ_AI_MIN_CALL_MS,
+    Number(process.env.BOQ_AI_MAX_CALL_MS || 45000)
+);
+const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS)
+    || Math.max(1, Math.floor(BOQ_TOTAL_BUDGET_MS / BOQ_AI_MIN_CALL_MS));
+
+// Host of a base URL for LOGGING ONLY — never the key, never the full URL
+// when it could carry credentials.
+function hostOf(baseURL) {
+    try {
+        return new URL(baseURL).host;
+    } catch {
+        try { return new URL(`https://${String(baseURL || '').replace(/^\/+/, '')}`).host; } catch { return 'unparseable-host'; }
+    }
+}
+
+/**
+ * Map an AI extraction failure to the right HTTP status and retryable flag:
+ *   timeout / network break  → 504 (retry might work)
+ *   provider answered 429/5xx → 502 (retryable — quota/backpressure)
+ *   provider answered 4xx    → 502 (permanent — bad key/model/template)
+ */
+function mapExtractionStatus(error) {
+    if (error?.aiKind === 'timeout' || error?.aiKind === 'network') return { status: 504, retryable: true };
+    const providerStatus = error?.providerStatus;
+    if (providerStatus) return { status: 502, retryable: providerStatus === 429 || providerStatus >= 500 };
+    return { status: 502, retryable: false };
+}
 
 /**
  * Server-level credentials for Document Intelligence, scoped to this
@@ -87,10 +124,15 @@ function resolveDocIntelModel(storedModel) {
  * The document is extracted CHUNK BY CHUNK (see boqExtractor.splitIntoChunks):
  * one giant call truncates its JSON output on real-world BOQs (~25+ rows
  * exceed the maxTokens budget) and looked like an inexplicable hang/500.
- * Each chunk gets a hard per-call timeout and NO retries so a hung provider
- * fails fast with a clear, attributable error instead of stacking 3 retries.
+ *
+ * Budget model: the whole extraction phase shares ONE wall-clock deadline.
+ * Each chunk's per-call timeout is the remaining budget divided by the
+ * remaining chunks (clamped to the per-call ceiling), so a 1-chunk document
+ * gets the WHOLE budget instead of a fixed 25s slice, and later chunks
+ * inherit whatever earlier ones left behind. Each call gets exactly one
+ * transient retry (timeout/socket break, 429, 5xx) inside that deadline.
  */
-async function extractItemsWithAI(userId, documentText, filename = 'document') {
+async function extractItemsWithAI(userId, documentText, filename = 'document', deadlineMs = 0) {
     const rows = await loadUserSettings(userId);
     const aiConfig = resolveAiConfig({
         storedKey: rows.AI_API_KEY,
@@ -107,12 +149,26 @@ async function extractItemsWithAI(userId, documentText, filename = 'document') {
         error.statusCode = 413;
         throw error;
     }
-    console.log(`[boq:${userId}] AI extraction: "${filename}" → ${chunks.length} chunk(s) (${documentText.length} chars total, timeout ${Math.round(BOQ_AI_TIMEOUT_MS / 1000)}s per chunk, model ${model || 'service default'})`);
+    const budgetRemaining = deadlineMs ? Math.max(0, deadlineMs - Date.now()) : BOQ_TOTAL_BUDGET_MS;
+    console.log(`[boq:${userId}] AI extraction: "${filename}" → ${chunks.length} chunk(s) (${documentText.length} chars total, wall budget ${Math.round(budgetRemaining / 1000)}s of ${Math.round(BOQ_TOTAL_BUDGET_MS / 1000)}s, per-call range ${Math.round(BOQ_AI_MIN_CALL_MS / 1000)}–${Math.round(BOQ_AI_MAX_CALL_MS / 1000)}s, model ${model || 'service default'}, host ${hostOf(aiConfig.baseURL)})`);
 
     const items = [];
     for (let i = 0; i < chunks.length; i++) {
         const chunkStart = Date.now();
-        console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, model ${model || 'default'})`);
+        const chunksLeft = chunks.length - i;
+        const remaining = deadlineMs ? deadlineMs - Date.now() : BOQ_TOTAL_BUDGET_MS;
+        if (deadlineMs && remaining <= 0) {
+            const exhausted = new Error(`The AI extraction budget ran out before section ${i + 1} of ${chunks.length} of "${filename}" could be attempted.`);
+            exhausted.statusCode = 504;
+            exhausted.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: true };
+            throw exhausted;
+        }
+        // Fair share of what is left, clamped to the per-call ceiling. A
+        // 1-chunk document effectively gets the whole remaining budget.
+        const perCallMs = deadlineMs
+            ? Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / chunksLeft)))
+            : BOQ_AI_MAX_CALL_MS;
+        console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, budget ${Math.round(remaining / 1000)}s left, per-call timeout ${Math.round(perCallMs / 1000)}s, model ${model || 'default'})`);
         let content;
         try {
             content = await aiService._complete(
@@ -123,15 +179,20 @@ async function extractItemsWithAI(userId, documentText, filename = 'document') {
                     model,
                     temperature: 0.1,
                     maxTokens: 3000,
-                    timeoutMs: BOQ_AI_TIMEOUT_MS,
-                    retries: 1, // per-chunk: fail fast, the loop is the retry story
+                    timeoutMs: perCallMs,
+                    deadlineMs, // retries must fit inside the shared budget
+                    minAttemptMs: BOQ_AI_MIN_CALL_MS,
+                    retries: 1, // exactly ONE transient retry, inside the deadline
                     reasoningEffort: 'none', // raw JSON out; thinking burned the old token budget
+                    logLabel: `boq chunk ${i + 1}/${chunks.length}`,
                 }
             );
         } catch (error) {
-            console.error(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} FAILED after ${Date.now() - chunkStart}ms: ${error.message}`);
+            const mapped = mapExtractionStatus(error);
+            console.error(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} FAILED after ${Date.now() - chunkStart}ms (attempt(s): ${error.attempts || 1}, kind ${error.aiKind || 'unknown'}${error.providerStatus ? `, provider HTTP ${error.providerStatus}` : ''}${error.providerRequestId ? `, req-id ${error.providerRequestId}` : ''}): ${error.message}${error.providerBody ? ` | provider body: ${error.providerBody}` : ''}`);
             error.message = `Section ${i + 1} of ${chunks.length} of "${filename}" could not be extracted: ${error.message}`;
-            error.statusCode = error.statusCode || 502; // upstream AI/provider failure
+            error.statusCode = mapped.status;
+            error.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: mapped.retryable };
             throw error;
         }
         let chunkItems;
@@ -141,6 +202,7 @@ async function extractItemsWithAI(userId, documentText, filename = 'document') {
             console.error(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} returned unparseable output (${String(content || '').length} chars) after ${Date.now() - chunkStart}ms`);
             const parseError = new Error(`Section ${i + 1} of ${chunks.length} of "${filename}" did not return structured data (AI output truncated or malformed). Try again, or split the document into smaller parts.`);
             parseError.statusCode = 502;
+            parseError.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: true };
             throw parseError;
         }
         console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} completed in ${Date.now() - chunkStart}ms → ${chunkItems.length} item(s)`);
@@ -174,7 +236,11 @@ router.post('/process', upload.single('file'), async (req, res) => {
             return res.status(400).json({ error: 'Document is too large to process in one pass (over ~60k characters). Split it into sections and upload each part.' });
         }
 
-        const items = await extractItemsWithAI(userId, documentText, req.file.originalname);
+        // The AI phase works against a wall-clock deadline measured from
+        // request start — text extraction and DB time are part of the same
+        // budget, so per-chunk timeouts shrink to absorb slow parsing.
+        const deadlineMs = startedAt + BOQ_TOTAL_BUDGET_MS;
+        const items = await extractItemsWithAI(userId, documentText, req.file.originalname, deadlineMs);
         const warnings = boqExtractor.flagAll(items);
 
         const dbStart = Date.now();
@@ -197,7 +263,17 @@ router.post('/process', upload.single('file'), async (req, res) => {
         // the original incident produced ZERO log lines, so the failure
         // stage and cause were invisible in Render's logs.
         console.error(`[boq:${userId}] process FAILED after ${Date.now() - startedAt}ms (HTTP ${status}):`, error.stack || error.message);
-        res.status(status).json({ error: error.message });
+        const body = { error: error.message };
+        // Retry hint + where it failed, so the client can offer a Retry
+        // button instead of guessing. Timeout/abort → 504 + retryable;
+        // provider 4xx → 502 + permanent.
+        if (error.extraction) {
+            body.stage = error.extraction.stage;
+            body.section = error.extraction.section;
+            body.of = error.extraction.of;
+            body.retryable = error.extraction.retryable ?? (status === 504);
+        }
+        res.status(status).json(body);
     }
 });
 
