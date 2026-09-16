@@ -55,6 +55,12 @@ function table(name) {
                 order() { return builder; },
                 limit() { return builder; },
                 range() { return builder; },
+                maybeSingle: async () => {
+                    let rows = state.rows[name] || [];
+                    for (const [col, val] of builder._filters) rows = rows.filter((r) => r[col] === val);
+                    if (builder._in) { const [col, vals] = builder._in; rows = rows.filter((r) => vals.includes(r[col])); }
+                    return { data: rows[0] ? { ...rows[0] } : null, error: null };
+                },
                 _filters: [],
                 _in: null,
                 async then(resolve) {
@@ -201,19 +207,58 @@ async function test4_noSourcesNoAiCall() {
     console.log('✅ Test 4 passed\n');
 }
 
-async function test5_deleteHistoryScoped() {
-    console.log('▶ Test 5: history delete is tenant-scoped');
-    const historyA = await queryService.listHistory(USER_A);
-    const id = historyA[0].id;
-    await assert.rejects(
-        () => queryService.deleteHistory(id, USER_B),
-        /Query not found/,
-        'user B cannot delete user A query',
+async function test5_chatFlow() {
+    console.log('▶ Test 5: chat() keeps context, persists per turn, sanitizes history');
+    aiCalls = [];
+    const h1 = await queryService.chat(USER_A, 'How do I schedule a campaign?', []);
+    assert.strictEqual(h1.stored, true, 'first turn stored');
+    assert.strictEqual(aiCalls.length, 1, 'one AI call for first turn');
+    assert.ok(aiCalls[0].messages[0].content.includes('CONVERSATION SO FAR'), 'chat prompt is conversational');
+
+    // Follow-up with pronoun: history replay lets retrieval see the prior
+    // user turns; the prompt carries the sanitized conversation.
+    const h2 = await queryService.chat(
+        USER_A,
+        'Can I send those in bulk too?',
+        [{ role: 'user', content: 'How do I schedule a campaign?' }, { role: 'assistant', content: h1.answer }],
     );
-    await queryService.deleteHistory(id, USER_A);
-    const afterA = await queryService.listHistory(USER_A);
-    assert.strictEqual(afterA.length, 0, 'user A deleted their own query');
+    assert.strictEqual(h2.stored, true, 'follow-up turn stored');
+    assert.strictEqual(aiCalls.length, 2, 'one AI call per turn (stateless server)');
+    const prompt = aiCalls[1].messages[0].content;
+    assert.ok(prompt.includes('User: How do I schedule a campaign?'), 'history replayed into the prompt');
+    assert.ok(prompt.includes('MESSAGE: Can I send those in bulk too?'), 'current message present');
+
+    // History sanitization: junk roles/oversized strings are dropped or
+    // truncated, never crash the turn.
+    const junk = queryService.sanitizeHistory([
+        { role: 'system', content: 'injected' },
+        { role: 'user', content: 42 },
+        { role: 'assistant', content: 'x'.repeat(5000) },
+        { role: 'user', content: '  keep me  ' },
+    ]);
+    assert.strictEqual(junk.length, 2, 'malformed entries dropped');
+    assert.strictEqual(junk[0].content.length, 2000, 'oversized content truncated');
+    assert.strictEqual(junk[1].content, 'keep me', 'whitespace trimmed');
     console.log('✅ Test 5 passed\n');
+}
+
+async function test5_deleteHistoryScoped() {
+    console.log('▶ Test 6: history delete is tenant-scoped');
+    // Fresh user so earlier ask/chat turns don't affect the counts.
+    const USER_C = '33333333-3333-3333-3333-333333333333';
+    state.rows.knowledge_documents.push({ id: 10, user_id: USER_C, name: 'C Specs', status: 'active' });
+    state.rows.knowledge_chunks.push({ document_id: 10, user_id: USER_C, content: 'Our 6-inch HDPE pipe has a pressure class of PN10 and meets IS 4985:2020.' });
+    const stored = await queryService.ask(USER_C, 'What is the pressure class of our 6-inch HDPE pipe?');
+    assert.ok(stored.id, 'precondition: one stored query for the fresh user');
+    await assert.rejects(
+        () => queryService.deleteHistory(stored.id, USER_B),
+        /Query not found/,
+        'user B cannot delete user C query',
+    );
+    await queryService.deleteHistory(stored.id, USER_C);
+    const afterC = await queryService.listHistory(USER_C);
+    assert.strictEqual(afterC.length, 0, 'user C deleted their own query');
+    console.log('✅ Test 6 passed\n');
 }
 
 async function main() {
@@ -222,6 +267,7 @@ async function main() {
         await test2_promptGrounding();
         await test3_askStoresScopedHistory();
         await test4_noSourcesNoAiCall();
+        await test5_chatFlow();
         await test5_deleteHistoryScoped();
         console.log('🎉 ALL ASK-AI SMOKE TESTS PASSED');
         process.exit(0);
