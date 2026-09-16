@@ -273,12 +273,18 @@ async function test3_corruptDocDeletedThenSeeded() {
     await seedService.ensureReadyForAsk(CORRUPT_USER);
 
     const docsAfter = state.rows.knowledge_documents.filter(d => d.user_id === CORRUPT_USER);
-    assert.strictEqual(docsAfter.length, 1, 'corrupt doc deleted, seed profile created');
-    assert.strictEqual(docsAfter[0].name, seedService.SEED_DOC_NAME, 'replacement is the default company profile');
+    assert.strictEqual(docsAfter.length, 2, 'corrupt doc deleted, both seed docs created (profile + platform help)');
+    assert.ok(docsAfter.some(d => d.name === seedService.SEED_DOC_NAME), 'replacement includes the default company profile');
+    assert.ok(docsAfter.some(d => d.name === seedService.PLATFORM_DOC_NAME), 'replacement includes the platform help doc');
 
     const sources = await queryService.retrieveSources(CORRUPT_USER, 'manufacturing capacity MTPA');
     assert.ok(sources.length > 0, 'post-repair retrieval works');
     assert.ok(sources.some(s => s.content.includes('MTPA')), 'sources carry the capacity facts');
+
+    // Platform question retrieves the platform doc with the profile present.
+    const platformSources = await queryService.retrieveSources(CORRUPT_USER, 'schedule campaign Excel contacts');
+    assert.ok(platformSources.length > 0, 'platform question retrieves sources');
+    assert.ok(platformSources.some(s => s.docName === seedService.PLATFORM_DOC_NAME), 'platform doc cited for platform questions');
     console.log('✅ Test 3 passed\n');
 }
 
@@ -293,9 +299,12 @@ async function test4_chunklessDocRepaired() {
 
     await seedService.ensureReadyForAsk(CHUNKLESS_USER);
 
+    // Marker prevents the company profile, but the NEWER platform doc is
+    // backfilled ONCE for existing accounts (its own marker guards it).
     const docs = state.rows.knowledge_documents.filter(d => d.user_id === CHUNKLESS_USER);
-    assert.strictEqual(docs.length, 1, 'existing user keeps exactly their own doc');
-    assert.strictEqual(docs[0].name, 'My Specs', 'seed profile NOT injected (marker present)');
+    assert.strictEqual(docs.length, 2, 'existing user doc + backfilled platform doc');
+    assert.ok(docs.some(d => d.name === 'My Specs'), 'seed profile NOT injected (marker present)');
+    assert.ok(docs.some(d => d.name === seedService.PLATFORM_DOC_NAME), 'platform doc backfilled');
 
     const chunks = state.rows.knowledge_chunks.filter(c => c.user_id === CHUNKLESS_USER);
     assert.ok(chunks.length >= 1, 'chunks rebuilt from the doc content');
@@ -304,6 +313,19 @@ async function test4_chunklessDocRepaired() {
     assert.ok(sources.length > 0, 'repaired doc is retrievable');
     assert.strictEqual(sources[0].docName, 'My Specs');
     console.log('✅ Test 4 passed\n');
+}
+
+async function test4b_platformDocSeededOnce() {
+    console.log('▶ Test 4b: platform doc is seeded exactly once (idempotent backfill)');
+    const countBefore = state.rows.knowledge_documents.filter(d => d.user_id === CHUNKLESS_USER && d.name === seedService.PLATFORM_DOC_NAME).length;
+    assert.strictEqual(countBefore, 1, 'exactly one platform doc exists after first backfill');
+
+    seedService._reset();
+    await seedService.ensureReadyForAsk(CHUNKLESS_USER); // second pre-flight
+
+    const countAfter = state.rows.knowledge_documents.filter(d => d.user_id === CHUNKLESS_USER && d.name === seedService.PLATFORM_DOC_NAME).length;
+    assert.strictEqual(countAfter, 1, 'no duplicate platform doc on subsequent loads');
+    console.log('✅ Test 4b passed\n');
 }
 
 async function test5_addDocumentSetsStatusExplicitly() {
@@ -355,6 +377,7 @@ async function main() {
         await test2_uploadRouteStoresRealText();
         await test3_corruptDocDeletedThenSeeded();
         await test4_chunklessDocRepaired();
+        await test4b_platformDocSeededOnce();
         await test5_addDocumentSetsStatusExplicitly();
         await test6_emptyVsNoMatchAnswers();
         console.log('🎉 ALL ASK-AI REPAIR SMOKE TESTS PASSED');

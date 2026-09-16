@@ -57,7 +57,13 @@ function table(name) {
                     state.rows[name].push(...stored);
                     return stored;
                 }
-                const idx = state.rows[name].findIndex(r => r.user_id === rowOrRows.user_id && r.key === rowOrRows.key);
+                // Upsert emulation applies ONLY to keyed rows (app_settings):
+                // knowledge rows have no .key, and undefined === undefined
+                // would wrongly "update" an existing doc instead of inserting.
+                const isKeyedUpsert = rowOrRows.key !== undefined;
+                const idx = isKeyedUpsert
+                    ? state.rows[name].findIndex(r => r.user_id === rowOrRows.user_id && r.key === rowOrRows.key)
+                    : -1;
                 if (idx >= 0) { state.rows[name][idx] = { ...state.rows[name][idx], ...withDefaults(rowOrRows) }; return [state.rows[name][idx]]; }
                 const stored = { ...withDefaults(rowOrRows), id: state.rows[name].length + 1 };
                 state.rows[name].push(stored);
@@ -153,13 +159,13 @@ async function test1_freshUserSeeded() {
     await handler(req, res);
 
     const docs = state.rows.knowledge_documents.filter(d => d.user_id === FRESH_USER);
-    assert.strictEqual(docs.length, 1, 'exactly one seed document created');
-    assert.strictEqual(docs[0].name, 'Sudarshan Pipes — Company Profile');
-    assert.strictEqual(docs[0].category, 'Company Profile');
-    assert.strictEqual(docs[0].status, 'active', 'a normal active document — not locked/protected');
+    assert.strictEqual(docs.length, 2, 'both seed documents created (company profile + platform help)');
+    assert.ok(docs.some(d => d.name === 'Sudarshan Pipes — Company Profile' && d.category === 'Company Profile'), 'company profile seeded');
+    assert.ok(docs.some(d => d.name === 'How to Use This Platform' && d.category === 'Platform Help'), 'platform help doc seeded with its distinct category');
+    assert.ok(docs.every(d => d.status === 'active'), 'normal active documents — not locked/protected');
 
-    // The first list response already includes the seed doc.
-    assert.ok(Array.isArray(responseBody) && responseBody.length === 1, 'seed visible in the very first list response');
+    // The first list response already includes both seed docs.
+    assert.ok(Array.isArray(responseBody) && responseBody.length === 2, 'seeds visible in the very first list response');
 
     // Retrieval chunks were created so getRelevantContext works.
     const chunks = state.rows.knowledge_chunks.filter(c => c.user_id === FRESH_USER);
@@ -172,6 +178,12 @@ async function test1_freshUserSeeded() {
     // AI retrieval on a relevant query finds the profile.
     const context = await knowledgeBase.getRelevantContext('HDPE pipes manufacturing capacity', 4, FRESH_USER);
     assert.ok(context.includes('Sudarshan Pipes'), 'AI context includes the seed document');
+
+    // Platform questions retrieve the platform doc — both categories coexist.
+    // (Content-phrase assertion: the mock's select() has no embedded
+    // documents(name) join, so doc_name renders as 'Unknown' in context.)
+    const platformContext = await knowledgeBase.getRelevantContext('schedule a recurring campaign Excel import', 4, FRESH_USER);
+    assert.ok(platformContext.includes('recurring campaigns'), 'platform how-to doc is retrievable for platform questions');
     console.log('✅ Test 1 passed\n');
 }
 
@@ -185,28 +197,33 @@ async function test2_existingUserUntouched() {
     );
     const docsBefore = state.rows.knowledge_documents.filter(d => d.user_id === EXISTING_USER).length;
     const customized = Object.fromEntries(state.rows.app_settings
-        .filter(r => r.user_id === EXISTING_USER && r.key !== 'KB_DEFAULT_SEEDED')
+        .filter(r => r.user_id === EXISTING_USER && r.key !== 'KB_DEFAULT_SEEDED' && r.key !== 'KB_PLATFORM_SEEDED')
         .map(r => [r.key, r.value]));
 
     seedService._reset();
     // Load dashboard + knowledge as the existing user (fire-and-forget path).
     await seedService.seedIfEmpty(EXISTING_USER);
 
+    // Backfill behavior: the existing user's own docs are untouched, and
+    // the platform how-to doc is added ONCE (requirement: existing
+    // accounts get it too). The company profile is NOT injected.
     const docsAfter = state.rows.knowledge_documents.filter(d => d.user_id === EXISTING_USER);
-    assert.strictEqual(docsAfter.length, docsBefore, 'no document added for existing user');
-    assert.ok(!docsAfter.some(d => d.name.includes('Sudarshan')), 'seed document NOT injected');
+    assert.strictEqual(docsAfter.length, docsBefore + 1, 'exactly the platform doc added for existing user');
+    assert.ok(docsAfter.some(d => d.name === seedService.PLATFORM_DOC_NAME), 'platform help doc backfilled');
+    assert.ok(!docsAfter.some(d => d.name.includes('Sudarshan')), 'company profile seed document NOT injected');
     const customizedAfter = Object.fromEntries(state.rows.app_settings
-        .filter(r => r.user_id === EXISTING_USER && r.key !== 'KB_DEFAULT_SEEDED')
+        .filter(r => r.user_id === EXISTING_USER && r.key !== 'KB_DEFAULT_SEEDED' && r.key !== 'KB_PLATFORM_SEEDED')
         .map(r => [r.key, r.value]));
-    assert.deepStrictEqual(customizedAfter, customized, 'customized setting values untouched (internal seed marker may be written)');
+    assert.deepStrictEqual(customizedAfter, customized, 'customized setting values untouched (internal seed markers may be written)');
     console.log('✅ Test 2 passed\n');
 }
 
 async function test3_deletedSeedNotReSeeded() {
     console.log('▶ Test 3: user who deleted the seed is not re-seeded');
     const docs = state.rows.knowledge_documents.filter(d => d.user_id === FRESH_USER);
-    assert.strictEqual(docs.length, 1);
-    await knowledgeBase.deleteDocument(docs[0].id, FRESH_USER);
+    assert.strictEqual(docs.length, 2);
+    // Delete BOTH seeds — the marker must prevent either from coming back.
+    for (const doc of docs) await knowledgeBase.deleteDocument(doc.id, FRESH_USER);
 
     seedService._reset();
     // Two subsequent loads — must stay empty both times.
@@ -223,6 +240,11 @@ async function test4_seedContentFraming() {
     assert.ok(seedService.SEED_CONTENT.includes('should be treated as marketing figures, not audited'), 'marketing figures carry the not-audited framing');
     assert.ok(seedService.SEED_CONTENT.includes('sales@sudarshanpipes.com'), 'contact info present');
     assert.ok(seedService.SEED_CONTENT.includes('IS 4984:2016'), 'standards present');
+
+    // Platform help seed content sanity.
+    assert.ok(seedService.PLATFORM_CONTENT.includes('HOW TO USE THIS PLATFORM'), 'platform doc title present');
+    assert.ok(seedService.PLATFORM_CONTENT.includes('Document Intelligence'), 'platform doc covers Document Intelligence');
+    assert.ok(seedService.PLATFORM_CONTENT.includes('AI toggle'), 'platform doc covers the inbox AI toggle');
 
     // Settings route still resolves defaults for a user with nothing stored.
     const settingsRoute = require('../../routes/settings');

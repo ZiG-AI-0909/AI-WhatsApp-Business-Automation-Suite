@@ -29,6 +29,50 @@ const db = require('../database/db');
 const SEED_DOC_NAME = 'Sudarshan Pipes — Company Profile';
 const SEED_CATEGORY = 'Company Profile';
 
+// Second seed document: in-app how-to content so Ask AI answers BOTH
+// product questions and "how do I use this platform" questions from the
+// same retrieval. Distinct category so it stands out in the Knowledge
+// Base list next to the company profile. A completely normal document —
+// editable/deletable through the usual UI, nothing protected.
+const PLATFORM_DOC_NAME = 'How to Use This Platform';
+const PLATFORM_CATEGORY = 'Platform Help';
+const PLATFORM_MARKER_KEY = 'KB_PLATFORM_SEEDED';
+
+const PLATFORM_CONTENT = `HOW TO USE THIS PLATFORM
+
+CONNECTING WHATSAPP
+Go to WhatsApp Connection. Choose WhatsApp Web (scan a QR code from your phone's Linked Devices menu) or WhatsApp Business API (enter your Meta Phone Number ID, Access Token, and Webhook Verify Token). Each user has their own separate WhatsApp connection — no two accounts share a number. Signing out fully disconnects your WhatsApp session for security; you'll need to scan the QR code again next time you sign in.
+
+INBOX AND AI AUTO-REPLY
+The Inbox shows all your WhatsApp conversations. Each conversation has an AI toggle — when on, the AI automatically replies to that customer using your Knowledge Base content. Turn it off any time to take over a conversation personally.
+
+CREATING CAMPAIGNS
+Go to Campaigns to send bulk messages. Upload an Excel file of contacts, write your message or select a template, optionally attach media. Choose a country code for phone numbers without one (set a default in Settings, or override it per upload). You can send immediately or schedule for later, including recurring campaigns — scheduled campaigns run automatically in the background even if you close your browser.
+
+MANAGING CONTACTS
+Add contacts manually or via Excel import on the Contacts page. Tag contacts, add notes, and track opt-in/opt-out status.
+
+MESSAGE TEMPLATES
+Save reusable message templates on the Templates page so you don't have to retype common messages.
+
+KNOWLEDGE BASE
+Upload documents (product specs, pricing, policies, certificates) so the AI can answer customer questions and internal questions accurately. The AI only answers using what's actually in your Knowledge Base — it won't make up information it doesn't have.
+
+ASK AI
+Use the Ask AI page to ask any question — about Sudarshan Pipes products, or about how to use this platform itself. You'll get an answer with the source document cited. If nothing in the Knowledge Base has the answer, Ask AI will tell you honestly rather than guessing.
+
+DOCUMENT INTELLIGENCE
+Upload a customer's BOQ or project requirement document (Excel, Word, PDF, or text) on the Document Intelligence page. The AI extracts sizes, quantities, and specifications into an editable requirement sheet, flags likely errors, and produces a ready-to-review RFQ you can export.
+
+IMAGE EXTRACTOR
+Upload photos of business cards or listings to automatically extract contact details as leads. There's also a Product Identification mode for identifying pipes/products from photos of visible markings.
+
+ANALYTICS
+View your dashboard for message trends, campaign performance, and overall activity stats.
+
+SETTINGS
+Configure your AI API key, business name, WhatsApp Business API credentials, email sending (Resend) settings, and default country code for phone numbers.`;
+
 // Company-reported/marketing figures are kept with their framing so the
 // AI never presents them as independently audited facts.
 const SEED_CONTENT = `SUDARSHAN PIPES — COMPANY PROFILE
@@ -141,12 +185,20 @@ class SeedKnowledgeService {
         checked.add(userId);
         try {
             const marker = await db.getOne('app_settings', 'key', SEED_MARKER_KEY, userId);
-            if (marker) return; // already seeded or already had documents — exempt forever
+            if (marker) {
+                // Already exempt from profile seeding. The platform-help doc
+                // is NEWER than the marker system, so existing accounts are
+                // backfilled exactly once here (its own marker guards it).
+                await this._seedPlatformDoc(userId);
+                return; // already seeded or already had documents — exempt forever
+            }
 
             const docCount = await db.count('knowledge_documents', 'user_id = ?', [userId]);
             if (docCount > 0) {
-                // Existing user with their own knowledge: mark exempt, touch nothing.
+                // Existing user with their own knowledge: mark exempt, touch
+                // nothing (except the one-time platform-help backfill below).
                 await this._writeMarker(userId);
+                await this._seedPlatformDoc(userId);
                 return;
             }
 
@@ -154,6 +206,7 @@ class SeedKnowledgeService {
             await knowledgeBase.addDocument(userId, SEED_DOC_NAME, SEED_CATEGORY, SEED_CONTENT);
             await this._writeMarker(userId);
             console.log(`[seed] default knowledge seeded for new user ${userId}`);
+            await this._seedPlatformDoc(userId);
         } catch (error) {
             // Non-fatal by design; allow a retry on the next request.
             checked.delete(userId);
@@ -161,12 +214,36 @@ class SeedKnowledgeService {
         }
     }
 
-    /** Upsert the marker (mirrors saveSetting's insert-then-update). */
-    async _writeMarker(userId) {
+    /**
+     * Backfill/seed the "How to Use This Platform" document. Idempotent
+     * via its own marker (a user who deletes it afterwards is never
+     * re-surprised with it), and never added to a knowledge base the user
+     * has deliberately EMPTIED (zero documents) — same respect-the-user
+     * rule as the company profile. Runs for new users AND, once, for
+     * existing accounts (the backfill), through the same lazy trigger.
+     */
+    async _seedPlatformDoc(userId) {
         try {
-            await db.insert('app_settings', { key: SEED_MARKER_KEY, value: 'true', user_id: userId, updated_at: new Date() });
+            const marker = await db.getOne('app_settings', 'key', PLATFORM_MARKER_KEY, userId);
+            if (marker) return;
+            const docCount = await db.count('knowledge_documents', 'user_id = ?', [userId]);
+            if (docCount === 0) return; // user emptied their KB — respect it
+            const knowledgeBase = require('../ai/knowledgeBase'); // lazy: avoids require cycle
+            await knowledgeBase.addDocument(userId, PLATFORM_DOC_NAME, PLATFORM_CATEGORY, PLATFORM_CONTENT);
+            await this._writeMarker(userId, PLATFORM_MARKER_KEY);
+            console.log(`[seed] platform help document seeded for user ${userId}`);
+        } catch (error) {
+            // Same failure tolerance as profile seeding — never break a page load.
+            console.error(`[seed] platform help seeding failed for ${userId}:`, error.message);
+        }
+    }
+
+    /** Upsert a marker row (mirrors saveSetting's insert-then-update). */
+    async _writeMarker(userId, key = SEED_MARKER_KEY) {
+        try {
+            await db.insert('app_settings', { key, value: 'true', user_id: userId, updated_at: new Date() });
         } catch {
-            await db.update('app_settings', { value: 'true', updated_at: new Date() }, 'user_id = ? AND key = ?', [userId, SEED_MARKER_KEY]);
+            await db.update('app_settings', { value: 'true', updated_at: new Date() }, 'user_id = ? AND key = ?', [userId, key]);
         }
     }
 
@@ -217,7 +294,8 @@ class SeedKnowledgeService {
                 // written without the user ever getting the default
                 // profile). If the user still has healthy documents, the
                 // next seedIfEmpty just re-marks them without seeding.
-                await db.del('app_settings', "user_id = ? AND key IN ('KB_DEFAULT_SEEDED')", [userId]);
+                // Both seed markers are cleared so both seeds re-run.
+                await db.del('app_settings', "user_id = ? AND key IN ('KB_DEFAULT_SEEDED', 'KB_PLATFORM_SEEDED')", [userId]);
                 continue;
             }
             const knowledgeBase = require('../ai/knowledgeBase'); // lazy: avoids require cycle
@@ -256,3 +334,6 @@ module.exports = new SeedKnowledgeService();
 module.exports.SEED_DOC_NAME = SEED_DOC_NAME;
 module.exports.SEED_CATEGORY = SEED_CATEGORY;
 module.exports.SEED_CONTENT = SEED_CONTENT;
+module.exports.PLATFORM_DOC_NAME = PLATFORM_DOC_NAME;
+module.exports.PLATFORM_CATEGORY = PLATFORM_CATEGORY;
+module.exports.PLATFORM_CONTENT = PLATFORM_CONTENT;

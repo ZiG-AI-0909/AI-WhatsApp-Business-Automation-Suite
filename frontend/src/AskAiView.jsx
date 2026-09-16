@@ -59,7 +59,7 @@ export default function AskAiView() {
       <div>
         <p className="eyebrow">Technical search</p>
         <h2>Ask AI</h2>
-        <p className="muted-copy">Ask a technical question and get an answer built from your Knowledge Base — with the source documents it came from. Internal tool: this does not message customers.</p>
+        <p className="muted-copy">Ask anything — Sudarshan Pipes products, or how to use this platform — and get an answer built from your Knowledge Base, with the source documents it came from. Internal tool: this does not message customers.</p>
       </div>
 
       {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
@@ -137,7 +137,7 @@ export default function AskAiView() {
             <EmptyState
               icon="🔎"
               title="No questions yet"
-              description="Ask your first technical question above — the answer and its source documents will be saved here so you can revisit them."
+              description="Ask your first question above — about products or the platform itself — and the answer and its source documents will be saved here so you can revisit them."
             />
           )}
         </div>
