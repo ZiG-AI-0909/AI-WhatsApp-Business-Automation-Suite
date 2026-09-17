@@ -184,15 +184,15 @@
   }
 }
 
-.view-workspace { display: flex; flex-direction: column; gap: 18px; }
-.view-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 18px; }
+.view-workspace { display: flex; flex-direction: column; gap: 20px; }
+.view-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
 .compact-stats { grid-template-columns: repeat(3, minmax(150px, 1fr)); margin-bottom: 0; }
 .editor-panel { border-color: var(--accent-border); }
 .form-grid, .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form-stack { display: flex; flex-direction: column; gap: 14px; }
 .full-field { grid-column: 1 / -1; }
-.split-view { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.25fr); gap: 18px; align-items: start; }
-.template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.split-view { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.25fr); gap: 20px; align-items: start; }
+.template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .template-card { display: flex; flex-direction: column; gap: 12px; }
 .template-card .panel-header { margin-bottom: 0; }
 .template-preview { white-space: pre-wrap; min-height: 130px; margin: 0; color: var(--text-secondary); line-height: 1.65; }
@@ -208,7 +208,7 @@
 .image-queue-item.completed { border-color: var(--success-border); }
 .image-queue-item.failed { border-color: var(--danger-border); color: var(--danger); }
 .analytics-stats { grid-template-columns: repeat(4, minmax(150px, 1fr)); margin-bottom: 0; }
-.analytics-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); gap: 18px; }
+.analytics-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); gap: 20px; }
 .trend-chart { height: 220px; display: flex; align-items: stretch; justify-content: space-around; gap: 10px; padding: 16px 8px 0; border-bottom: 1px solid var(--border-subtle); }
 .trend-day { flex: 1; display: flex; flex-direction: column; justify-content: end; align-items: center; gap: 5px; min-width: 34px; }
 .trend-bars { height: 170px; display: flex; align-items: end; gap: 4px; }
@@ -631,7 +631,7 @@
 .chat-scroll { flex: 1; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: 60vh; padding: 4px; }
 .chat-empty { margin: auto; text-align: center; max-width: 480px; }
 .chat-suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 12px; }
-.chat-suggestion { border: 1px solid var(--border-subtle); background: transparent; border-radius: 999px; padding: 7px 14px; font-size: .85rem; cursor: pointer; }
+.chat-suggestion { border: 1px solid var(--border-subtle); background: transparent; border-radius: 999px; min-height: 44px; padding: 7px 14px; font-size: .85rem; cursor: pointer; }
 .chat-suggestion:hover:not(:disabled) { border-color: var(--accent, #7c5cff); color: var(--accent, #7c5cff); }
 .chat-suggestion:disabled { opacity: .55; cursor: default; }
 .chat-row { display: flex; }
@@ -649,7 +649,7 @@
 
 /* ── Image Extractor mode tabs (Extract Leads / Identify Product) ── */
 .extractor-mode-tabs { display: flex; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
-.extractor-mode-tabs button { padding: 8px 16px; border: 1px solid var(--border); background: transparent; border-radius: 999px; cursor: pointer; color: var(--text-secondary); font-size: .85rem; font-weight: 500; }
+.extractor-mode-tabs button { min-height: 44px; padding: 8px 16px; border: 1px solid var(--border); background: transparent; border-radius: 999px; cursor: pointer; color: var(--text-secondary); font-size: .85rem; font-weight: 500; }
 .extractor-mode-tabs button.active { background: var(--surface-subtle); border-color: var(--brand, #0ea5e9); color: var(--text-primary, inherit); }
 
 /* ── Document Intelligence (BOQ processing) ────────────────── */
@@ -658,7 +658,7 @@ tr.row-warnings { background: rgba(245, 158, 11, 0.08); }
 .file-note-inline { margin-left: 10px; }
 
 /* ── Salesperson Copilot ───────────────────────────────────── */
-.copilot-panel { border: 1px solid var(--border-subtle); }
+.copilot-panel { border: 2px solid var(--border-subtle); }
 .copilot-section { margin: 10px 0; }
 .copilot-section h4 { margin: 0 0 4px; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
 .copilot-section p, .copilot-section li { font-size: .85rem; white-space: pre-wrap; }

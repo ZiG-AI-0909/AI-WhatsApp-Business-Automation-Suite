@@ -1312,22 +1312,24 @@ function App() {
           ))}
         </nav>
 
-        <div className="sidebar-footer" style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid var(--border-subtle)' }}>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={session?.user?.email}>
+        <div className="sidebar-footer" style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid rgba(148, 163, 184, 0.28)' }}>
+          <div style={{ fontSize: '11px', color: 'var(--brand-steel)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={session?.user?.email}>
             👤 {session?.user?.email || 'Logged In'}
           </div>
           <button
             type="button"
             onClick={handleSignOut}
+            className="sign-out-btn"
             style={{
               width: '100%',
+              minHeight: '44px',
               padding: '7px 12px',
               fontSize: '12px',
               fontWeight: 500,
               background: 'transparent',
-              border: '1px solid var(--border)',
+              border: '1px solid var(--brand-steel-border)',
               borderRadius: '8px',
-              color: 'var(--text-secondary)',
+              color: 'var(--brand-steel)',
               cursor: 'pointer'
             }}
           >
@@ -1346,12 +1348,14 @@ function App() {
             onClick={handleSignOut}
             style={{
               fontSize: '12px',
-              padding: '4px 10px',
-              background: 'var(--surface-subtle)',
+              minHeight: '44px',
+              padding: '8px 14px',
+              background: 'var(--surface)',
               border: '1px solid var(--border)',
               borderRadius: '6px',
               cursor: 'pointer',
-              color: 'var(--text-secondary)'
+              color: 'var(--text-secondary)',
+              fontWeight: 600
             }}
             title={`Signed in as ${session?.user?.email}`}
           >
