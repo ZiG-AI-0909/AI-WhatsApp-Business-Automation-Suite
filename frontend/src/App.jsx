@@ -1335,41 +1335,40 @@ function App() {
         </div>
       </aside>
 
-      <main className="main-panel">
+      <div className="content-wrapper">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">Good afternoon</p>
-            <h1>{activeView}</h1>
+          <div className={`status-pill ${isConnected ? 'online' : 'offline'}`}>
+            {isConnected ? '🟢 WhatsApp Connected' : '🔴 WhatsApp Offline'}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div className={`status-pill ${isConnected ? 'online' : 'offline'}`}>
-              {isConnected ? '🟢 WhatsApp Connected' : '🔴 WhatsApp Offline'}
-            </div>
-            <button
-              type="button"
-              onClick={handleSignOut}
-              style={{
-                fontSize: '12px',
-                padding: '4px 10px',
-                background: 'var(--surface-subtle)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                color: 'var(--text-secondary)'
-              }}
-              title={`Signed in as ${session?.user?.email}`}
-            >
-              Sign Out
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            style={{
+              fontSize: '12px',
+              padding: '4px 10px',
+              background: 'var(--surface-subtle)',
+              border: '1px solid var(--border)',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              color: 'var(--text-secondary)'
+            }}
+            title={`Signed in as ${session?.user?.email}`}
+          >
+            Sign Out
+          </button>
         </header>
 
-        <div className="backend-status">
-          Backend: <strong>{backendStatus}</strong>
-        </div>
+        <main className="main-panel">
+          <p className="eyebrow">Good afternoon</p>
+          <h1>{activeView}</h1>
 
-        {renderView()}
-      </main>
+          <div className="backend-status">
+            Backend: <strong>{backendStatus}</strong>
+          </div>
+
+          {renderView()}
+        </main>
+      </div>
     </div>
   )
 }

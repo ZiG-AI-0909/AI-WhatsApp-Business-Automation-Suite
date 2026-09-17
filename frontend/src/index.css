@@ -116,16 +116,20 @@ nav {
   border: 1px solid var(--accent-border);
 }
 
+.content-wrapper {
+  min-width: 0;
+}
+
 .main-panel {
-  padding: 28px;
+  padding: 12px 28px 28px;
 }
 
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 28px 0;
 }
 
 .eyebrow {
@@ -163,6 +167,7 @@ h2, h3 {
 }
 
 .backend-status {
+  margin-top: 14px;
   margin-bottom: 18px;
   color: var(--text-secondary);
 }
@@ -527,7 +532,8 @@ td strong { color: var(--text-primary); }
    ───────────────────────────────────────────────────────────── */
 @media (max-width: 767px) {
   .app-shell { display: block; }
-  .main-panel { padding: 16px 14px 28px; }
+  .topbar { padding: 12px 14px 0; }
+  .main-panel { padding: 10px 14px 28px; }
 
   /* Sticky mobile top bar with hamburger */
   .mobile-topbar {
