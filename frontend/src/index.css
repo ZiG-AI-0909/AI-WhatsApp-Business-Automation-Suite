@@ -30,7 +30,7 @@
   --violet-border: #C4B5FD;
   --white: #FFFFFF;
   --shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-  font-family: Inter, 'Segoe UI', sans-serif;
+  font-family: 'Inter', sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: var(--text-primary);
@@ -53,6 +53,15 @@ textarea:focus-visible,
 select:focus-visible {
   outline: 2px solid #0369A1;
   outline-offset: 2px;
+}
+
+/* Text-entry fields also ring on click-focus (not just keyboard),
+   2px primary blue per the design system. */
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid #0369A1;
+  outline-offset: 0;
 }
 
 body {
@@ -84,7 +93,7 @@ button, textarea {
   top: 0;
   overflow-y: auto;
   background: var(--surface-subtle);
-  border-right: 1px solid var(--border-subtle);
+  border-right: 1px solid #E2E8F0;
   padding: 24px 18px;
 }
 
@@ -104,10 +113,11 @@ nav {
 .nav-item {
   border: 0;
   background: transparent;
-  color: var(--text-secondary);
+  color: #64748B; /* Slate 500 — inactive nav */
   text-align: left;
+  min-height: 44px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -118,7 +128,7 @@ nav {
 
 .nav-item.active {
   background: var(--accent-bg);
-  color: var(--text-primary);
+  color: #0369A1;
   border: 1px solid var(--accent-border);
 }
 
@@ -130,7 +140,7 @@ nav {
 }
 
 .main-panel {
-  padding: 12px 28px 28px;
+  padding: 12px 24px 24px;
 }
 
 .topbar {
@@ -138,13 +148,13 @@ nav {
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  padding: 16px 28px 0;
+  padding: 20px 24px 0;
 }
 
 .eyebrow {
   margin: 0 0 6px;
-  /* #026BA1 on white = ~5.8:1 contrast (WCAG AA); var(--accent-hover) #0284C7 was only ~4.1:1 */
-  color: #026BA1;
+  /* #0369A1 on white = ~5.9:1 contrast (WCAG AA) — unified with nav-active and primary-btn */
+  color: #0369A1;
   font-size: 0.82rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -191,7 +201,8 @@ h2, h3 {
 .stat-card {
   padding: 18px;
   border: 1px solid var(--border-subtle);
-  border-radius: 16px;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
   background: var(--surface);
   display: flex;
   flex-direction: column;
@@ -223,7 +234,8 @@ h2, h3 {
 .panel {
   background: var(--surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 18px;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
   padding: 18px;
 }
 
@@ -243,12 +255,15 @@ h2, h3 {
   width: fit-content;
   /* #0369A1 with white text = ~5.9:1 contrast (WCAG AA); var(--accent) #0EA5E9 was only ~2.6:1 */
   background: #0369A1;
-  color: var(--white);
+  color: #FFFFFF;
   border: none;
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 10px 16px;
   cursor: pointer;
+  transition: all 0.2s ease;
 }
+
+.primary-btn:hover:not(:disabled) { background: #075E85; }
 
 .panel-header {
   display: flex;
@@ -326,6 +341,26 @@ h2, h3 {
 }
 
 .lead-dashboard { display: flex; flex-direction: column; gap: 20px; max-width: 1160px; }
+
+/* Mock inbox conversation rows — added for UI-redesign hover consistency.
+   #F1F5F9 on white ≈ 1.2:1 which is fine for a non-text hover surface; text on
+   top keeps its own AA contrast. */
+.mock-conversation {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.mock-conversation:hover { background: #F1F5F9; }
+.mock-conversation.selected { background: var(--accent-bg); }
+.mock-conversation strong { color: var(--text-primary); }
+
+.lead-filters button:hover { background: #F1F5F9; }
 .lead-dashboard-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .lead-dashboard-heading h2 { font-size: clamp(1.45rem, 2vw, 2rem); }
 .follow-up-panel, .lead-queue { background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 18px; padding: 20px; }
@@ -394,7 +429,8 @@ textarea {
 .conversation-row .conversation-item { flex: 1; border-bottom: 0; }
 .conversation-row > .danger-btn { align-self: center; margin-right: 10px; padding: 6px 8px; }
 .conversation-item { display: block; width: 100%; border: 0; border-bottom: 1px solid var(--border-subtle); background: transparent; color: var(--text-secondary); text-align: left; padding: 14px 16px; cursor: pointer; }
-.conversation-item:hover, .conversation-item.selected { background: var(--accent-bg); }
+.conversation-item:hover { background: #F1F5F9; }
+.conversation-item.selected { background: var(--accent-bg); }
 .conversation-item-top { display: flex; justify-content: space-between; gap: 8px; color: var(--text-primary); }
 .conversation-item small, .conversation-item em { display: block; margin-top: 6px; color: var(--text-muted); font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conversation-item em { color: var(--danger-text); font-size: .76rem; }
@@ -440,7 +476,7 @@ textarea {
 .missing-warning { color: var(--warning-text); background: var(--warning-bg); border: 1px solid var(--warning-border); padding: 9px 10px; border-radius: 8px; font-size: .82rem; }
 .check-label { color: var(--text-secondary); font-size: .82rem; display: flex; gap: 8px; align-items: center; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.secondary-btn, .danger-btn, .primary-btn { border-radius: 9px; padding: 9px 12px; cursor: pointer; font-weight: 600; }
+.secondary-btn, .danger-btn, .primary-btn { border-radius: 6px; padding: 9px 12px; cursor: pointer; font-weight: 600; }
 .secondary-btn { border: 1px solid var(--border); background: var(--surface-subtle); color: var(--text-primary); }
 .danger-btn { border: 1px solid var(--danger-border); background: var(--danger-bg); color: var(--danger-text); }
 button:disabled { opacity: .48; cursor: not-allowed; }
