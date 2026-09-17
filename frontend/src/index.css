@@ -44,6 +44,17 @@
 
 * { box-sizing: border-box; }
 
+/* Accessible focus indication for keyboard users (WCAG 2.4.7 / 2.4.11).
+   2px #0369A1 ring with offset, visible against the light app surfaces. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid #0369A1;
+  outline-offset: 2px;
+}
+
 body {
   margin: 0;
   min-width: 320px;

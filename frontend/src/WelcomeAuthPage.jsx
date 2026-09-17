@@ -95,7 +95,7 @@ function PasswordField({ id, label, value, onChange, autoComplete, error, showSt
         <button
           type="button"
           onClick={() => setShow(s => !s)}
-          className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-200 transition-colors focus:outline-none"
+          className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-200 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400"
           aria-label={show ? 'Hide password' : 'Show password'}
         >
           <EyeIcon open={show} />
@@ -652,7 +652,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
                       error={errors.password}
                       showStrength={mode === 'signup'}
                       action={mode === 'signin' && (
-                        <button type="button" onClick={() => switchMode('forgot')} className="text-xs text-emerald-400 hover:text-emerald-300 hover:underline transition-colors focus:outline-none">
+                        <button type="button" onClick={() => switchMode('forgot')} className="text-xs text-emerald-400 hover:text-emerald-300 hover:underline transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
                           Forgot password?
                         </button>
                       )}
@@ -729,14 +729,14 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
                     {mode === 'signin' ? (
                       <>
                         Don't have an account?{' '}
-                        <button type="button" onClick={() => switchMode('signup')} className="font-semibold text-emerald-400 hover:text-emerald-300 hover:underline transition-colors focus:outline-none">
+                        <button type="button" onClick={() => switchMode('signup')} className="font-semibold text-emerald-400 hover:text-emerald-300 hover:underline transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
                           Create account
                         </button>
                       </>
                     ) : (
                       <>
                         Already have an account?{' '}
-                        <button type="button" onClick={() => switchMode('signin')} className="font-semibold text-emerald-400 hover:text-emerald-300 hover:underline transition-colors focus:outline-none">
+                        <button type="button" onClick={() => switchMode('signin')} className="font-semibold text-emerald-400 hover:text-emerald-300 hover:underline transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400">
                           Sign in
                         </button>
                       </>
