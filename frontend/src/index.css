@@ -71,12 +71,18 @@ button, textarea {
 }
 
 .app-shell {
-  display: grid;
-  grid-template-columns: 260px 1fr;
+  display: flex;
+  flex-direction: row;
   min-height: 100vh;
 }
 
 .sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  overflow-y: auto;
   background: var(--surface-subtle);
   border-right: 1px solid var(--border-subtle);
   padding: 24px 18px;
@@ -117,7 +123,10 @@ nav {
 }
 
 .content-wrapper {
+  flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .main-panel {
@@ -497,10 +506,13 @@ td strong { color: var(--text-primary); }
 
 @media (max-width: 920px) {
   .app-shell {
-    grid-template-columns: 1fr;
+    flex-direction: column;
   }
 
   .sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--border-subtle);
   }
