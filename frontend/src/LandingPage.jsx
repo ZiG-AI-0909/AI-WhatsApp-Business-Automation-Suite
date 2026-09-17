@@ -173,7 +173,7 @@ export default function LandingPage({ onSignIn }) {
         <div className="landing-header-inner">
           <div className="landing-brand">
             <LandingLogo />
-            <span>WhatsApp Business Assistant</span>
+            <span>Sudarshan Pipes AI Automation</span>
           </div>
           <nav className="landing-header-nav" aria-label="Page sections">
             {[['how-it-works', 'How it works'], ['features', 'Features'], ['why-ai', 'Why AI replies']].map(([id, label]) => (
@@ -279,7 +279,7 @@ export default function LandingPage({ onSignIn }) {
       </main>
 
       <footer className="landing-footer">
-        <span>© {new Date().getFullYear()} WhatsApp Business Assistant. All rights reserved.</span>
+        <span>© {new Date().getFullYear()} Sudarshan Pipes AI Automation. All rights reserved.</span>
       </footer>
     </div>
   )

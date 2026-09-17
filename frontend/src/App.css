@@ -363,20 +363,20 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   Public landing page (logged-out default route) — same tokens, new
-   standalone layout so it can render without the app shell.
+   Public landing page (logged-out default route) — Sudarshan Pipes
+   industrial brand: navy #1E293B, steel #94A3B8, WhatsApp green #22C55E.
    ═══════════════════════════════════════════════════════════════════ */
 .landing-page {
   min-height: 100vh;
-  background: var(--bg);
+  background: var(--bg-reinforced-steel); /* Reinforced Steel */
   color: var(--text-primary);
 }
 
 .landing-spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid var(--accent-bg);
-  border-top-color: var(--accent);
+  border: 4px solid var(--brand-navy-deep);
+  border-top-color: var(--brand-green);
   border-radius: 999px;
   animation: landing-spin 1s linear infinite;
 }
@@ -386,9 +386,8 @@
   position: sticky;
   top: 0;
   z-index: 30;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--brand-navy); /* deep professional navy */
+  border-bottom: 2px solid var(--brand-navy-deep);
 }
 .landing-header-inner {
   max-width: 1120px;
@@ -398,7 +397,7 @@
   align-items: center;
   gap: 18px;
 }
-.landing-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: .98rem; color: var(--text-primary); min-width: 0; }
+.landing-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: .98rem; color: var(--brand-white); min-width: 0; }
 .landing-logo {
   display: inline-flex;
   align-items: center;
@@ -407,47 +406,53 @@
   height: 34px;
   flex-shrink: 0;
   border-radius: 10px;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
-  color: var(--accent-hover);
+  background: var(--brand-navy-deep);
+  border: 1px solid var(--brand-green);
+  color: var(--brand-green);
 }
 .landing-logo svg { width: 18px; height: 18px; }
 .landing-header-nav { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .landing-header-nav button {
   border: 0;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--brand-steel); /* muted steel icons */
+  min-height: 44px;
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
   font-size: .9rem;
 }
-.landing-header-nav button:hover { background: var(--surface-muted); color: var(--text-primary); }
-.landing-header-nav button.active { background: var(--accent-bg); color: var(--text-primary); font-weight: 600; }
+.landing-header-nav button:hover { background: var(--brand-navy-deep); color: var(--brand-white); }
+.landing-header-nav button.active { background: var(--brand-navy-deep); color: var(--brand-white); font-weight: 600; box-shadow: inset 0 -3px 0 var(--brand-green); }
 
+/* Blue-steel primary button — matches the app's 3D "pressed" .primary-btn */
 .landing-btn-primary {
-  background: var(--accent);
-  color: var(--white);
-  border: none;
-  border-radius: 10px;
+  background: var(--brand-steel-dark); /* #334155 bold blue-steel */
+  color: var(--brand-white);
+  border: 1px solid var(--brand-steel-border);
+  border-bottom: 1px solid #1E293B;
+  border-radius: 8px;
+  min-height: 44px;
   padding: 10px 18px;
   font-weight: 600;
   cursor: pointer;
-  transition: background .2s ease;
+  transition: background .2s ease, transform .1s ease;
 }
-.landing-btn-primary:hover { background: var(--accent-hover); }
+.landing-btn-primary:hover { background: #475569; }
+.landing-btn-primary:active { transform: translateY(1px); }
 .landing-btn-secondary {
   background: var(--surface);
   color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border: 2px solid var(--border-subtle); /* sharp industrial border */
+  border-radius: 8px;
+  min-height: 44px;
   padding: 10px 18px;
   font-weight: 600;
   cursor: pointer;
-  transition: background .2s ease;
+  transition: background .2s ease, border-color .2s ease;
 }
-.landing-btn-secondary:hover { background: var(--surface-muted); }
-.landing-btn-lg { padding: 13px 24px; font-size: 1rem; }
+.landing-btn-secondary:hover { background: var(--surface-muted); border-color: var(--brand-steel); }
+.landing-btn-lg { padding: 12px 24px; font-size: 1rem; min-height: 48px; }
 
 .landing-hero {
   max-width: 880px;
@@ -457,13 +462,13 @@
 }
 .landing-eyebrow {
   display: inline-block;
-  color: var(--accent-hover);
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
+  color: var(--brand-green-text);
+  background: var(--brand-green-bg);
+  border: 1px solid var(--brand-green-border);
   border-radius: 999px;
   padding: 6px 14px;
   font-size: .78rem;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .08em;
 }
@@ -473,7 +478,7 @@
   line-height: 1.12;
   letter-spacing: -0.02em;
 }
-.landing-hero h1 em { font-style: normal; color: var(--accent-hover); }
+.landing-hero h1 em { font-style: normal; color: var(--brand-green-text); }
 .landing-sub {
   margin: 18px auto 0;
   max-width: 640px;
@@ -493,7 +498,7 @@
   color: var(--text-muted);
   font-size: .88rem;
 }
-.landing-hero-points li::before { content: '✓'; color: var(--success); margin-right: 6px; font-weight: 700; }
+.landing-hero-points li::before { content: '✓'; color: var(--brand-green); margin-right: 6px; font-weight: 700; }
 
 .landing-section {
   max-width: 1120px;
@@ -503,8 +508,8 @@
 .landing-section-alt {
   max-width: none;
   background: var(--surface-subtle);
-  border-top: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
+  border-top: 2px solid var(--border-subtle);
+  border-bottom: 2px solid var(--border-subtle);
 }
 .landing-section-alt > .landing-eyebrow,
 .landing-section-alt > h2,
@@ -524,8 +529,8 @@
 .landing-step-card {
   position: relative;
   background: var(--surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
+  border: 2px solid var(--border-subtle); /* sharp 2px industrial border */
+  border-radius: 12px;
   padding: 20px 18px;
 }
 .landing-step-number {
@@ -538,8 +543,9 @@
   width: 26px;
   height: 26px;
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--white);
+  background: var(--brand-navy); /* navy for strength */
+  border: 1px solid var(--brand-green);
+  color: var(--brand-white);
   font-size: .8rem;
   font-weight: 700;
 }
@@ -555,8 +561,8 @@
 }
 .landing-feature-card {
   background: var(--surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
+  border: 2px solid var(--border-subtle);
+  border-radius: 12px;
   padding: 18px;
 }
 .landing-feature-icon { font-size: 1.4rem; line-height: 1; }
@@ -574,8 +580,8 @@
   gap: 14px;
   align-items: flex-start;
   background: var(--surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
+  border: 2px solid var(--border-subtle);
+  border-radius: 12px;
   padding: 18px;
 }
 .landing-why-icon { font-size: 1.4rem; line-height: 1.2; flex-shrink: 0; }
@@ -587,20 +593,23 @@
   margin: 0 auto clamp(40px, 6vw, 72px);
   padding: clamp(28px, 5vw, 48px) 24px;
   text-align: center;
-  background: linear-gradient(135deg, var(--accent-bg), var(--surface) 60%);
-  border: 1px solid var(--accent-border);
-  border-radius: 22px;
+  background: var(--brand-navy);
+  border: 2px solid var(--brand-navy-deep);
+  border-radius: 14px;
 }
-.landing-cta-panel h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 0; }
-.landing-cta-panel p { margin: 12px auto 0; max-width: 520px; color: var(--text-secondary); }
+.landing-cta-panel h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 0; color: var(--brand-white); }
+.landing-cta-panel p { margin: 12px auto 0; max-width: 520px; color: var(--brand-steel); }
 .landing-cta-panel .landing-cta-row { margin-top: 24px; }
+.landing-cta-panel .landing-btn-secondary { background: transparent; color: var(--brand-white); border-color: var(--brand-steel-border); }
+.landing-cta-panel .landing-btn-secondary:hover { background: var(--brand-navy-deep); border-color: var(--brand-white); }
 
 .landing-footer {
-  border-top: 1px solid var(--border-subtle);
+  border-top: 2px solid var(--border-subtle);
   padding: 22px 20px 30px;
   text-align: center;
   color: var(--text-muted);
   font-size: .82rem;
+  background: var(--surface);
 }
 
 /* Landing page responsive breakpoints (match the app's mobile patterns) */
