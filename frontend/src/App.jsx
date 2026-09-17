@@ -1295,10 +1295,10 @@ function App() {
         <span className={`status-pill ${isConnected ? 'online' : 'offline'}`}>{isConnected ? '🟢 Connected' : '🔴 Offline'}</span>
       </header>
       <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />
-      <aside className="sidebar">
+      <aside className="sidebar" role="navigation" aria-label="Sidebar">
         <button type="button" className="drawer-close" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)}><span aria-hidden="true">✕</span></button>
         <div className="brand">Sudarshan Pipes AI Assistant</div>
-        <nav>
+        <nav aria-label="Primary Navigation">
           {navItems.map((item) => (
             <button
               key={item}
