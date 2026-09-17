@@ -1296,7 +1296,7 @@ function App() {
       </header>
       <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />
       <aside className="sidebar">
-        <button type="button" className="drawer-close" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)}>✕</button>
+        <button type="button" className="drawer-close" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)}><span aria-hidden="true">✕</span></button>
         <div className="brand">Sudarshan Pipes AI Assistant</div>
         <nav>
           {navItems.map((item) => (

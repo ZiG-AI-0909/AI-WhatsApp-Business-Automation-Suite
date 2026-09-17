@@ -56,7 +56,7 @@ function Notice({ type, text, onDismiss }) {
       <span className="flex-shrink-0 mt-0.5">{isError ? '⚠️' : '✅'}</span>
       <span className="flex-1 text-xs sm:text-sm leading-relaxed">{text}</span>
       {onDismiss && (
-        <button onClick={onDismiss} className="flex-shrink-0 text-slate-400 hover:text-slate-200 transition-colors" aria-label="Dismiss">✕</button>
+        <button onClick={onDismiss} className="flex-shrink-0 text-slate-400 hover:text-slate-200 transition-colors" aria-label="Dismiss"><span aria-hidden="true">✕</span></button>
       )}
     </div>
   );
