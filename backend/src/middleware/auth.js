@@ -37,11 +37,22 @@ if (AUTH_DISABLED) {
  *
  * Flow:
  *   1. Extract Bearer token from "Authorization: Bearer <token>"
- *   2. Call supabase.auth.getUser(token) — validates against Supabase's JWKS
- *   3. Attach req.user = { id, email, ...metadata } for downstream route handlers
+ *   2. Call supabase.auth.getClaims(token) — verifies the JWT LOCALLY against
+ *      the cached JWKS when the project uses asymmetric signing keys (no
+ *      network round trip), and automatically falls back to the auth server
+ *      for legacy HS256 projects. This keeps the auth server out of the hot
+ *      path: the dashboard fires several authenticated calls on load (status,
+ *      dashboard analytics, conversations, onboarding) plus 10s polls, and
+ *      each one previously paid a full getUser() round trip to Supabase.
+ *   3. Attach req.user = { id, email, role } from the verified claims
  *   4. Call next()
  *
  * On failure: respond with 401 JSON and do not call next().
+ *
+ * Trade-off (documented by Supabase): local verification trusts tokens until
+ * they expire (~1h default); immediate session revocation is only enforced by
+ * the auth server. Sign-out still clears the client token, so this matches
+ * Supabase's recommended backend setup.
  */
 async function requireAuth(req, res, next) {
     // Development bypass — never allow in production
@@ -64,17 +75,19 @@ async function requireAuth(req, res, next) {
     }
     const token = header.slice(7).trim();
 
-    // Validate with Supabase
+    // Validate locally (asymmetric keys) or via the auth server (legacy HS256)
     try {
-        const { data, error } = await supabaseAdmin.auth.getUser(token);
-        if (error || !data?.user) {
+        const { data, error } = await supabaseAdmin.auth.getClaims(token);
+        const claims = data?.claims;
+        if (error || !claims?.sub) {
             return res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
         }
-        // Attach a clean user object — never trust IDs supplied in request bodies
+        // Attach a clean user object — never trust IDs supplied in request bodies.
+        // Claims carry the same identity fields the /user endpoint returned.
         req.user = {
-            id:    data.user.id,
-            email: data.user.email,
-            role:  data.user.role,
+            id:    claims.sub,
+            email: claims.email,
+            role:  claims.role,
         };
         next();
     } catch (err) {

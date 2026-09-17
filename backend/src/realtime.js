@@ -21,8 +21,11 @@ function userRoom(userId) {
 /**
  * Attach per-user room authentication to a Socket.IO server.
  * Clients connect with:  io(url, { auth: { token: '<supabaseJWT>' } })
- * The JWT is validated against Supabase on every connection
- * (not just once) so revoked sessions stop receiving events.
+ * The JWT is validated on every connection (not just once) so revoked
+ * sessions stop receiving events. Verification uses getClaims(), which
+ * checks the signature LOCALLY against the cached JWKS for asymmetric
+ * signing keys (no auth-server round trip) and falls back to the auth
+ * server for legacy HS256 projects — matching middleware/auth.js.
  */
 function attachRealtimeAuth(io) {
     io.use(async (socket, next) => {
@@ -30,12 +33,13 @@ function attachRealtimeAuth(io) {
             const token = socket.handshake.auth?.token || null;
             if (!token || !supabase) return next(new Error('Authentication required'));
 
-            const { data, error } = await supabase.auth.getUser(token);
-            if (error || !data?.user) return next(new Error('Session expired or invalid'));
+            const { data, error } = await supabase.auth.getClaims(token);
+            const claims = data?.claims;
+            if (error || !claims?.sub) return next(new Error('Session expired or invalid'));
 
             // Never trust a client-sent userId — derive it from the JWT.
-            socket.data.userId = data.user.id;
-            socket.join(userRoom(data.user.id));
+            socket.data.userId = claims.sub;
+            socket.join(userRoom(claims.sub));
             next();
         } catch (err) {
             next(new Error('Authentication failed'));
