@@ -1304,6 +1304,7 @@ function App() {
               key={item}
               type="button"
               className={item === activeView ? 'nav-item active' : 'nav-item'}
+              aria-current={item === activeView ? 'page' : undefined}
               onClick={() => selectView(item)}
             >
               {item}

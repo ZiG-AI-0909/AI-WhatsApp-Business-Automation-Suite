@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +126,38 @@ export default function LandingPage({ onSignIn }) {
     return () => { cancelled = true }
   }, [onSignIn])
 
+  // Scroll-spy: track which landing section is currently in view so the
+  // header nav can expose the active section to assistive tech via aria-current.
+  const [activeSection, setActiveSection] = useState('')
+  const visibleSectionsRef = useRef(new Set())
+
+  useEffect(() => {
+    if (checking) return undefined
+    const sections = ['how-it-works', 'features', 'why-ai']
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+    if (!sections.length) return undefined
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) visibleSectionsRef.current.add(entry.target.id)
+          else visibleSectionsRef.current.delete(entry.target.id)
+        })
+        // Active section = first section currently intersecting the viewport,
+        // in document order; empty string when none are visible.
+        const current = sections.find((section) => visibleSectionsRef.current.has(section.id))
+        setActiveSection(current ? current.id : '')
+      },
+      { rootMargin: '-45% 0px -45% 0px' }
+    )
+    sections.forEach((section) => observer.observe(section))
+    return () => {
+      observer.disconnect()
+      visibleSectionsRef.current = new Set()
+    }
+  }, [checking])
+
   if (checking) {
     return (
       <div className="landing-page" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
@@ -144,9 +176,17 @@ export default function LandingPage({ onSignIn }) {
             <span>WhatsApp Business Assistant</span>
           </div>
           <nav className="landing-header-nav" aria-label="Page sections">
-            <button type="button" onClick={scrollToSection('how-it-works')}>How it works</button>
-            <button type="button" onClick={scrollToSection('features')}>Features</button>
-            <button type="button" onClick={scrollToSection('why-ai')}>Why AI replies</button>
+            {[['how-it-works', 'How it works'], ['features', 'Features'], ['why-ai', 'Why AI replies']].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={activeSection === id ? 'active' : ''}
+                aria-current={activeSection === id ? 'true' : undefined}
+                onClick={scrollToSection(id)}
+              >
+                {label}
+              </button>
+            ))}
           </nav>
           <button type="button" className="landing-btn-primary" onClick={onSignIn}>Sign In</button>
         </div>

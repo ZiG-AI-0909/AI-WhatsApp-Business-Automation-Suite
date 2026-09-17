@@ -423,6 +423,7 @@
   font-size: .9rem;
 }
 .landing-header-nav button:hover { background: var(--surface-muted); color: var(--text-primary); }
+.landing-header-nav button.active { background: var(--accent-bg); color: var(--text-primary); font-weight: 600; }
 
 .landing-btn-primary {
   background: var(--accent);
