@@ -170,7 +170,7 @@ export default function DocumentIntelView() {
         <form className="form-stack" onSubmit={process}>
           <label className="upload-dropzone">
             {file ? file.name : 'Choose an XLSX, DOCX, PDF, TXT, or CSV document'}
-            <small>Text-based documents only — scanned image-only PDFs have no text layer to read.</small>
+            <small>Scanned/image-only PDFs are now supported (OCR, up to 20 pages per upload) — text-based files are still fastest.</small>
             <input type="file" accept=".xlsx,.docx,.pdf,.txt,.csv,.md" onChange={(event) => setFile(event.target.files?.[0] || null)} />
           </label>
           <div className="button-row">

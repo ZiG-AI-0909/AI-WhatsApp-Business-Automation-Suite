@@ -202,18 +202,13 @@ async function extractWithNvidia(file) {
   const imageUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
   const requestConfig = { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json', 'Content-Type': 'application/json' }, timeout: 90000 };
 
-  const ocrUrl = process.env.NVIDIA_OCR_URL || 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1';
-  const ocrEndpoint = process.env.NVIDIA_OCR_ENDPOINT || (ocrUrl.includes('localhost') || ocrUrl.includes('127.0.0.1') ? `${ocrUrl}/infer` : ocrUrl);
+  // OCR is best-effort here: when the Nemotron endpoint is down we fall
+  // through to the vision model, which reads the image directly. The OCR
+  // call itself lives in ai/ocrService.js (shared with BOQ scanned-PDF OCR).
   let rawText = '';
   try {
-    const ocrResponse = await axios.post(ocrEndpoint, {
-      input: [{ type: 'image_url', url: imageUrl }],
-    }, requestConfig);
-    const ocr = ocrResponse.data || {};
-    const ocrTexts = ocr.ocr_txts || ocr.texts || ocr.text || ocr.extracted_text || [];
-    rawText = Array.isArray(ocrTexts)
-      ? ocrTexts.map(item => typeof item === 'string' ? item : item?.text || item?.parsed_text || '').filter(Boolean).join('\n')
-      : String(ocrTexts || '');
+    const { ocrImage } = require('../ai/ocrService');
+    rawText = await ocrImage(file.buffer, { mimeType: file.mimetype, timeoutMs: 90000 });
   } catch (error) {
     console.warn(`Nemotron OCR unavailable: ${error.response?.status || error.message}`);
   }

@@ -78,6 +78,42 @@ function stringifyCell(value) {
     return String(value);
 }
 
+// ─── Junk-text detection (scanned-PDF guard) ─────────────────
+// pdf-parse never returns '' for a page-image-only PDF: the page
+// separators alone ("\n\n-- 1 of 20 --\n\n-- 2 of 20 --") are "non-empty",
+// which let marker-only extractions sail past the old !text.trim() guard
+// and silently produce 0 items. A real document's text layer is mostly
+// alphanumeric; a separator-only one is mostly punctuation/digits of the
+// markers themselves.
+const JUNK_MIN_ALNUM_RATIO = Number(process.env.BOQ_MIN_ALNUM_RATIO || 0.2);
+// Distinct 2+ letter words required to consider text a real document.
+const JUNK_MIN_ALPHA_WORDS = 4;
+
+/**
+ * Decide whether extracted text is junk — marker/separator output rather
+ * than a document. Two signals (a real document trips neither):
+ *   1. Content-free or symbol-heavy: no letters at all, or alphanumeric
+ *      characters make up too small a share of the non-space text.
+ *   2. Word-starved: fewer than a handful of DISTINCT alphabetic words.
+ *      This is what actually catches "-- 1 of 20 --" separator runs:
+ *      digits and dashes beat a raw ratio check ("of" is alnum), but the
+ *      only letter-word on 20 pages of markers is "of" — a real BOQ has
+ *      dozens (description, specification, quantity, unit, pipe…).
+ */
+function looksLikeJunkText(text) {
+    const value = String(text || '');
+    if (!value.trim()) return true;
+    if (!/[a-zA-Z]/.test(value)) return true; // digits+punctuation only → markers, not words
+    const chars = value.replace(/\s+/g, '');
+    if (!chars.length) return true;
+    const alnum = (value.match(/[a-zA-Z0-9]/g) || []).length;
+    if ((alnum / chars.length) < JUNK_MIN_ALNUM_RATIO) return true;
+    const distinctWords = new Set(
+        (value.match(/[a-zA-Z]{2,}/g) || []).map((w) => w.toLowerCase())
+    );
+    return distinctWords.size < JUNK_MIN_ALPHA_WORDS;
+}
+
 // ─── AI extraction ────────────────────────────────────────────
 
 function buildExtractionPrompt(documentText) {
@@ -269,6 +305,7 @@ function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
 
 module.exports = {
     ITEM_SCHEMA_KEYS,
+    looksLikeJunkText,
     CHUNK_MAX_CHARS,
     splitIntoChunks,
     extractText,

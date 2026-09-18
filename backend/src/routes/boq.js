@@ -65,6 +65,9 @@ const BOQ_AI_MAX_CALL_MS = Math.max(
 );
 const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS)
     || Math.max(1, Math.floor(BOQ_TOTAL_BUDGET_MS / BOQ_AI_MIN_CALL_MS));
+// OCR page cap (scanned PDFs): enforced inside documents/pdfOcr.js — kept
+// visible here for the logging line. BOQ_OCR_MAX_PAGES is the env knob.
+const BOQ_OCR_MAX_PAGES = Number(process.env.BOQ_OCR_MAX_PAGES || 20);
 
 // Host of a base URL for LOGGING ONLY — never the key, never the full URL
 // when it could carry credentials.
@@ -223,13 +226,38 @@ router.post('/process', upload.single('file'), async (req, res) => {
     console.log(`[boq:${userId}] process START: "${req.file.originalname}" (${req.file.size} bytes, ${ext})`);
     try {
         const textStart = Date.now();
-        const documentText = await boqExtractor.extractText(req.file.buffer, ext);
+        let documentText = await boqExtractor.extractText(req.file.buffer, ext);
         const lineCount = documentText.split('\n').filter((l) => l.trim()).length;
         console.log(`[boq:${userId}] text extraction done in ${Date.now() - textStart}ms: ${documentText.length} chars / ${lineCount} non-empty lines`);
 
-        if (!documentText.trim()) {
-            console.log(`[boq:${userId}] rejected: no readable text (scanned/image-only document?)`);
-            return res.status(400).json({ error: 'No readable text found in this document. Scanned/image-only PDFs are not supported — try the original Excel or Word file.' });
+        // Junk-text guard: a scanned/image-only PDF still yields "text" from
+        // pdf-parse — the page separators alone ("-- 1 of 20 --") are
+        // non-empty — so emptiness is not the test. If what came out is
+        // marker-only junk AND this is a PDF, run the OCR pipeline (render
+        // pages → NVIDIA Nemotron OCR → concatenated text) and continue with
+        // that instead. Non-PDF junk is still a clear rejection.
+        if (boqExtractor.looksLikeJunkText(documentText)) {
+            console.log(`[boq:${userId}] junk text detected (${documentText.trim().length} chars, alnum-starved) — scanned/image-only document?`);
+            if (ext !== '.pdf') {
+                console.log(`[boq:${userId}] rejected: no readable text in a non-PDF document`);
+                return res.status(400).json({ error: 'No readable text found in this document. If it is a scan or photo, upload it as a PDF — scanned PDFs are read with OCR.' });
+            }
+            const ocrStart = Date.now();
+            try {
+                const ocr = await require('../documents/pdfOcr').ocrScannedPdf(req.file.buffer, userId);
+                documentText = ocr.text;
+                console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages)`);
+            } catch (ocrError) {
+                const status = ocrError.statusCode || 502;
+                console.error(`[boq:${userId}] OCR fallback FAILED after ${Date.now() - ocrStart}ms (HTTP ${status}): ${ocrError.message}`);
+                return res.status(status).json({ error: ocrError.message });
+            }
+            // OCR text gets the same junk check: an all-failed-pages run must
+            // not hand the AI an empty string and silently extract 0 items.
+            if (boqExtractor.looksLikeJunkText(documentText)) {
+                console.log(`[boq:${userId}] rejected: OCR produced no readable text either`);
+                return res.status(422).json({ error: 'This scanned PDF could not be read even with OCR — the pages may be blank, handwritten, or too low-quality. Try the original Excel or Word file.' });
+            }
         }
         if (documentText.length > 60000) {
             console.log(`[boq:${userId}] rejected: document too large (${documentText.length} chars > 60000)`);
