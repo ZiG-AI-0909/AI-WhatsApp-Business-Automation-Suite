@@ -48,10 +48,13 @@ async function loadUserSettings(userId) {
 
 // ─── ONE wall-time budget, shared with the frontend ──────────
 // The browser allows /boq/process 110s (frontend/src/api.js — the two
-// budgets must move together). The server's AI phase is capped at 90s so
-// the server always answers FIRST with a precise error instead of the
-// browser's generic timeout: 90s AI + text extraction + DB insert stays
-// well inside 110s and inside the hosting proxy's idle timeout.
+// budgets must move together). The WHOLE server pipeline — text
+// extraction, OCR (parallel batches sharing this same deadline) and
+// every AI chunk — is capped at 90s, so the server always answers FIRST
+// with a precise error instead of the browser's generic timeout. Render
+// itself allows responses up to 100 minutes (verified 2026-09 in Render's
+// docs — no short platform proxy ceiling), so 90/110 is our own UX
+// pairing, not a platform constraint.
 const BOQ_TOTAL_BUDGET_MS = Number(process.env.BOQ_TOTAL_BUDGET_MS || 90000);
 // Per-call FLOOR: the smallest per-attempt timeout that is still useful.
 // It also derives the default chunk cap (budget ÷ floor) so the cap and
@@ -244,13 +247,27 @@ router.post('/process', upload.single('file'), async (req, res) => {
             }
             const ocrStart = Date.now();
             try {
-                const ocr = await require('../documents/pdfOcr').ocrScannedPdf(req.file.buffer, userId);
+                // deadlineMs = startedAt + BOQ_TOTAL_BUDGET_MS: the OCR phase
+                // shares the SAME wall budget as the AI phase — parallel OCR
+                // batches inside pdfOcr.js respect this deadline (per-batch
+                // timeouts clamp to what is left, with a reserve for AI), so
+                // a slow scan answers INSIDE the request instead of letting
+                // the browser's 110s timeout fire first.
+                const ocr = await require('../documents/pdfOcr').ocrScannedPdf(req.file.buffer, userId, {
+                    deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS,
+                });
                 documentText = ocr.text;
-                console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages)`);
+                console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages, ${ocr.failedPages.length} failed page(s))`);
             } catch (ocrError) {
                 const status = ocrError.statusCode || 502;
                 console.error(`[boq:${userId}] OCR fallback FAILED after ${Date.now() - ocrStart}ms (HTTP ${status}): ${ocrError.message}`);
-                return res.status(status).json({ error: ocrError.message });
+                // Forward retry/stage hints (deadline timeouts are usually
+                // transient) so the UI can offer a Retry button instead of
+                // a generic failure.
+                const body = { error: ocrError.message };
+                if (typeof ocrError.retryable === 'boolean') body.retryable = ocrError.retryable;
+                if (ocrError.extraction?.stage) body.stage = ocrError.extraction.stage;
+                return res.status(status).json(body);
             }
             // OCR text gets the same junk check: an all-failed-pages run must
             // not hand the AI an empty string and silently extract 0 items.

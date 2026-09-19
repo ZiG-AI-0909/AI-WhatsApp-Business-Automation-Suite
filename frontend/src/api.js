@@ -49,13 +49,14 @@ async function authHeader() {
 // that covers every chunk + retry. Keep the two values mirrored as one budget:
 // client = server + ≥15s margin so the server's precise 504/502 always wins
 // over the browser's generic abort. NOTE: scanned PDFs add an OCR phase
-// (render + NVIDIA OCR per page, default cap 20 pages) on the SAME 90s wall
-// budget — near the cap (19-20 pages) the server may answer with its precise
-// 504 inside the budget rather than finish; larger scans are rejected up
-// front (413) before OCR starts.
+// (render + NVIDIA OCR, 5 pages OCR'd in parallel, default cap 20 pages) on
+// the SAME 90s wall budget — OCR batches respect that deadline, so the server
+// answers inside this window with either the result or a precise retryable
+// 504 rather than hanging; larger scans are rejected up front (413) before
+// OCR starts.
 const REQUEST_TIMEOUT_MS = 30000
 const ENDPOINT_TIMEOUT_MS = {
-  '/boq/process': 110000, // server AI wall budget is 90s (BOQ_TOTAL_BUDGET_MS) + parsing/OCR/db + margin
+  '/boq/process': 110000, // server wall budget is 90s (BOQ_TOTAL_BUDGET_MS) — covers parsing + parallel OCR + every AI chunk + margin
 }
 
 function timeoutSignal(ms) {

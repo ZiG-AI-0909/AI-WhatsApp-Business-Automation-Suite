@@ -13,6 +13,24 @@
 // prebuilt @napi-rs/canvas binaries) — no Ghostscript/Poppler/
 // ImageMagick, nothing to compile, so it installs and runs on
 // Render's native Node runtime with plain `npm install`.
+//
+// CONCURRENCY (2026-09 timeout fix): pages used to OCR strictly
+// sequentially, so a real 19-page government tender spent
+// 19 × per-page latency on the wall clock and blew through both
+// the server's 90s budget and the frontend's 110s client timeout.
+// Per-page latency is dominated by the NVIDIA round trip, so pages
+// now run CONCURRENTLY in bounded batches (default 5). Worst-case
+// OCR wall time drops from N × latency to ceil(N/5) × latency
+// (~5 batches for 19 pages instead of 19 sequential calls).
+//
+// DEADLINE: the whole OCR phase shares the request's wall-clock
+// budget (startedAt + BOQ_TOTAL_BUDGET_MS, passed in as deadlineMs
+// by routes/boq.js). Rendering plus every page batch must finish inside it — with a hard reserve left for the AI
+// phase that consumes the OCR text. Page-cap and text checks fire
+// synchronously BEFORE any OCR spend, so an over-cap PDF still
+// rejects instantly; once OCR starts it is allowed to run to its
+// bounded conclusion (the browser already has its timeout) and
+// the page-level timeout shrinks to respect the deadline.
 // =============================================================
 const BOQ_LOGGER_TAG = 'boq';
 
@@ -23,21 +41,70 @@ const OCR_MAX_PAGES = Number(process.env.BOQ_OCR_MAX_PAGES || 20);
 // Render scale: 2x of a ~595pt-wide A4 page ≈ 1190px — comfortably
 // readable for 8-10pt table text without ballooning upload size.
 const OCR_RENDER_SCALE = Number(process.env.BOQ_OCR_SCALE || 2);
-// Per-page OCR timeout. One slow page must not eat the whole budget.
+// Per-page OCR timeout CEILING. One slow page must not eat the whole
+// budget — but under concurrency a batch waits for its slowest member,
+// so this is a per-ATTEMPT ceiling, clamped down to fit the deadline
+// (see ocrBudget below). The request-level budget governs the phase.
 const OCR_PER_PAGE_TIMEOUT_MS = Number(process.env.BOQ_OCR_PAGE_TIMEOUT_MS || 30000);
+// Pages OCR'd simultaneously (the provider-permissioned batch size).
+// Bounded — never all 19 at once — to stay inside NVIDIA rate limits
+// and avoid throttling/free-tier CPU contention. 5 turns the real
+// 19-page tender into 5 wait-for-slowest batches.
+const OCR_CONCURRENCY = Math.max(1, Number(process.env.BOQ_OCR_CONCURRENCY || 5));
+// Share of the wall budget reserved for the AI extraction phase that
+// runs AFTER OCR (plus parse/db overhead). With OCR + AI sharing ONE
+// budget, OCR may consume at most ~40% of the wall clock.
+const OCR_BUDGET_SHARE = Math.min(0.9, Math.max(0.1, Number(process.env.BOQ_OCR_BUDGET_SHARE || 0.4)));
 
 function ocrConfig() {
-    return { OCR_MAX_PAGES, OCR_RENDER_SCALE, OCR_PER_PAGE_TIMEOUT_MS };
+    return { OCR_MAX_PAGES, OCR_RENDER_SCALE, OCR_PER_PAGE_TIMEOUT_MS, OCR_CONCURRENCY, OCR_BUDGET_SHARE };
+}
+
+// How much wall-clock time OCR may spend: the remaining budget up to
+// this point (startedAt → now) minus the AI reserve, with a floor of
+// 2s so a pathologically slow start still gets one attempt per page.
+function ocrBudget(deadlineMs, startedAt) {
+    if (!deadlineMs) return Number.POSITIVE_INFINITY;
+    const elapsed = Date.now() - startedAt;
+    return Math.max(2000, Math.floor((deadlineMs - Date.now()) * OCR_BUDGET_SHARE - elapsed));
 }
 
 /**
- * OCR a scanned PDF: render every page to PNG, OCR each page, and
- * return the concatenated text (page breaks between pages).
- * Returns { text, ocrUsed, failedPages, totalMs }.
+ * OCR one page with a per-attempt timeout that fits the remaining
+ * budget. Always resolves (never throws) so one bad page can never
+ * sink the document — returns { text, failed } and keeps its slot in
+ * the result array, preserving page order under concurrency.
+ */
+async function ocrOnePage(ocrImage, page, perPageMs, userId, pageCount) {
+    const pageStart = Date.now();
+    try {
+        const text = await ocrImage(Buffer.from(page.data), {
+            mimeType: 'image/png',
+            timeoutMs: perPageMs,
+        });
+        const chars = (text || '').trim().length;
+        console.log(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} ok in ${Date.now() - pageStart}ms (${chars} chars)`);
+        return { text: text || '', failed: false };
+    } catch (error) {
+        // One unreadable/failed page must not sink the document:
+        // concatenate what we got and let the AI see partial text.
+        console.error(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} FAILED after ${Date.now() - pageStart}ms: ${error.message}`);
+        return { text: '', failed: true };
+    }
+}
+
+/**
+ * OCR a scanned PDF: render every page to PNG, OCR pages in bounded
+ * parallel batches, and return the concatenated text (page breaks
+ * between pages, always in page order).
+ * Returns { text, ocrUsed, failedPages, totalMs, pageCount }.
  * @param {Buffer} pdfBuffer the uploaded PDF bytes.
  * @param {number} userId for [boq:userId] logging only.
+ * @param {object} [options]
+ * @param {number} [options.deadlineMs] wall-clock deadline (epoch ms) shared
+ *   with the AI phase — from startedAt + BOQ_TOTAL_BUDGET_MS in boq.js.
  */
-async function ocrScannedPdf(pdfBuffer, userId) {
+async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
     const startedAt = Date.now();
     const { PDFParse } = require('pdf-parse');
     const { ocrImage } = require('../ai/ocrService');
@@ -55,34 +122,52 @@ async function ocrScannedPdf(pdfBuffer, userId) {
         }
         if (!pageCount) throw new Error('This PDF has no readable pages.');
 
-        console.log(`[boq:${userId}] OCR mode: ${pageCount} page(s) to render + OCR (max ${OCR_MAX_PAGES}, scale ${OCR_RENDER_SCALE})`);
+        const budgetMs = ocrBudget(deadlineMs, startedAt);
+        const budgetLabel = Number.isFinite(budgetMs) ? `ocr share ~${Math.round(budgetMs / 1000)}s` : 'no shared deadline';
+        console.log(`[boq:${userId}] OCR mode: ${pageCount} page(s) to render + OCR (max ${OCR_MAX_PAGES}, scale ${OCR_RENDER_SCALE}, ${OCR_CONCURRENCY} at a time, ${budgetLabel})`);
         const screenshots = await parser.getScreenshot({ first: pageCount, scale: OCR_RENDER_SCALE, imageBuffer: true });
         const pages = screenshots.pages || [];
 
         const ocrStart = Date.now();
-        const pageTexts = [];
+        // Results pre-seeded per page index: concurrent batches fill their
+        // own slots, so the final join is ALWAYS in page order regardless
+        // of which batch finishes first.
+        const pageTexts = new Array(pages.length).fill('');
         const failedPages = [];
-        for (const page of pages) {
-            const pageStart = Date.now();
-            try {
-                const text = await ocrImage(Buffer.from(page.data), {
-                    mimeType: 'image/png',
-                    timeoutMs: OCR_PER_PAGE_TIMEOUT_MS,
-                });
-                pageTexts.push(text || '');
-                const chars = (text || '').trim().length;
-                console.log(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} ok in ${Date.now() - pageStart}ms (${chars} chars)`);
-            } catch (error) {
-                // One unreadable/failed page must not sink the document:
-                // concatenate what we got and let the AI see partial text.
-                failedPages.push(page.pageNumber);
-                pageTexts.push('');
-                console.error(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} FAILED after ${Date.now() - pageStart}ms: ${error.message}`);
-            }
+        // Per-attempt timeout: the 30s ceiling clamped to what the shared
+        // deadline can still absorb for the CURRENT batch. Floor 2s keeps
+        // a pathological start from degenerating into instant 0ms aborts.
+        const attemptCeiling = Math.max(2000, Math.min(
+            OCR_PER_PAGE_TIMEOUT_MS,
+            Number.isFinite(budgetMs) ? budgetMs : OCR_PER_PAGE_TIMEOUT_MS
+        ));
+
+        for (let batchStart = 0; batchStart < pages.length; batchStart += OCR_CONCURRENCY) {
+            const batch = pages.slice(batchStart, batchStart + OCR_CONCURRENCY);
+            // Re-clamp per batch: earlier batches' spend shrinks what this
+            // one may still use, so one slow render can't starve the AI
+            // phase of its reserve.
+            const remaining = Math.max(2000, Math.min(
+                attemptCeiling,
+                Number.isFinite(budgetMs) ? budgetMs - (Date.now() - ocrStart) : OCR_PER_PAGE_TIMEOUT_MS
+            ));
+            const results = await Promise.all(batch.map((page) => ocrOnePage(
+                ocrImage,
+                page,
+                remaining,
+                userId,
+                pageCount
+            )));
+            // Slot = absolute batch position, NOT pageNumber: order must
+            // survive regardless of what pageNumber the renderer reports.
+            results.forEach((result, idx) => {
+                pageTexts[batchStart + idx] = result.text;
+                if (result.failed) failedPages.push(batch[idx].pageNumber);
+            });
         }
         const totalMs = Date.now() - startedAt;
         const text = pageTexts.join('\n');
-        console.log(`[boq:${userId}] OCR done in ${totalMs}ms: ${pageCount - failedPages.length}/${pageCount} page(s) succeeded, ${text.trim().length} chars total (OCR phase ${Date.now() - ocrStart}ms)${failedPages.length ? ` — failed pages: ${failedPages.join(', ')}` : ''}`);
+        console.log(`[boq:${userId}] OCR done in ${totalMs}ms: ${pageCount - failedPages.length}/${pageCount} page(s) succeeded, ${text.trim().length} chars total (OCR phase ${Date.now() - ocrStart}ms, batches of ${OCR_CONCURRENCY})${failedPages.length ? ` — failed pages: ${failedPages.join(', ')}` : ''}`);
         return { text, ocrUsed: true, failedPages, totalMs, pageCount };
     } catch (error) {
         // The cap error (413) is already user-facing — pass it through.
