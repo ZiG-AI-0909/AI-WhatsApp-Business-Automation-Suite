@@ -153,8 +153,21 @@ axios.post = async (url, body) => {
     const page = ocrCalls.length;
     const value = ocrPageTexts[page - 1];
     if (value instanceof Error) throw value;
+    // The REAL hosted NVIDIA OCR shape (docs.nvidia.com NIM Image OCR):
+    // data[].text_detections[].text_prediction.text — one detection per
+    // text line. (The old stub answered the undocumented ocr_txts shape,
+    // which is precisely the mismatch that zeroed real OCR output.)
+    const text = typeof value === 'string' ? value : value?.text || '';
     return {
-        data: { ocr_txts: [typeof value === 'string' ? value : value?.text || ''] },
+        data: {
+            data: [{
+                index: 0,
+                text_detections: text.split('\n').filter((line) => line.trim()).map((line, i) => ({
+                    text_prediction: { text: line, confidence: 0.95 },
+                    bounding_box: { points: [{ x: 0.05, y: 0.05 + i * 0.05 }, { x: 0.9, y: 0.05 + i * 0.05 }, { x: 0.9, y: 0.09 + i * 0.05 }, { x: 0.05, y: 0.09 + i * 0.05 }] },
+                })),
+            }],
+        },
     };
 };
 
