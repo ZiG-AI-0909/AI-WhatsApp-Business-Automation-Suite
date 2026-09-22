@@ -81,6 +81,11 @@ async function ocrOnePage(ocrImage, page, perPageMs, userId, pageCount) {
         const text = await ocrImage(Buffer.from(page.data), {
             mimeType: 'image/png',
             timeoutMs: perPageMs,
+            // TEMP DIAGNOSTIC (remove after live verify): tags ocrService's
+            // "[ocr-diag:…] HTTP + top-level keys" line with THIS page number,
+            // so per-page status/keys/char-count evidence is attributable
+            // even with 5 pages interleaved in the logs.
+            logLabel: `boq-page-${page.pageNumber}`,
         });
         const chars = (text || '').trim().length;
         console.log(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} ok in ${Date.now() - pageStart}ms (${chars} chars)`);

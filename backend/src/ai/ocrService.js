@@ -50,11 +50,28 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
     const ocrEndpoint = process.env.NVIDIA_OCR_ENDPOINT
         || (ocrUrl.includes('localhost') || ocrUrl.includes('127.0.0.1') ? `${ocrUrl}/infer` : ocrUrl);
 
-    const response = await axios.post(ocrEndpoint, {
-        input: [{ type: 'image_url', url: imageUrl }],
-    }, requestConfig);
+    let response;
+    try {
+        response = await axios.post(ocrEndpoint, {
+            input: [{ type: 'image_url', url: imageUrl }],
+        }, requestConfig);
+    } catch (error) {
+        // TEMP DIAGNOSTIC (remove after live verify): surface the provider's
+        // error body for non-2xx responses (rate limits, auth, payload
+        // rejections) instead of just axios's status-code message.
+        if (process.env.BOQ_OCR_DIAG_DUMP === '1') {
+            console.warn(`[ocr-diag:${logLabel}] HTTP ${error.response?.status ?? 'no response'} error — RAW body (first 2000 chars): ${String(JSON.stringify(error.response?.data ?? null)).slice(0, 2000)}`);
+        }
+        throw error;
+    }
 
     const ocr = response.data || {};
+
+    // TEMP DIAGNOSTIC (live-verify 2026-09, remove after the real-upload
+    // check): HTTP status + the RAW response's top-level keys for every
+    // call. logLabel carries the page number on the BOQ path, so this line
+    // pairs with pdfOcr's "[boq:…] OCR page N/M ok … (X chars)" line.
+    console.log(`[ocr-diag:${logLabel}] HTTP ${response.status} | raw response top-level keys: ${Object.keys(ocr).join(', ') || '(none)'}`);
 
     // Canonical hosted-endpoint schema: one entry per input image, each
     // with text_detections[].text_prediction.text. Detections arrive
@@ -99,6 +116,12 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
             // recognize must NEVER parse to a quiet ''. Say so, loudly.
             console.warn(`[ocr:${logLabel}] unrecognized NVIDIA OCR response shape — top-level keys: ${Object.keys(ocr).join(', ') || '(none)'}`);
         }
+    }
+    // TEMP DIAGNOSTIC (remove after live verify): a 200 response that
+    // parses to 0 chars must be diagnosable from Render logs alone —
+    // dump the raw body (first 2000 chars) when BOQ_OCR_DIAG_DUMP=1.
+    if (!text.trim() && process.env.BOQ_OCR_DIAG_DUMP === '1') {
+        console.warn(`[ocr-diag:${logLabel}] parsed 0 chars — RAW response body (first 2000 chars): ${String(JSON.stringify(ocr)).slice(0, 2000)}`);
     }
     return text;
 }
