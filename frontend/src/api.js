@@ -45,18 +45,18 @@ async function authHeader() {
 
 // Long-running AI endpoints get their own budget instead of hanging until
 // the browser/server gives up. Server-side counterpart for '/boq/process' is
-// ONE wall budget, BOQ_TOTAL_BUDGET_MS (default 90s, backend/src/routes/boq.js)
-// that covers every chunk + retry. Keep the two values mirrored as one budget:
-// client = server + ≥15s margin so the server's precise 504/502 always wins
-// over the browser's generic abort. NOTE: scanned PDFs add an OCR phase
-// (render + NVIDIA OCR, 5 pages OCR'd in parallel, default cap 20 pages) on
-// the SAME 90s wall budget — OCR batches respect that deadline, so the server
-// answers inside this window with either the result or a precise retryable
-// 504 rather than hanging; larger scans are rejected up front (413) before
-// OCR starts.
+// ONE wall budget, BOQ_TOTAL_BUDGET_MS (default 150s, backend/src/routes/boq.js)
+// that covers render + OCR + every AI chunk + retry. Keep the two values
+// mirrored as one budget: client = server + ≥15s margin so the server's
+// precise 504/502 always wins over the browser's generic abort. NOTE:
+// scanned PDFs add an OCR phase (pdfjs render of every page + NVIDIA OCR in
+// parallel batches, default cap 20 pages) on the SAME wall budget — the
+// server answers inside this window with either the result or a precise
+// retryable 504 rather than hanging; larger scans are rejected up front
+// (413) before OCR starts.
 const REQUEST_TIMEOUT_MS = 30000
 const ENDPOINT_TIMEOUT_MS = {
-  '/boq/process': 110000, // server wall budget is 90s (BOQ_TOTAL_BUDGET_MS) — covers parsing + parallel OCR + every AI chunk + margin
+  '/boq/process': 180000, // server wall budget is 150s (BOQ_TOTAL_BUDGET_MS) — covers parsing + page rendering + parallel OCR + every AI chunk + margin
 }
 
 function timeoutSignal(ms) {

@@ -25,12 +25,16 @@
 //
 // DEADLINE: the whole OCR phase shares the request's wall-clock
 // budget (startedAt + BOQ_TOTAL_BUDGET_MS, passed in as deadlineMs
-// by routes/boq.js). Rendering plus every page batch must finish inside it — with a hard reserve left for the AI
-// phase that consumes the OCR text. Page-cap and text checks fire
-// synchronously BEFORE any OCR spend, so an over-cap PDF still
-// rejects instantly; once OCR starts it is allowed to run to its
-// bounded conclusion (the browser already has its timeout) and
-// the page-level timeout shrinks to respect the deadline.
+// by routes/boq.js). Page-cap and text checks fire synchronously
+// BEFORE any OCR spend, so an over-cap PDF still rejects instantly.
+// The render step is CPU-bound (pdfjs+canvas) and not clampable — on a
+// Render free-tier box it took ~80-90s for the real 19-page tender, which
+// is why the total budget was sized up to 150s (routes/boq.js). NVIDIA
+// batches still clamp their per-attempt time to what remains, and a
+// batch that cannot start before the deadline is SKIPPED (an attempt
+// that can only fail at its timeout would waste the same wall time and
+// log a fake success). If OCR legitimately eats the whole budget, the
+// route fails fast with an honest 504 (see boq.js budget guard).
 // =============================================================
 const BOQ_LOGGER_TAG = 'boq';
 
@@ -51,9 +55,14 @@ const OCR_PER_PAGE_TIMEOUT_MS = Number(process.env.BOQ_OCR_PAGE_TIMEOUT_MS || 30
 // and avoid throttling/free-tier CPU contention. 5 turns the real
 // 19-page tender into 5 wait-for-slowest batches.
 const OCR_CONCURRENCY = Math.max(1, Number(process.env.BOQ_OCR_CONCURRENCY || 5));
-// Share of the wall budget reserved for the AI extraction phase that
-// runs AFTER OCR (plus parse/db overhead). With OCR + AI sharing ONE
-// budget, OCR may consume at most ~40% of the wall clock.
+// Share of the remaining phase budget that sizes the per-NVIDIA-call
+// ceiling: a batch of 5 waits for its slowest member, so one attempt may
+// not eat everything that remains. (Historical note: this was described
+// as an "AI-phase reserve", but real free-tier logs showed the CPU-bound
+// render step consuming 80-90s regardless — a multiplier on remaining
+// time cannot reserve wall clock for AI. The honest AI protection is the
+// route-level budget guard in boq.js, which fails fast after OCR when
+// nothing is left.)
 const OCR_BUDGET_SHARE = Math.min(0.9, Math.max(0.1, Number(process.env.BOQ_OCR_BUDGET_SHARE || 0.4)));
 
 function ocrConfig() {
@@ -128,10 +137,16 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
         if (!pageCount) throw new Error('This PDF has no readable pages.');
 
         const budgetMs = ocrBudget(deadlineMs, startedAt);
-        const budgetLabel = Number.isFinite(budgetMs) ? `ocr share ~${Math.round(budgetMs / 1000)}s` : 'no shared deadline';
+        const budgetLabel = Number.isFinite(budgetMs) ? `deadline in ${Math.round((deadlineMs - Date.now()) / 1000)}s` : 'no shared deadline';
         console.log(`[boq:${userId}] OCR mode: ${pageCount} page(s) to render + OCR (max ${OCR_MAX_PAGES}, scale ${OCR_RENDER_SCALE}, ${OCR_CONCURRENCY} at a time, ${budgetLabel})`);
+        // Render every page to PNG. CPU-bound and NOT clampable — measure
+        // it separately so free-tier slowdowns are visible in the logs
+        // instead of silently inflating the first NVIDIA batch's budget.
+        const renderStart = Date.now();
         const screenshots = await parser.getScreenshot({ first: pageCount, scale: OCR_RENDER_SCALE, imageBuffer: true });
         const pages = screenshots.pages || [];
+        const renderMs = Date.now() - renderStart;
+        console.log(`[boq:${userId}] rendered ${pages.length} page(s) in ${renderMs}ms (${Math.round(renderMs / Math.max(1, pages.length))}ms/page)`);
 
         const ocrStart = Date.now();
         // Results pre-seeded per page index: concurrent batches fill their
@@ -150,11 +165,21 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
         for (let batchStart = 0; batchStart < pages.length; batchStart += OCR_CONCURRENCY) {
             const batch = pages.slice(batchStart, batchStart + OCR_CONCURRENCY);
             // Re-clamp per batch: earlier batches' spend shrinks what this
-            // one may still use, so one slow render can't starve the AI
-            // phase of its reserve.
+            // one may still use. Floor 2s keeps a pathological start from
+            // degenerating into instant 0ms aborts — but once the deadline
+            // is inside the floor, SKIP the batch instead of attempting:
+            // an attempt that can only fail at its timeout would waste the
+            // same wall time and log pages as failed-late rather than
+            // honestly not-attempted.
+            const left = Number.isFinite(budgetMs) ? budgetMs - (Date.now() - ocrStart) : Number.POSITIVE_INFINITY;
+            if (left < 2000) {
+                console.error(`[boq:${userId}] OCR batch skipped: deadline exhausted — pages ${batchStart + 1}-${pages.length} not attempted (deadline in ${Math.round(left)}s)`);
+                for (let k = batchStart; k < pages.length; k++) failedPages.push(pages[k].pageNumber);
+                break; // every later batch is equally doomed
+            }
             const remaining = Math.max(2000, Math.min(
                 attemptCeiling,
-                Number.isFinite(budgetMs) ? budgetMs - (Date.now() - ocrStart) : OCR_PER_PAGE_TIMEOUT_MS
+                Number.isFinite(budgetMs) ? left : OCR_PER_PAGE_TIMEOUT_MS
             ));
             const results = await Promise.all(batch.map((page) => ocrOnePage(
                 ocrImage,

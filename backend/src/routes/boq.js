@@ -47,15 +47,22 @@ async function loadUserSettings(userId) {
 }
 
 // ─── ONE wall-time budget, shared with the frontend ──────────
-// The browser allows /boq/process 110s (frontend/src/api.js — the two
+// The browser allows /boq/process 180s (frontend/src/api.js — the two
 // budgets must move together). The WHOLE server pipeline — text
-// extraction, OCR (parallel batches sharing this same deadline) and
-// every AI chunk — is capped at 90s, so the server always answers FIRST
-// with a precise error instead of the browser's generic timeout. Render
-// itself allows responses up to 100 minutes (verified 2026-09 in Render's
-// docs — no short platform proxy ceiling), so 90/110 is our own UX
-// pairing, not a platform constraint.
-const BOQ_TOTAL_BUDGET_MS = Number(process.env.BOQ_TOTAL_BUDGET_MS || 90000);
+// extraction, OCR (render + parallel NVIDIA batches sharing this same
+// deadline) and every AI chunk — is capped at 150s, so the server always
+// answers FIRST with a precise error instead of the browser's generic
+// timeout. Render itself allows responses up to 100 minutes (verified
+// 2026-09 in Render's docs — no short platform proxy ceiling), so this
+// pairing is our own UX choice, not a platform constraint.
+//
+// WHY 150s (2026-09 option-A size-up): real free-tier runs of the
+// 19-page tender spent ~80-90s in RENDERING alone (pdfjs+canvas on <1
+// CPU, see pdfOcr.js) plus ~9s of NVIDIA calls — the old 90s total
+// expired during OCR and the AI phase started with 0s. 150s fits
+// render + OCR + AI with margin; the client keeps a 30s window so the
+// server's precise 504/502 always beats the browser's generic abort.
+const BOQ_TOTAL_BUDGET_MS = Number(process.env.BOQ_TOTAL_BUDGET_MS || 150000);
 // Per-call FLOOR: the smallest per-attempt timeout that is still useful.
 // It also derives the default chunk cap (budget ÷ floor) so the cap and
 // the floor can never contradict each other.
