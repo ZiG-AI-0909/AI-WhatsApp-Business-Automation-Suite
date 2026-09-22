@@ -66,8 +66,20 @@ const BOQ_AI_MAX_CALL_MS = Math.max(
     BOQ_AI_MIN_CALL_MS,
     Number(process.env.BOQ_AI_MAX_CALL_MS || 45000)
 );
+// Chunk-extraction wave width: chunks are extracted in bounded parallel
+// waves (mirroring BOQ_OCR_CONCURRENCY on the OCR side) so a many-chunk
+// document still fits the ONE wall-clock budget. 4 keeps provider rate
+// limits comfortable and turns the worst case from N × per-call latency
+// into ceil(N/4) × per-call latency.
+const BOQ_AI_CONCURRENCY = Math.max(1, Number(process.env.BOQ_AI_CONCURRENCY || 4));
+// Chunk cap: how many extraction calls one request may make. The old
+// formula (budget ÷ min-call floor = 90s/20s = 4) silently regressed the
+// size-cap removal — it re-rejected the real 19-page tender at ~48k chars
+// with a 413. Extraction now runs in waves of BOQ_AI_CONCURRENCY, so wall
+// time is ceil(N/4) × per-call, and the cap is floored at 8 (~96k chars at
+// the 12k-char default chunk size — the real 19-page tender needs 7).
 const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS)
-    || Math.max(1, Math.floor(BOQ_TOTAL_BUDGET_MS / BOQ_AI_MIN_CALL_MS));
+    || Math.max(8, Math.floor(BOQ_TOTAL_BUDGET_MS / BOQ_AI_MIN_CALL_MS));
 // OCR page cap (scanned PDFs): enforced inside documents/pdfOcr.js — kept
 // visible here for the logging line. BOQ_OCR_MAX_PAGES is the env knob.
 const BOQ_OCR_MAX_PAGES = Number(process.env.BOQ_OCR_MAX_PAGES || 20);
@@ -158,16 +170,24 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
     const budgetRemaining = deadlineMs ? Math.max(0, deadlineMs - Date.now()) : BOQ_TOTAL_BUDGET_MS;
     console.log(`[boq:${userId}] AI extraction: "${filename}" → ${chunks.length} chunk(s) (${documentText.length} chars total, wall budget ${Math.round(budgetRemaining / 1000)}s of ${Math.round(BOQ_TOTAL_BUDGET_MS / 1000)}s, per-call range ${Math.round(BOQ_AI_MIN_CALL_MS / 1000)}–${Math.round(BOQ_AI_MAX_CALL_MS / 1000)}s, model ${model || 'service default'}, host ${hostOf(aiConfig.baseURL)})`);
 
-    const items = [];
-    for (let i = 0; i < chunks.length; i++) {
+    // Extract chunks in PARALLEL WAVES of BOQ_AI_CONCURRENCY: N sequential
+    // calls cost N × per-call latency on the wall clock (7+ chunks of real
+    // OCR text blew the 90s budget), while waves bound provider rate-limit
+    // exposure. Each call's timeout still divides what is LEFT by how many
+    // chunks are unfinished, and every result lands in its own slot, so the
+    // merge below is always in page order no matter which wave finishes first.
+    const results = new Array(chunks.length).fill(null);
+    const failed = new Array(chunks.length).fill(null);
+    const runChunk = async (i) => {
         const chunkStart = Date.now();
-        const chunksLeft = chunks.length - i;
+        const chunksLeft = chunks.length - i; // chunks i+1.. have not started yet
         const remaining = deadlineMs ? deadlineMs - Date.now() : BOQ_TOTAL_BUDGET_MS;
         if (deadlineMs && remaining <= 0) {
             const exhausted = new Error(`The AI extraction budget ran out before section ${i + 1} of ${chunks.length} of "${filename}" could be attempted.`);
             exhausted.statusCode = 504;
             exhausted.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: true };
-            throw exhausted;
+            failed[i] = exhausted;
+            return;
         }
         // Fair share of what is left, clamped to the per-call ceiling. A
         // 1-chunk document effectively gets the whole remaining budget.
@@ -184,7 +204,15 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
                     baseURL: aiConfig.baseURL,
                     model,
                     temperature: 0.1,
-                    maxTokens: 3000,
+                    // Output budget per chunk: ~60-100 tokens per extracted
+                    // row + JSON overhead. A 12k-char chunk holds roughly
+                    // 60-150 BOQ rows, so 8000 output tokens leaves headroom
+                    // for dense pages without flirting with provider output
+                    // ceilings. (Was 3000 — sized when chunks were half this
+                    // and the whole document was capped at 60k chars.) If a
+                    // provider still truncates dense chunks, lower
+                    // BOQ_CHUNK_MAX_CHARS rather than raising this further.
+                    maxTokens: 8000,
                     timeoutMs: perCallMs,
                     deadlineMs, // retries must fit inside the shared budget
                     minAttemptMs: BOQ_AI_MIN_CALL_MS,
@@ -199,7 +227,8 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
             error.message = `Section ${i + 1} of ${chunks.length} of "${filename}" could not be extracted: ${error.message}`;
             error.statusCode = mapped.status;
             error.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: mapped.retryable };
-            throw error;
+            failed[i] = error;
+            return;
         }
         let chunkItems;
         try {
@@ -209,10 +238,43 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
             const parseError = new Error(`Section ${i + 1} of ${chunks.length} of "${filename}" did not return structured data (AI output truncated or malformed). Try again, or split the document into smaller parts.`);
             parseError.statusCode = 502;
             parseError.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: true };
-            throw parseError;
+            failed[i] = parseError;
+            return;
         }
         console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} completed in ${Date.now() - chunkStart}ms → ${chunkItems.length} item(s)`);
-        items.push(...chunkItems);
+        results[i] = chunkItems;
+    };
+    for (let waveStart = 0; waveStart < chunks.length; waveStart += BOQ_AI_CONCURRENCY) {
+        const wave = [];
+        for (let i = waveStart; i < Math.min(chunks.length, waveStart + BOQ_AI_CONCURRENCY); i++) wave.push(i);
+        const waveStartMs = Date.now();
+        // runChunk never throws (failures land in failed[i]); Promise.all
+        // just waits for the wave. Waves run strictly in order so the
+        // chunksLeft share math stays the same as the sequential form.
+        await Promise.all(wave.map((i) => runChunk(i)));
+        console.log(`[boq:${userId}] AI wave ${Math.floor(waveStart / BOQ_AI_CONCURRENCY) + 1} (${wave.length} chunk(s)) done in ${Date.now() - waveStartMs}ms`);
+    }
+    // One failure sinks the run with the FIRST (lowest-section) error so
+    // messages stay deterministic and correctly attributed.
+    const firstFailure = failed.find(Boolean);
+    if (firstFailure) throw firstFailure;
+
+    // Merge slot-ordered, collapsing the chunk-boundary repeat: a soft
+    // break in splitIntoChunks repeats ONE line (header continuity), and
+    // the model can emit that repeated row again — the identical row from
+    // the END of chunk i and the START of chunk i+1 collapses to one.
+    // Adjacent-pair comparison ONLY: genuinely repeated line items
+    // elsewhere in the document survive and still surface as review
+    // warnings via flagAll.
+    const items = [];
+    for (const chunkItems of results) {
+        for (const item of chunkItems || []) {
+            if (items.length) {
+                const key = boqExtractor.chunkDedupeKey(item);
+                if (key && key === boqExtractor.chunkDedupeKey(items[items.length - 1])) continue;
+            }
+            items.push(item);
+        }
     }
     return items;
 }
@@ -276,10 +338,12 @@ router.post('/process', upload.single('file'), async (req, res) => {
                 return res.status(422).json({ error: 'This scanned PDF could not be read even with OCR — the pages may be blank, handwritten, or too low-quality. Try the original Excel or Word file.' });
             }
         }
-        if (documentText.length > 60000) {
-            console.log(`[boq:${userId}] rejected: document too large (${documentText.length} chars > 60000)`);
-            return res.status(400).json({ error: 'Document is too large to process in one pass (over ~60k characters). Split it into sections and upload each part.' });
-        }
+        // (The old hard 60k-character reject lived here. It rejected a real
+        // 19-page scanned tender (~84k chars of OCR text) 100% of the time
+        // before the AI ever saw it. extractItemsWithAI now chunk-splits ANY
+        // size — see boqExtractor.splitIntoChunks — with the chunk CAP as the
+        // graceful upper bound, so no pathologically huge document can turn
+        // into hundreds of silent AI calls.)
 
         // The AI phase works against a wall-clock deadline measured from
         // request start — text extraction and DB time are part of the same

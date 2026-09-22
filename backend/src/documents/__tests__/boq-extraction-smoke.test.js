@@ -240,7 +240,47 @@ async function test7_chunkSplittingRealisticSize() {
     // No data rows dropped at boundaries (the overlap repeats, not skips).
     const dataRowCount = chunks.reduce((n, c) => n + c.split('\n').filter((l) => /^\d+ \|/.test(l)).length, 0);
     assert.ok(dataRowCount >= 300, `all 300 data rows present across chunks (saw ${dataRowCount})`);
-    console.log(`✅ Test 7 passed (28-row = 1 chunk @ ${realistic.length} chars; 300-row = ${chunks.length} chunks @ ${text.length} chars)\n`);
+
+    // PAGE-ALIGNED chunking: OCR text arrives as whole pages joined with
+    // "-- N of M --" separators. A page marker line STARTS a new segment,
+    // and chunks break AT those markers so a line item is never split
+    // across two chunks. Three ~100-row pages (~6.3k chars each) at the
+    // default 12k cap cannot share a chunk → every chunk must START on a
+    // page marker, and every chunk's rows must all belong to its own page.
+    const buildPage = (pageNum, rowCount) => [
+        `-- ${pageNum} of 3 --`,
+        'Item | Description | Size | Specification | Quantity | Unit',
+        ...Array.from({ length: rowCount }, (_, i) => {
+            const n = (pageNum - 1) * rowCount + i + 1;
+            return `${n} | HDPE Pipe ${60 + (n % 6) * 25}mm | ${60 + (n % 6) * 25}mm | IS 4984:2016 PE100 PN10 | ${100 * n} | m`;
+        }),
+    ];
+    const paged = [...buildPage(1, 100), ...buildPage(2, 100), ...buildPage(3, 100)].join('\n');
+    const pagedChunks = boqExtractor.splitIntoChunks(paged);
+    assert.ok(pagedChunks.length >= 3, `page-aligned document splits per page (got ${pagedChunks.length} chunks)`);
+    pagedChunks.forEach((chunk, idx) => {
+        const firstLine = chunk.split('\n')[0];
+        assert.ok(boqExtractor.isPageBreak(firstLine),
+            `chunk ${idx + 1} starts at a page marker (got: "${firstLine.slice(0, 30)}")`);
+    });
+    const pagedRowCount = pagedChunks.reduce((n, c) => n + c.split('\n').filter((l) => /^\d+ \|/.test(l)).length, 0);
+    assert.strictEqual(pagedRowCount, 300, 'every page rows preserved exactly once (no boundary straddle)');
+
+    // isPageBreak unit checks: pdfOcr's exact separator shape plus variants.
+    assert.strictEqual(boqExtractor.isPageBreak('-- 3 of 20 --'), true);
+    assert.strictEqual(boqExtractor.isPageBreak('  -- 7 --  '), true);
+    assert.strictEqual(boqExtractor.isPageBreak('--- 12 ---'), true);
+    assert.strictEqual(boqExtractor.isPageBreak('1 | HDPE Pipe | 110mm'), false);
+    assert.strictEqual(boqExtractor.isPageBreak(''), false);
+
+    // Boundary-dedupe key: identical rows collide (quantity compared
+    // numerically), any field difference separates them.
+    const rowA = { product: 'HDPE Pipe', size: '110mm', specification: 'PE100', quantity: '100', unit: 'm', application: '', notes: '' };
+    assert.strictEqual(boqExtractor.chunkDedupeKey(rowA), boqExtractor.chunkDedupeKey({ ...rowA, quantity: '100.0' }), 'quantity 100 vs 100.0 is the same row');
+    assert.notStrictEqual(boqExtractor.chunkDedupeKey(rowA), boqExtractor.chunkDedupeKey({ ...rowA, quantity: '200' }), 'different quantity is a different row');
+    assert.notStrictEqual(boqExtractor.chunkDedupeKey(rowA), boqExtractor.chunkDedupeKey({ ...rowA, product: 'uPVC Pipe' }), 'different product is a different row');
+
+    console.log(`✅ Test 7 passed (28-row = 1 chunk @ ${realistic.length} chars; 300-row = ${chunks.length} chunks @ ${text.length} chars; page-aligned = ${pagedChunks.length} chunks, each starting on a page marker)\n`);
 }
 
 async function test8_smallDocumentSingleChunk() {

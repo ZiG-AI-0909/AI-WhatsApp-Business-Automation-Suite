@@ -265,42 +265,105 @@ function flagAll(items) {
 
 // ─── Document chunking ────────────────────────────────────────
 // The extraction AI call has a finite output budget (maxTokens). A real
-// BOQ's per-row JSON costs ~80-150 tokens, so a whole 60k-char document
+// BOQ's per-row JSON costs ~80-150 tokens, so a whole 84k-char document
 // in one call truncates past ~25 rows and the response stops being valid
-// JSON. Splitting the document into bounded chunks (on row boundaries) and
-// extracting per-chunk keeps every single AI response well inside budget.
+// JSON. Splitting the document into bounded chunks and extracting
+// per-chunk keeps every single AI response well inside budget.
+//
+// PAGE ALIGNMENT (2026-09 size-cap fix): OCR output arrives as whole pages
+// joined with "-- N of M --" separators, so chunks prefer to break AT page
+// markers — a BOQ line item's description/qty/unit then always stays
+// inside one chunk instead of straddling a boundary (which produced
+// duplicate or partial rows). Pages bigger than a whole chunk fall back to
+// the line-boundary walk; marker-less text chunks exactly as before.
 
 const CHUNK_MAX_CHARS = Number(process.env.BOQ_CHUNK_MAX_CHARS || 12000);
 
+// An OCR page separator as left in the concatenated text by pdfOcr.js
+// ("-- 3 of 20 --", also "-- 3 --" / "--- 3 ---" variants).
+function isPageBreak(line) {
+    return /^\s*-{2,}\s*\d+(\s+of\s+\d+)?\s*-{2,}\s*$/.test(line);
+}
+
 /**
- * Split document text into chunks of at most maxChars, breaking on line
- * boundaries (BOQ rows are one line each) and keeping blank separator
- * lines with the preceding chunk. The first line of each chunk after the
- * first may repeat the previous chunk's last line so column headers are
- * never orphaned at a boundary.
+ * Split document text into chunks of at most maxChars, preferring page
+ * boundaries (whole OCR pages are packed per chunk; a chunk break lands
+ * exactly on a "-- N of M --" marker). Pages larger than maxChars, and
+ * text with no page markers, split on line boundaries (BOQ rows are one
+ * line each). The first line of a line-walked chunk after the first may
+ * repeat the previous chunk's last line so column headers are never
+ * orphaned at a boundary — routes/boq.js dedupes that repeated row after
+ * the per-chunk merge.
  */
 function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
     const text = String(documentText || '');
     if (text.length <= maxChars) return [text];
-    const lines = text.split('\n');
+    // Group lines into page segments: each page-marker line starts a new
+    // segment. Marker-less text is ONE segment and takes the line walk
+    // below, unchanged from the original behavior.
+    const segments = [];
+    let segment = [];
+    for (const line of text.split('\n')) {
+        if (isPageBreak(line) && segment.length) { segments.push(segment); segment = []; }
+        segment.push(line);
+    }
+    if (segment.length) segments.push(segment);
+
     const chunks = [];
     let current = [];
     let length = 0;
-    for (const line of lines) {
-        // A single overlong line still gets its own chunk (never dropped).
-        if (length + line.length + 1 > maxChars && current.length) {
-            chunks.push(current.join('\n'));
-            // Repeat the previous line into the new chunk so a table
-            // header that landed at the end of the last chunk is present.
-            current = [current[current.length - 1], line];
-            length = current[0].length + line.length + 1;
+    let lastLine = null; // last line placed into any chunk (header repeat)
+    const flush = () => {
+        if (current.length) { chunks.push(current.join('\n')); current = []; length = 0; }
+    };
+    for (const seg of segments) {
+        const segLength = seg.reduce((n, l) => n + l.length + 1, 0);
+        if (segLength <= maxChars) {
+            // Whole page fits in a chunk: append it whole, breaking the
+            // chunk BEFORE it when full — the boundary then sits exactly
+            // on the next page marker.
+            if (length + segLength > maxChars && current.length) flush();
+            for (const line of seg) { current.push(line); lastLine = line; }
+            length += segLength;
         } else {
-            current.push(line);
-            length += line.length + 1;
+            // Page longer than a whole chunk: walk its lines.
+            for (const line of seg) {
+                // A single overlong line still gets its own chunk (never dropped).
+                if (length + line.length + 1 > maxChars && current.length) {
+                    flush();
+                    // Repeat the previous line into the new chunk so a table
+                    // header that landed at the end of the last chunk is present.
+                    current = lastLine ? [lastLine, line] : [line];
+                    length = current.reduce((n, l) => n + l.length + 1, 0);
+                } else {
+                    current.push(line);
+                    length += line.length + 1;
+                }
+                lastLine = line;
+            }
         }
     }
-    if (current.length) chunks.push(current.join('\n'));
+    flush();
     return chunks;
+}
+
+/**
+ * Normalized identity of one extracted line item, for boundary dedupe:
+ * splitIntoChunks may repeat the previous chunk's last line at a soft
+ * break, and the model can emit that repeated row again. Two items with
+ * the same key are treated as the SAME row only when every schema field
+ * matches (quantity coerced through parseQuantity so '100' and '100.0'
+ * collide). The route applies this ONLY between adjacent chunks'
+ * boundary rows, so genuinely repeated line items elsewhere in a BOQ
+ * are preserved.
+ */
+function chunkDedupeKey(item) {
+    if (!item || typeof item !== 'object') return '';
+    return ITEM_SCHEMA_KEYS.map((k) => {
+        const value = item[k];
+        if (k === 'quantity') return String(parseQuantity(value) ?? '').trim();
+        return String(value ?? '').trim().toLowerCase();
+    }).join('|');
 }
 
 module.exports = {
@@ -308,6 +371,8 @@ module.exports = {
     looksLikeJunkText,
     CHUNK_MAX_CHARS,
     splitIntoChunks,
+    isPageBreak,
+    chunkDedupeKey,
     extractText,
     extractXlsxText,
     buildExtractionPrompt,

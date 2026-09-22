@@ -116,6 +116,11 @@ process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829
 // Keep the chunk size small so multi-chunk orchestration is exercised on
 // the OCR'd text (same knob the realistic-size smoke test shrinks).
 process.env.BOQ_CHUNK_MAX_CHARS = '1500';
+// The 84k-char regression fixture below needs ~45 chunks at this 1500-char
+// chunk size. The production cap floors at 8; 64 mirrors a large-document
+// allowance so the test exercises the size path, not the cap path (the
+// cap itself is separately proven to still reject by the realistic test).
+process.env.BOQ_MAX_CHUNKS = '64';
 // Page cap stays at the default 20 (the real 19-page tender must fit);
 // the cap test below uses a 25-page fixture to trip it.
 
@@ -429,6 +434,54 @@ async function test6_pageOcrFailureDegrades_gracefully() {
     console.log('✅ Test 6 passed\n');
 }
 
+// =============================================================
+// Test 7 — SIZE-CAP REGRESSION (2026-09): OCR text over the old hard
+// 60k-char reject must EXTRACT, not 400. A real 19-page tender produced
+// ~84k chars and was rejected 100% of the time before the AI ever ran.
+// 10 fake scanned pages × 100 rows ≈ 67k chars of OCR text → many chunks
+// at the 1500-char test cap → every chunk extracted, results merged in
+// page order, boundary repeats deduped → EXACTLY 1000 items, ascending.
+// =============================================================
+async function test7_oversizedOcrText_extractsInsteadOfRejecting() {
+    console.log('▶ Test 7: OCR text over the old 60k reject extracts via chunked AI (no 400)');
+    ocrCalls.length = 0;
+    aiCalls.length = 0;
+    const pages = 10;
+    const rowsPerPage = 100;
+    fakePageCount = pages;
+    fakeExtractedText = markerOnlyText(pages);
+    const rows = buildBoqRows(pages * rowsPerPage);
+    ocrPageTexts = Array.from({ length: pages }, (_, p) =>
+        [`-- ${p + 1} of ${pages + 1} --`, ...rows.slice(p * rowsPerPage, (p + 1) * rowsPerPage)].join('\n'));
+
+    const { req, res, getStatus, getBody } = makeReqRes({
+        originalname: 'oversized-scanned-tender.pdf',
+        size: 8_400_000,
+        buffer: Buffer.from('%PDF-1.7 fake scanned pdf'),
+    });
+    await runProcessHandler(req, res);
+
+    const joinedChars = ocrPageTexts.join('\n').length;
+    assert.ok(joinedChars > 60000, `fixture exceeds the old hard reject (${joinedChars} chars > 60000)`);
+    assert.strictEqual(getStatus(), 201, `over-60k OCR text must extract now (got ${getStatus()}: ${JSON.stringify(getBody())})`);
+    assert.strictEqual(ocrCalls.length, pages, `one OCR call per page (got ${ocrCalls.length})`);
+    assert.ok(aiCalls.length > 8, `document split across many chunk calls (got ${aiCalls.length})`);
+
+    const doc = getBody();
+    // EXACT count: every row once, in order — page-aligned chunks keep rows
+    // intact and the merge dedupes any soft-break header/row repeat.
+    assert.strictEqual(doc.items.length, pages * rowsPerPage,
+        `exact line-item count, no boundary duplicates (got ${doc.items.length})`);
+    const quantities = doc.items.map((it) => Number(it.quantity));
+    for (let n = 1; n <= pages * rowsPerPage; n++) {
+        assert.ok(quantities.includes(100 * n), `row ${n} present in merged output`);
+    }
+    assert.ok(quantities.every((q, i) => i === 0 || q > quantities[i - 1]),
+        'items merged strictly in page/row order (no wave-order scrambling)');
+    console.log(`   → ${joinedChars} chars OCR → ${aiCalls.length} AI chunk call(s) → ${doc.items.length} item(s), order preserved`);
+    console.log('✅ Test 7 passed\n');
+}
+
 async function main() {
     try {
         await test1_junkDetection();
@@ -437,6 +490,7 @@ async function main() {
         await test4_nonPdfJunkStillRejects();
         await test5_ocrFailureSurfacesClearError();
         await test6_pageOcrFailureDegrades_gracefully();
+        await test7_oversizedOcrText_extractsInsteadOfRejecting();
         console.log('🎉 ALL BOQ OCR SCANNED-PDF SMOKE TESTS PASSED');
         console.log('\n⚠️  MANUAL LIVE TEST still required (cannot be automated here):');
         console.log('   • Upload the real 19-page scanned government tender BOQ (skew + stamps).');

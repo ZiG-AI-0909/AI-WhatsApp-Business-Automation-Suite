@@ -98,13 +98,14 @@ process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829
 process.env.BOQ_CHUNK_MAX_CHARS = '1500';
 // Shrink the wall-time budget (also read at module load) so the per-chunk
 // division math runs in compressed time: 12s budget, 2s floor, 5s ceiling
-// → derived chunk cap = floor(12000 / 2000) = 6.
+// → chunk cap = max(8, floor(12000 / 2000)) = 8 (the size-cap fix floors
+// the cap at 8 so the real 19-page tender's ~7 chunks never re-reject).
 process.env.BOQ_TOTAL_BUDGET_MS = '12000';
 process.env.BOQ_AI_MIN_CALL_MS = '2000';
 process.env.BOQ_AI_MAX_CALL_MS = '5000';
 const BOQ_TOTAL_BUDGET_MS = 12000;
 const BOQ_AI_MAX_CALL_MS = 5000;
-const EXPECTED_MAX_CHUNKS = Math.floor(BOQ_TOTAL_BUDGET_MS / 2000);
+const EXPECTED_MAX_CHUNKS = Math.max(8, Math.floor(BOQ_TOTAL_BUDGET_MS / 2000));
 
 const boqExtractor = require('../../documents/boqExtractor');
 const boqRoute = require('../../routes/boq');
@@ -213,7 +214,8 @@ async function test2_chunkCapSurfaces413() {
     }
     const text = lines.join('\n');
     assert.ok(text.length > EXPECTED_MAX_CHUNKS * 1500, `fixture sized to exceed the chunk cap (${text.length} chars > ${EXPECTED_MAX_CHUNKS} × 1500)`);
-    assert.ok(text.length <= 60000, 'fixture stays under the hard 60k reject so the CHUNK cap is what trips');
+    // (The old hard 60k reject is gone — the CHUNK cap is now the only size
+    // bound, and this fixture is sized to trip it, not any char ceiling.)
 
     const { req, res, getStatus, getBody } = makeReqRes({
         originalname: 'oversized-boq.txt',
