@@ -179,15 +179,27 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
 
     // Extract chunks in PARALLEL WAVES of BOQ_AI_CONCURRENCY: N sequential
     // calls cost N × per-call latency on the wall clock (7+ chunks of real
-    // OCR text blew the 90s budget), while waves bound provider rate-limit
-    // exposure. Each call's timeout still divides what is LEFT by how many
-    // chunks are unfinished, and every result lands in its own slot, so the
-    // merge below is always in page order no matter which wave finishes first.
+    // OCR text blew the old 90s budget), while waves bound provider
+    // rate-limit exposure. Every result lands in its own slot, so the merge
+    // below is always in page order no matter which wave finishes first.
+    //
+    // WAVE-AWARE FAIR SHARE (2026-09 fix): a wave of 4 chunks runs its
+    // members CONCURRENTLY, so the wave costs ~ONE per-call latency, not
+    // four. The original sequential formula (remaining ÷ chunksLeft) gave
+    // every call remaining/N — on the real tender that was ~7s per call,
+    // far under what a 12k-char chunk needs, and every chunk timed out.
+    // A call's timeout must instead divide what is left by the number of
+    // REMAINING WAVES: ceil(chunksLeft / BOQ_AI_CONCURRENCY). Two waves of
+    // 4 split 56s into 28s each — a real attempt, still bounded by the
+    // per-call ceiling.
     const results = new Array(chunks.length).fill(null);
     const failed = new Array(chunks.length).fill(null);
     const runChunk = async (i) => {
         const chunkStart = Date.now();
         const chunksLeft = chunks.length - i; // chunks i+1.. have not started yet
+        // The wave this chunk belongs to and how many waves remain AFTER it.
+        // Waves, not chunks, are what serially consume the wall clock.
+        const wavesLeft = Math.max(1, Math.ceil(chunksLeft / BOQ_AI_CONCURRENCY));
         const remaining = deadlineMs ? deadlineMs - Date.now() : BOQ_TOTAL_BUDGET_MS;
         if (deadlineMs && remaining <= 0) {
             const exhausted = new Error(`The AI extraction budget ran out before section ${i + 1} of ${chunks.length} of "${filename}" could be attempted.`);
@@ -199,7 +211,7 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
         // Fair share of what is left, clamped to the per-call ceiling. A
         // 1-chunk document effectively gets the whole remaining budget.
         const perCallMs = deadlineMs
-            ? Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / chunksLeft)))
+            ? Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / wavesLeft)))
             : BOQ_AI_MAX_CALL_MS;
         console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, budget ${Math.round(remaining / 1000)}s left, per-call timeout ${Math.round(perCallMs / 1000)}s, model ${model || 'default'})`);
         let content;
@@ -259,7 +271,7 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
         // just waits for the wave. Waves run strictly in order so the
         // chunksLeft share math stays the same as the sequential form.
         await Promise.all(wave.map((i) => runChunk(i)));
-        console.log(`[boq:${userId}] AI wave ${Math.floor(waveStart / BOQ_AI_CONCURRENCY) + 1} (${wave.length} chunk(s)) done in ${Date.now() - waveStartMs}ms`);
+        console.log(`[boq:${userId}] AI wave done in ${Date.now() - waveStartMs}ms (${wave.length} chunk(s), remaining ${Math.round((deadlineMs ? deadlineMs - Date.now() : BOQ_TOTAL_BUDGET_MS) / 1000)}s)`);
     }
     // One failure sinks the run with the FIRST (lowest-section) error so
     // messages stay deterministic and correctly attributed.

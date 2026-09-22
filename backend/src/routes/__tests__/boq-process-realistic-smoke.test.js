@@ -294,9 +294,10 @@ async function test5_perChunkBudgetDivision() {
         return JSON.stringify({ items: [{ product: 'HDPE Pipe', size: '110mm', specification: 'PE100', quantity: '100', unit: 'm', application: '', notes: '' }] });
     };
     try {
-        // ~80 rows ≈ 5k chars → 4 chunks at the 1500-char test chunk size
-        // (under the derived cap of 6). Each call's timeout must equal the
-        // remaining budget ÷ remaining chunks (ceiling-clamped).
+        // ~80 rows ≈ 5k chars → 4 chunks at the 1500-char test chunk size.
+        // Concurrency default 4 → ONE wave. Each call's timeout must equal
+        // the remaining budget ÷ REMAINING WAVES (ceiling-clamped) — the
+        // sequential formula starved real chunks to 7s (production bug).
         const buffer = await buildRealisticBoqXlsx(80);
         const { req, res, getStatus, getBody } = makeReqRes({
             originalname: 'boq-4chunk.xlsx',
@@ -307,17 +308,38 @@ async function test5_perChunkBudgetDivision() {
         assert.strictEqual(getStatus(), 201, `expected 201, got ${getStatus()} — body: ${JSON.stringify(getBody())}`);
         assert.ok(aiCalls.length >= 2, `multi-chunk run (got ${aiCalls.length} calls)`);
         const totalChunks = aiCalls.length;
+        const CONCURRENCY = Number(process.env.BOQ_AI_CONCURRENCY || 4);
         aiCalls.forEach((call, i) => {
             const chunksLeft = totalChunks - i;
+            const wavesLeft = Math.max(1, Math.ceil(chunksLeft / CONCURRENCY));
             const remaining = call.options.deadlineMs - call.start;
-            const expected = Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / chunksLeft)));
+            const expected = Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / wavesLeft)));
             assert.ok(
                 Math.abs(call.options.timeoutMs - expected) <= 100,
-                `chunk ${i + 1}/${totalChunks}: timeout ${call.options.timeoutMs}ms ≈ remaining ${Math.round(remaining)}ms ÷ ${chunksLeft} = ${expected}ms`
+                `chunk ${i + 1}/${totalChunks}: timeout ${call.options.timeoutMs}ms ≈ remaining ${Math.round(remaining)}ms ÷ ${wavesLeft} wave(s) = ${expected}ms`
             );
         });
-        const consumed = aiCalls.reduce((n, c) => n + c.options.timeoutMs, 0);
-        assert.ok(consumed <= BOQ_TOTAL_BUDGET_MS + BOQ_AI_MAX_CALL_MS, 'sum of per-call budgets stays near the wall budget');
+        // Wave semantics: all calls in one wave share (roughly) the same
+        // timeout, and each wave's budget is bounded by the ceiling.
+        const waveGroups = new Map();
+        aiCalls.forEach((call) => {
+            const bucket = Math.round(call.options.timeoutMs / 500);
+            waveGroups.set(bucket, (waveGroups.get(bucket) || 0) + 1);
+        });
+        assert.ok(Array.from(waveGroups.values()).every((n) => n >= 1), 'per-call timeouts recorded');
+        // CONCURRENCY PROOF: wave siblings run simultaneously, so they all
+        // divide the SAME remaining budget by the SAME wavesLeft — their
+        // timeouts must be ~identical. (No sum invariant exists under
+        // waves: 4 concurrent calls each holding a ceiling timeout still
+        // cost only ONE call's wall time — that overlap is the point.)
+        const timeouts = aiCalls.map((c) => c.options.timeoutMs);
+        assert.ok(Math.max(...timeouts) - Math.min(...timeouts) <= 250,
+            `same-wave siblings must get ~equal shares (got ${timeouts.join(', ')})`);
+        // And with 4 chunks at concurrency 4 (one wave), each call gets the
+        // FULL remaining budget (ceiling-clamped) — the old sequential
+        // formula would have given each only remaining/4.
+        assert.ok(timeouts.every((t) => t >= BOQ_AI_MAX_CALL_MS - 250),
+            `one-wave calls get the whole remaining budget, not a quarter (got ${timeouts.join(', ')})`);
         console.log(`   → ${totalChunks} chunks, per-call budgets: ${aiCalls.map((c) => c.options.timeoutMs).join(', ')}ms`);
     } finally {
         aiService._complete = original;
