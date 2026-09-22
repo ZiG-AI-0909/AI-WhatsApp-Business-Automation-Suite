@@ -301,6 +301,7 @@ router.post('/process', upload.single('file'), async (req, res) => {
         // marker-only junk AND this is a PDF, run the OCR pipeline (render
         // pages → NVIDIA Nemotron OCR → concatenated text) and continue with
         // that instead. Non-PDF junk is still a clear rejection.
+        let usedOcr = false; // becomes true only if the OCR path produced the text
         if (boqExtractor.looksLikeJunkText(documentText)) {
             console.log(`[boq:${userId}] junk text detected (${documentText.trim().length} chars, alnum-starved) — scanned/image-only document?`);
             if (ext !== '.pdf') {
@@ -319,6 +320,7 @@ router.post('/process', upload.single('file'), async (req, res) => {
                     deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS,
                 });
                 documentText = ocr.text;
+                usedOcr = true;
                 console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages, ${ocr.failedPages.length} failed page(s))`);
             } catch (ocrError) {
                 const status = ocrError.statusCode || 502;
@@ -344,6 +346,26 @@ router.post('/process', upload.single('file'), async (req, res) => {
         // size — see boqExtractor.splitIntoChunks — with the chunk CAP as the
         // graceful upper bound, so no pathologically huge document can turn
         // into hundreds of silent AI calls.)
+
+        // HONEST BUDGET GUARD (2026-09): OCR deliberately runs to a bounded
+        // conclusion inside the shared deadline ("once OCR starts it is
+        // allowed to run to its bounded conclusion"), which means OCR can
+        // legitimately consume the WHOLE budget — real free-tier runs: ~80s
+        // rendering 19 pages (pdfjs+canvas on <1 CPU) + ~9s of NVIDIA calls
+        // vs the 90s total. Attempting the AI phase with ~0s left produced
+        // the opaque "wall budget 0s of 90s" log and a confusing 504 two
+        // lines later. Fail HERE instead, honestly: the text was read, only
+        // the shared wall clock ran out. Threshold 1500ms: below it, not
+        // even one chunk attempt (min per-call share 100ms, floor 20s) can
+        // meaningfully run, so starting the phase would be theater.
+        const budgetLeftMs = startedAt + BOQ_TOTAL_BUDGET_MS - Date.now();
+        if (budgetLeftMs <= 1500) {
+            const error = usedOcr
+                ? 'All pages were read successfully, but the request ran out of time before AI extraction could start — reading the scanned pages took the whole budget. Please retry; if this keeps happening for this document, extraction needs to run in the background.'
+                : 'The request ran out of its time budget before AI extraction could start. Please retry.';
+            console.error(`[boq:${userId}] budget exhausted after ${Date.now() - startedAt}ms with ${documentText.length} chars in hand (${usedOcr ? 'OCR path' : 'direct-text path'}): ${Math.round(budgetLeftMs)}ms left — AI extraction cannot start inside this request, failing fast instead of a "0s of 90s" wave`);
+            return res.status(504).json({ error, retryable: true, stage: 'budget_exhausted_before_ai' });
+        }
 
         // The AI phase works against a wall-clock deadline measured from
         // request start — text extraction and DB time are part of the same

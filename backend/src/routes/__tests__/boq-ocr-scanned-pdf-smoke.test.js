@@ -116,6 +116,11 @@ process.env.ENCRYPTION_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829
 // Keep the chunk size small so multi-chunk orchestration is exercised on
 // the OCR'd text (same knob the realistic-size smoke test shrinks).
 process.env.BOQ_CHUNK_MAX_CHARS = '1500';
+// Compress the wall budget (read at module load): 6s is ample for the
+// instant stubs in tests 1–7, while test 8 drives a deliberately slow
+// render past it to prove the honest budget guard (fail fast after OCR
+// with a clear 504 instead of a "wall budget 0s of 90s" AI phase).
+process.env.BOQ_TOTAL_BUDGET_MS = '6000';
 // The 84k-char regression fixture below needs ~45 chunks at this 1500-char
 // chunk size. The production cap floors at 8; 64 mirrors a large-document
 // allowance so the test exercises the size path, not the cap path (the
@@ -482,6 +487,51 @@ async function test7_oversizedOcrText_extractsInsteadOfRejecting() {
     console.log('✅ Test 7 passed\n');
 }
 
+// =============================================================
+// Test 8 — HONEST BUDGET GUARD (2026-09): a real free-tier run read all
+// 20 pages (84033 chars) but the OCR phase alone consumed ~98s of the 90s
+// budget; the AI phase then attempted with 0s left and failed with the
+// opaque "budget ran out before section 1 of 8 could be attempted". The
+// route must instead fail FAST, right after OCR, with an honest 504.
+// Simulated here with a 6s budget and a render step that eats it all.
+// =============================================================
+async function test8_budgetExhaustedAfterOcr_failsFastAndHonestly() {
+    console.log('▶ Test 8: OCR consuming the whole budget → honest fast 504, no "0s of 90s" AI phase');
+    ocrCalls.length = 0;
+    aiCalls.length = 0;
+    const pages = 3;
+    fakePageCount = pages;
+    fakeExtractedText = markerOnlyText(pages);
+    ocrPageTexts = Array.from({ length: pages }, (_, p) => [`-- ${p + 1} of ${pages + 1} --`, ...buildBoqRows(10).slice(p * 3, (p + 1) * 3)].join('\n'));
+
+    // Slow RENDER (pdfjs+canvas on a tiny CPU box), fast NVIDIA pages —
+    // exactly the real-world profile that starved the AI phase.
+    const originalScreenshot = PDFParse.prototype.getScreenshot;
+    PDFParse.prototype.getScreenshot = async function () {
+        await new Promise((r) => setTimeout(r, 5500));
+        return originalScreenshot.call(this, {});
+    };
+    try {
+        const { req, res, getStatus, getBody } = makeReqRes({
+            originalname: 'slow-render-scan.pdf',
+            size: 900_000,
+            buffer: Buffer.from('%PDF-1.7 fake scanned pdf'),
+        });
+        await runProcessHandler(req, res);
+
+        assert.strictEqual(getStatus(), 504, `expected 504 (got ${getStatus()}: ${JSON.stringify(getBody())})`);
+        assert.ok(/ran out of time before AI extraction could start/.test(getBody().error), `honest error, got: ${getBody().error}`);
+        assert.ok(/All pages were read successfully/.test(getBody().error), 'error credits the OCR success instead of implying OCR failed');
+        assert.strictEqual(getBody().retryable, true, 'retryable hint forwarded');
+        assert.strictEqual(getBody().stage, 'budget_exhausted_before_ai', 'failure stage reported');
+        assert.strictEqual(ocrCalls.length, pages, 'OCR itself completed (all pages read)');
+        assert.strictEqual(aiCalls.length, 0, 'no AI attempt with an exhausted budget — failed fast, not two log lines later');
+    } finally {
+        PDFParse.prototype.getScreenshot = originalScreenshot;
+    }
+    console.log('✅ Test 8 passed\n');
+}
+
 async function main() {
     try {
         await test1_junkDetection();
@@ -491,6 +541,7 @@ async function main() {
         await test5_ocrFailureSurfacesClearError();
         await test6_pageOcrFailureDegrades_gracefully();
         await test7_oversizedOcrText_extractsInsteadOfRejecting();
+        await test8_budgetExhaustedAfterOcr_failsFastAndHonestly();
         console.log('🎉 ALL BOQ OCR SCANNED-PDF SMOKE TESTS PASSED');
         console.log('\n⚠️  MANUAL LIVE TEST still required (cannot be automated here):');
         console.log('   • Upload the real 19-page scanned government tender BOQ (skew + stamps).');
