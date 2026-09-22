@@ -50,7 +50,7 @@ function parseRows(table, rows) {
 /**
  * Build a SELECT query with optional WHERE, ORDER BY, LIMIT, OFFSET
  */
-async function select(table, columns = '*', where = '', params = [], orderBy = '', limit = null, offset = null) {
+async function select(table, columns = '*', where = '', params = [], orderBy = '', limit = null, offset = null, embedOptions = null) {
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured. Set SUPABASE_URL and SUPABASE_SECRET_KEY.');
     }
@@ -79,6 +79,28 @@ async function select(table, columns = '*', where = '', params = [], orderBy = '
 
     if (offset !== null) {
         query = query.range(offset, offset + (limit || 1000) - 1);
+    }
+
+    // Embedded-resource tuning (2026-09 performance fix): when the select
+    // string embeds related tables (e.g. "*, contacts(...), messages(...)"),
+    // embedOptions supplies per-embed order/limit via supabase-js
+    // referencedTable options. Without it PostgREST returns EVERY related
+    // row per parent row (a conversation's full message history!) and the
+    // caller must slice client-side — which historically forced N+1 round
+    // trips instead of one embedded query.
+    if (embedOptions) {
+        for (const [embed, opts] of Object.entries(embedOptions)) {
+            query = query.order(opts.orderBy || 'created_at', {
+                referencedTable: embed,
+                ascending: opts.ascending ?? false,
+            });
+            if (opts.limit != null) {
+                query = query.limit(opts.limit, { referencedTable: embed });
+            }
+            if (opts.offset != null) {
+                query = query.range(opts.offset, opts.offset + (opts.limit || 1000) - 1, { referencedTable: embed });
+            }
+        }
     }
 
     const { data, error } = await query;
