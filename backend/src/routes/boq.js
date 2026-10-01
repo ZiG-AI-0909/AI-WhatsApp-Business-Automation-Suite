@@ -764,6 +764,11 @@ router.post('/process', aiExtractLimiter, upload.single('file'), async (req, res
                 },
             }),
         })));
+        if (process.env.BOQ_DEBUG_SOURCE_ROWS === '1') {
+            for (const table of structuredTables) {
+                console.log(`[boq:${userId}] canonical source rows before AI:\n${documentModel.debugSourceRows(table).join('\n\n')}`);
+            }
+        }
         const batchCounts = structuredTables.map((table, index) =>
             boqExtractor.splitStructuredRowBatches(structuredEntries[index], undefined, undefined, table.headers || []).length
         );

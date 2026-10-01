@@ -26,6 +26,19 @@ function layoutCell(text, left, y, scale = 1) {
     };
 }
 
+function ocrCell(text, left, y, right) {
+    return {
+        text: String(text),
+        confidence: 0.99,
+        boundingBox: { points: [
+            { x: left, y },
+            { x: right, y },
+            { x: right, y: y + 8 },
+            { x: left, y: y + 8 },
+        ] },
+    };
+}
+
 function makeVisualPage(pageNumber, headers, dataRows, anchors) {
     const rows = [headers, ...dataRows].map((values, rowIndex) => values.map((value, columnIndex) =>
         layoutCell(value, anchors[columnIndex], 100 + rowIndex * 14, rowIndex % 2 ? 1 : 1.2)
@@ -116,8 +129,143 @@ async function testSelectiveNativePdfOcr() {
     }
 }
 
+function testScannedBoqVisualSourceRows() {
+    const headers = ['S.No', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount'];
+    const makeHeader = (y) => [
+        ocrCell('S.No', 20, y, 55),
+        ocrCell('Description', 100, y, 225),
+        ocrCell('Quantity', 600, y, 665),
+        ocrCell('Unit', 700, y, 730),
+        ocrCell('Rate', 780, y, 820),
+        ocrCell('Amount', 870, y, 930),
+    ];
+    const makeRow = (serial, description, quantity, unit, rate, amount, y) => [
+        ...(serial ? [ocrCell(serial, 20, y, 55)] : []),
+        ...(description ? [ocrCell(description, 100, y, 540)] : []),
+        ...(quantity ? [ocrCell(quantity, 600, y, 665)] : []),
+        ...(unit ? [ocrCell(unit, 700, y, 730)] : []),
+        ...(rate ? [ocrCell(rate, 780, y, 820)] : []),
+        ...(amount ? [ocrCell(amount, 870, y, 930)] : []),
+    ];
+    const firstPageDetections = [
+        ...makeHeader(100),
+        ...makeRow('97', 'Prime Coat including preparation of surface', '', '', '', '', 130),
+        ...makeRow('', 'and spraying a uniform coat', '53847.5', 'm²', '4807.66', '259000000.00', 141),
+        ...makeRow('98', 'HDPE pipe 200mm PE80 PN6', '125', 'm', '121.25', '15156.25', 170),
+        ...makeRow('99', 'HDPE pipe 600mm SN8 DWC', '48', 'm³', '300.00', '14400.00', 190),
+        ...makeRow('100', 'HDPE pipe 250mm SN8 DWC', '300', 'No.', '4807.66', '100.00', 210),
+        ...makeRow('101', 'HDPE pipe 300mm SN8 DWC', '75', 'Each', '437.32', '32799.00', 230),
+        ...makeRow('102', 'HDPE pipe 110mm PE80 PN6', '', '', '', '', 250),
+    ];
+    const secondPageDetections = [
+        ...makeHeader(100),
+        ...makeRow('', '', '42', 'Km', '300.00', '12600.00', 130),
+        ...makeRow('103', 'HDPE coupler DN80', '16', 'Set', '121.25', '1940.00', 160),
+        ...makeRow('104', 'Valve chamber excavation', '9', 'Cum', '437.32', '3935.88', 180),
+    ];
+    const layoutPages = [firstPageDetections, secondPageDetections].map((detections, index) => ({
+        page: index + 1,
+        width: 1000,
+        height: 800,
+        rows: groupOcrDetections(detections),
+    }));
+    const tables = documentModel.reconstructTablesFromLayoutPages(layoutPages);
+    assert.equal(tables.length, 1, 'repeated page header continues one visual table');
+    const [table] = tables;
+    assert.deepEqual(table.headers, headers, 'all source columns, including rate and amount, survive reconstruction');
+    assert.equal(table.rows.length, 8, 'visual lines collapse into eight logical source rows');
+
+    const rowsBySerial = new Map(table.rows.map((row) => [row.cells[0], row]));
+    assert.equal(rowsBySerial.get('97').cells[1], 'Prime Coat including preparation of surface and spraying a uniform coat');
+    assert.equal(rowsBySerial.get('97').cells[2], '53847.5');
+    assert.equal(rowsBySerial.get('97').cells[3], 'm²');
+    assert.equal(rowsBySerial.get('97').cells[4], '4807.66');
+    assert.equal(rowsBySerial.get('97').cells[5], '259000000.00');
+    for (const [serial, description, quantity, unit] of [
+        ['98', '200mm PE80 PN6', '125', 'm'],
+        ['99', '600mm SN8 DWC', '48', 'm³'],
+        ['100', '250mm SN8 DWC', '300', 'No.'],
+        ['101', '300mm SN8 DWC', '75', 'Each'],
+    ]) {
+        const row = rowsBySerial.get(serial);
+        assert.ok(row.cells[1].includes(description), `${description} is on its own canonical row`);
+        assert.equal(row.cells[2], quantity);
+        assert.equal(row.cells[3], unit);
+    }
+    const continued = table.rows.find((row) => row.cells[1].includes('110mm PE80 PN6'));
+    assert.ok(continued, 'description row continues across the page header');
+    assert.equal(continued.cells[2], '42');
+    assert.equal(continued.cells[3], 'Km');
+    assert.deepEqual(continued.source.continuationSources.map((source) => source.page), [2]);
+
+    const sourceItems = table.rows.map((row) => documentModel.lineItemFromRow({
+        headers: table.headers,
+        row: row.cells,
+        source: row.source,
+        headerMap: { columns: table.columnMap, ambiguous: table.ambiguousHeaders },
+    }));
+    assert.ok(sourceItems.every((item) => item.product === null), 'unit values are not misclassified as products before AI');
+    assert.ok(sourceItems.every((item) => !['121.25', '300.00', '4807.66', '437.32'].includes(item.unit)), 'numeric rates never occupy the unit source column');
+    assert.equal(sourceItems.find((item) => item.serialNumber === '97').unit, 'm²');
+
+    const debugRows = documentModel.debugSourceRows(table);
+    assert.match(debugRows[0], /SOURCE ROW 97/);
+    assert.match(debugRows[0], /Description: Prime Coat including preparation of surface and spraying a uniform coat/);
+    assert.match(debugRows[0], /Quantity: 53847\.5/);
+    assert.match(debugRows[0], /Unit: m²/);
+    assert.match(debugRows[0], /Rate: 4807\.66/);
+    assert.match(debugRows[0], /Bounding boxes:/);
+    assert.match(debugRows[0], /Raw OCR detections:/);
+
+    const noSerialTable = documentModel.reconstructTablesFromLayoutPages([{
+        page: 4,
+        rows: groupOcrDetections([
+            ocrCell('Description', 100, 100, 225),
+            ocrCell('Quantity', 600, 100, 665),
+            ocrCell('Unit', 700, 100, 730),
+            ocrCell('Rate', 780, 100, 820),
+            ocrCell('Amount', 870, 100, 930),
+            ocrCell('Wrapped product description', 100, 130, 400),
+            ocrCell('continued description', 100, 141, 360),
+            ocrCell('10', 600, 141, 620),
+            ocrCell('m', 700, 141, 720),
+            ocrCell('121.25', 780, 141, 820),
+            ocrCell('1212.50', 870, 141, 920),
+            ocrCell('Second complete source item', 100, 180, 430),
+            ocrCell('2', 600, 180, 620),
+            ocrCell('Each', 700, 180, 735),
+            ocrCell('300.00', 780, 180, 820),
+            ocrCell('600.00', 870, 180, 920),
+        ]),
+    }])[0];
+    assert.equal(noSerialTable.rows.length, 2, 'baseline proximity groups wrapped text without merging a following row');
+    assert.equal(noSerialTable.rows[0].cells[0], 'Wrapped product description continued description');
+    assert.equal(noSerialTable.rows[0].cells[1], '10');
+    assert.equal(noSerialTable.rows[0].cells[3], '121.25');
+    assert.equal(noSerialTable.rows[1].cells[0], 'Second complete source item');
+    assert.equal(noSerialTable.rows[1].cells[2], 'Each');
+
+    const unpositioned = documentModel.reconstructTablesFromLayoutPages([{
+        page: 3,
+        rows: [
+            makeHeader(100),
+            [{ text: 'unpositioned OCR evidence', confidence: 0.41 }],
+        ],
+    }])[0];
+    assert.equal(unpositioned.rows.length, 1, 'unpositioned source evidence is retained rather than dropped');
+    const unpositionedItem = documentModel.lineItemFromRow({
+        headers: unpositioned.headers,
+        row: unpositioned.rows[0].cells,
+        source: unpositioned.rows[0].source,
+        headerMap: { columns: unpositioned.columnMap, ambiguous: unpositioned.ambiguousHeaders },
+    });
+    assert.ok(unpositionedItem.warnings.some((warning) => /no usable bounding box/i.test(warning)));
+    assert.equal(unpositionedItem.provenance.rawOcrDetections[0].text, 'unpositioned OCR evidence');
+}
+
 async function main() {
     await testSelectiveNativePdfOcr();
+    testScannedBoqVisualSourceRows();
     const standard = await boqExtractor.parseDocument(
         await makeXlsx(['S.No', 'Description', 'Unit', 'Qty'], [['1', 'Valve DN50', 'nos', '2']]),
         '.xlsx', 'standard.xlsx'

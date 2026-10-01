@@ -138,17 +138,50 @@ function mergeContinuedPageTables(tables) {
         const consecutive = previousPage != null && table.source?.page === previousPage + 1;
         if (consecutive && signature(prior.headers) === signature(table.headers)) {
             const descriptionIndex = prior.columnMap.description?.index;
+            const identityIndexes = ['serialNumber', 'itemCode']
+                .map((field) => prior.columnMap[field]?.index)
+                .filter((index) => index != null);
+            const measureIndexes = ['quantity', 'unit', 'rate', 'amount']
+                .map((field) => prior.columnMap[field]?.index)
+                .filter((index) => index != null);
             for (const row of table.rows) {
                 const populated = row.cells
                     .map((value, index) => String(value ?? '').trim() ? index : -1)
                     .filter((index) => index >= 0);
                 const priorRow = prior.rows[prior.rows.length - 1];
-                if (priorRow && descriptionIndex != null && populated.length === 1 && populated[0] === descriptionIndex) {
-                    priorRow.cells[descriptionIndex] = [priorRow.cells[descriptionIndex], row.cells[descriptionIndex]].filter(Boolean).join(' ');
+                const hasIdentity = identityIndexes.some((index) => String(row.cells[index] ?? '').trim());
+                const hasDescription = descriptionIndex != null && String(row.cells[descriptionIndex] ?? '').trim();
+                const descriptionContinuation = populated.length === 1 && populated[0] === descriptionIndex;
+                const valuesContinuation = populated.length > 0 && populated.every((index) => measureIndexes.includes(index));
+                if (priorRow && !hasIdentity && String(priorRow.cells[descriptionIndex] ?? '').trim()
+                    && (descriptionContinuation || valuesContinuation)) {
+                    const conflicts = populated.filter((index) => index !== descriptionIndex
+                        && String(priorRow.cells[index] ?? '').trim()
+                        && String(priorRow.cells[index]) !== String(row.cells[index]));
+                    if (conflicts.length) {
+                        const warning = 'Page continuation conflicts with populated source columns; row association requires review.';
+                        priorRow.source.reviewWarnings = [...new Set([...(priorRow.source.reviewWarnings || []), warning])];
+                        row.source.reviewWarnings = [...new Set([...(row.source.reviewWarnings || []), warning])];
+                        prior.rows.push({ ...row, source: { ...row.source, table: prior.source.table } });
+                        continue;
+                    }
+                    if (descriptionContinuation) {
+                        priorRow.cells[descriptionIndex] = [priorRow.cells[descriptionIndex], row.cells[descriptionIndex]].filter(Boolean).join(' ');
+                    } else {
+                        for (const index of populated) priorRow.cells[index] = priorRow.cells[index] || row.cells[index];
+                    }
                     priorRow.source.continuationSources = [
                         ...(priorRow.source.continuationSources || []),
-                        { page: row.source.page ?? table.source.page, row: row.source.row },
+                        {
+                            page: row.source.page ?? table.source.page,
+                            row: row.source.row,
+                            cellBounds: row.source.cellBounds || [],
+                            rawOcrDetections: row.source.rawOcrDetections || [],
+                        },
                     ];
+                    priorRow.source.cellBounds = [...(priorRow.source.cellBounds || []), ...(row.source.cellBounds || [])];
+                    priorRow.source.rawOcrDetections = [...(priorRow.source.rawOcrDetections || []), ...(row.source.rawOcrDetections || [])];
+                    priorRow.source.reviewWarnings = [...new Set([...(priorRow.source.reviewWarnings || []), ...(row.source.reviewWarnings || [])])];
                 } else {
                     prior.rows.push({ ...row, source: { ...row.source, table: prior.source.table } });
                 }
@@ -233,11 +266,116 @@ function detectionBounds(cell) {
     };
 }
 
+function mergeVisualLineIntoRow(target, line, descriptionIndex) {
+    const collisions = [];
+    for (let index = 0; index < line.cells.length; index++) {
+        const value = String(line.cells[index] ?? '').trim();
+        if (!value || index === descriptionIndex) continue;
+        const current = String(target.cells[index] ?? '').trim();
+        if (current && current !== value) collisions.push(index);
+    }
+    if (collisions.length) return false;
+
+    for (let index = 0; index < line.cells.length; index++) {
+        const value = String(line.cells[index] ?? '').trim();
+        if (!value) continue;
+        const current = String(target.cells[index] ?? '').trim();
+        target.cells[index] = index === descriptionIndex
+            ? [current, value].filter(Boolean).join(' ')
+            : current || value;
+    }
+    target.source.continuationSources.push({
+        page: line.source.page,
+        row: line.source.row,
+        cellBounds: line.source.cellBounds,
+        rawOcrDetections: line.source.rawOcrDetections,
+    });
+    target.source.cellBounds.push(...line.source.cellBounds);
+    target.source.rawOcrDetections.push(...line.source.rawOcrDetections);
+    target.source.reviewWarnings.push(...(line.source.reviewWarnings || []));
+    target.lastCenterY = line.centerY;
+    target.maxCellHeight = Math.max(target.maxCellHeight, line.maxCellHeight);
+    return true;
+}
+
+function groupVisualLinesIntoSourceRows(lines, columnMap, pageNumber, tableNumber) {
+    const descriptionIndex = columnMap.description?.index;
+    const identityIndexes = ['serialNumber', 'itemCode']
+        .map((field) => columnMap[field]?.index)
+        .filter((index) => index != null);
+    const measureIndexes = ['quantity', 'unit', 'rate', 'amount']
+        .map((field) => columnMap[field]?.index)
+        .filter((index) => index != null);
+    const output = [];
+    const populated = (cells) => cells
+        .map((value, index) => String(value ?? '').trim() ? index : -1)
+        .filter((index) => index >= 0);
+    const hasValue = (cells, indexes) => indexes.some((index) => String(cells[index] ?? '').trim());
+
+    for (const line of lines) {
+        const indexes = populated(line.cells);
+        if (!indexes.length && !(line.source.rawOcrDetections || []).length) continue;
+        const hasIdentity = hasValue(line.cells, identityIndexes);
+        const hasDescription = descriptionIndex != null && Boolean(String(line.cells[descriptionIndex] ?? '').trim());
+        const hasMeasure = hasValue(line.cells, measureIndexes);
+        const prior = output[output.length - 1];
+        const verticalGap = prior ? line.centerY - prior.lastCenterY : Number.POSITIVE_INFINITY;
+        const closeBaseline = prior && verticalGap <= Math.max(12, prior.maxCellHeight * 1.75);
+        let continuation = false;
+
+        if (prior && !hasIdentity && String(prior.cells[descriptionIndex] ?? '').trim()) {
+            const priorHasMeasure = hasValue(prior.cells, measureIndexes);
+            if (!hasDescription && hasMeasure) {
+                continuation = !measureIndexes.some((index) =>
+                    String(line.cells[index] ?? '').trim() && String(prior.cells[index] ?? '').trim()
+                );
+            } else if (hasDescription && !hasMeasure) {
+                continuation = true;
+                if (continuation && priorHasMeasure) {
+                    prior.source.reviewWarnings.push('Description continuation has no row identifier after source values; verify visual row association.');
+                }
+            } else if (hasDescription && hasMeasure && closeBaseline) {
+                continuation = true;
+            } else if (hasDescription && hasMeasure && !closeBaseline && !priorHasMeasure) {
+                const warning = 'Adjacent visual lines could be one wrapped source row or two items; verify row association.';
+                prior.source.reviewWarnings.push(warning);
+                line.source.reviewWarnings.push(warning);
+            }
+        }
+
+        if (continuation) {
+            if (mergeVisualLineIntoRow(prior, line, descriptionIndex)) continue;
+            const warning = 'Visual continuation conflicts with populated source columns; row association requires review.';
+            prior.source.reviewWarnings.push(warning);
+            line.source.reviewWarnings.push(warning);
+        }
+        const reviewWarnings = [...(line.source.reviewWarnings || [])];
+        if (!hasDescription) reviewWarnings.push('Visual source row has no detected description; verify OCR alignment.');
+        if (!line.source.cellBounds.length) reviewWarnings.push('Visual source row has no positioned OCR detections.');
+        const source = {
+            ...line.source,
+            page: pageNumber,
+            table: tableNumber,
+            continuationSources: [],
+            reviewWarnings,
+        };
+        output.push({
+            cells: line.cells,
+            source,
+            centerY: line.centerY,
+            lastCenterY: line.centerY,
+            maxCellHeight: line.maxCellHeight,
+        });
+    }
+    return output.map(({ cells, source }) => ({ cells, source }));
+}
+
 function reconstructTablesFromLayoutPages(pages) {
     const pageTables = [];
     for (const page of pages || []) {
         const rows = page.rows || [];
         let cursor = 0;
+        let pageTableNumber = 0;
         while (cursor < rows.length) {
             const headerCells = rows[cursor] || [];
             const headers = headerCells.map((cell) => String(cell.text ?? '').trim());
@@ -246,7 +384,6 @@ function reconstructTablesFromLayoutPages(pages) {
                 continue;
             }
 
-            const headerMap = mapHeaders(headers);
             const anchors = headerCells.map((cell, index) => ({
                 index,
                 text: headers[index],
@@ -257,64 +394,123 @@ function reconstructTablesFromLayoutPages(pages) {
                 continue;
             }
             anchors.sort((a, b) => a.bounds.left - b.bounds.left);
-            const boundaries = anchors.slice(1).map((anchor, index) =>
-                (anchors[index].bounds.left + anchor.bounds.left) / 2
-            );
             const orderedHeaders = anchors.map((anchor) => anchor.text);
-            const matrix = [orderedHeaders];
+            const headerMap = mapHeaders(orderedHeaders);
+            const boundaries = anchors.slice(1).map((anchor, index) => {
+                const prior = anchors[index].bounds;
+                const next = anchor.bounds;
+                return prior.right <= next.left
+                    ? (prior.right + next.left) / 2
+                    : (prior.left + prior.right + next.left + next.right) / 4;
+            });
+            const visualLines = [];
             let end = cursor + 1;
             for (; end < rows.length; end++) {
                 const visualRow = rows[end] || [];
                 const rowHeaders = visualRow.map((cell) => String(cell.text ?? '').trim());
                 if (isHeaderRow(rowHeaders)) break;
                 const values = Array(orderedHeaders.length).fill('');
-                let positionedCellCount = 0;
+                const cellBounds = [];
+                const rawOcrDetections = [];
+                const reviewWarnings = [];
+                let centerTotal = 0;
+                let centerCount = 0;
+                let maxCellHeight = 0;
                 for (const cell of visualRow) {
                     const text = String(cell.text ?? '').trim();
+                    if (!text) continue;
                     const bounds = detectionBounds(cell);
-                    if (!text || !bounds) continue;
+                    const rawEvidence = {
+                        text,
+                        boundingBox: cell.boundingBox || null,
+                        confidence: cell.confidence ?? null,
+                    };
+                    if (!bounds) {
+                        rawOcrDetections.push({ ...rawEvidence, column: null });
+                        reviewWarnings.push('OCR detection has no usable bounding box; verify its source column.');
+                        continue;
+                    }
                     const column = boundaries.findIndex((boundary) => bounds.left < boundary);
                     const columnIndex = column < 0 ? anchors.length - 1 : column;
                     values[columnIndex] = [values[columnIndex], text].filter(Boolean).join(' ');
-                    positionedCellCount++;
+                    const y = (bounds.top + bounds.bottom) / 2;
+                    centerTotal += y;
+                    centerCount++;
+                    maxCellHeight = Math.max(maxCellHeight, bounds.bottom - bounds.top);
+                    cellBounds.push({
+                        column: columnIndex + 1,
+                        ...rawEvidence,
+                        bounds,
+                    });
+                    rawOcrDetections.push({ ...rawEvidence, column: columnIndex + 1 });
                 }
-                if (!positionedCellCount) continue;
-                matrix.push(values);
+                if (!cellBounds.length && !rawOcrDetections.length) continue;
+                visualLines.push({
+                    cells: values,
+                    centerY: centerCount ? centerTotal / centerCount : end,
+                    maxCellHeight,
+                    source: {
+                        page: page.page,
+                        row: end + 1,
+                        cellBounds,
+                        rawOcrDetections,
+                        reviewWarnings,
+                    },
+                });
             }
 
-            const tables = extractTablesFromMatrix(matrix, {
-                page: page.page,
-                rowOffset: cursor,
+            pageTableNumber++;
+            const tableNumber = pageTableNumber;
+            const logicalRows = groupVisualLinesIntoSourceRows(visualLines, headerMap.columns, page.page, tableNumber);
+            pageTables.push({
+                headers: orderedHeaders,
+                headerRow: cursor + 1,
+                columnMap: headerMap.columns,
+                ambiguousHeaders: headerMap.ambiguous,
+                unmappedHeaders: headerMap.unmapped,
+                source: { page: page.page, table: tableNumber },
+                pageWidth: page.width || null,
+                pageHeight: page.height || null,
+                rows: logicalRows,
             });
-            for (const table of tables) {
-                const sourceEvidence = (rowNumber) => (rows[rowNumber - 1] || []).map((cell, column) => ({
-                    column: column + 1,
-                    text: cell.text,
-                    boundingBox: cell.boundingBox || null,
-                    confidence: cell.confidence ?? null,
-                }));
-                table.rows = table.rows.map((row) => ({
-                    ...row,
-                    source: {
-                        ...row.source,
-                        cellBounds: sourceEvidence(row.source.row),
-                        continuationSources: (row.source.continuationSources || []).map((continuation) => ({
-                            ...continuation,
-                            cellBounds: sourceEvidence(continuation.row),
-                        })),
-                    },
-                }));
-                table.columnMap = headerMap.columns;
-                table.ambiguousHeaders = headerMap.ambiguous;
-                table.unmappedHeaders = headerMap.unmapped;
-                table.pageWidth = page.width || null;
-                table.pageHeight = page.height || null;
-                pageTables.push(table);
-            }
             cursor = Math.max(end, cursor + 1);
         }
     }
     return mergeContinuedPageTables(pageTables);
+}
+
+function debugSourceRows(table) {
+    const headers = table?.headers || [];
+    return (table?.rows || []).map((row) => {
+        const source = row.source || {};
+        const serialColumn = table.columnMap?.serialNumber?.index;
+        const itemCodeColumn = table.columnMap?.itemCode?.index;
+        const sourceId = (serialColumn != null && row.cells[serialColumn])
+            || (itemCodeColumn != null && row.cells[itemCodeColumn])
+            || source.row
+            || '?';
+        const fields = headers.map((header, index) => `${header || `Column ${index + 1}`}: ${String(row.cells[index] ?? '').trim()}`);
+        const boxes = (source.cellBounds || []).map((cell) => {
+            const bounds = cell.bounds || detectionBounds({ boundingBox: cell.boundingBox });
+            return bounds
+                ? `col ${cell.column} "${cell.text}" x=${bounds.left}-${bounds.right} y=${bounds.top}-${bounds.bottom}`
+                : `col ${cell.column} "${cell.text}" (no bounds)`;
+        });
+            const rawDetections = (source.rawOcrDetections || []).map((cell) => {
+                const bounds = cell.bounds || detectionBounds({ boundingBox: cell.boundingBox });
+                return bounds
+                ? `col ${cell.column ?? 'unassigned'} "${cell.text}" x=${bounds.left}-${bounds.right} y=${bounds.top}-${bounds.bottom}`
+                : `col unassigned "${cell.text}" (no bounds)`;
+            });
+        return [
+            `SOURCE ROW ${sourceId}`,
+            ...fields,
+            `Source page: ${source.page ?? 'unknown'}; source row: ${source.row ?? 'unknown'}`,
+            `Bounding boxes: ${boxes.join('; ') || 'none'}`,
+            `Raw OCR detections: ${rawDetections.join('; ') || 'none'}`,
+            ...(source.reviewWarnings?.length ? [`Review: ${source.reviewWarnings.join('; ')}`] : []),
+        ].join('\n');
+    });
 }
 
 function findVisualTablePages(pages) {
@@ -410,6 +606,8 @@ function lineItemFromRow({ headers = [], row = [], source = {}, filename = '', h
     const warnings = [];
     const quantity = quantityColumnPresent ? parseSourceQuantity(quantityRaw) : null;
 
+    warnings.push(...(Array.isArray(source.reviewWarnings) ? source.reviewWarnings : []));
+
     if (quantity === null) warnings.push('Quantity could not be determined from source.');
     if (!unit) warnings.push('Unit could not be determined from source.');
     for (const [field, matches] of Object.entries(headerMap.ambiguous || {})) {
@@ -439,6 +637,8 @@ function lineItemFromRow({ headers = [], row = [], source = {}, filename = '', h
             row: sourceRow || null,
             continuationSources: source.continuationSources || [],
             cellBounds: source.cellBounds || [],
+            rawOcrDetections: source.rawOcrDetections || [],
+            reviewWarnings: source.reviewWarnings || [],
             columns: Object.fromEntries(Object.entries(columns).map(([field, column]) => [field, column.header])),
             ambiguousColumns: headerMap.ambiguous || {},
         },
@@ -475,6 +675,7 @@ module.exports = {
     mergeContinuedPageTables,
     extractTablesAcrossPages,
     reconstructTablesFromLayoutPages,
+    debugSourceRows,
     findVisualTablePages,
     createDocument,
     lineItemFromRow,

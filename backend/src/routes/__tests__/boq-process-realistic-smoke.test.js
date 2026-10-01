@@ -110,6 +110,7 @@ const BOQ_AI_MAX_CALL_MS = 5000;
 const EXPECTED_MAX_CHUNKS = Math.max(8, Math.floor(BOQ_TOTAL_BUDGET_MS / 2000) * Number(process.env.BOQ_AI_CONCURRENCY || 4));
 
 const boqExtractor = require('../../documents/boqExtractor');
+const documentModel = require('../../documents/documentModel');
 const boqRoute = require('../../routes/boq');
 
 // ── Stub the AI at the service boundary; record calls + latency ──
@@ -451,31 +452,47 @@ async function test6_sourceColumnsOverrideAiValues() {
 }
 
 async function test7_nativePdfUsesVisualTableReconstruction() {
-    console.log('▶ Test 7: native PDF without text tables uses visual reconstruction');
+    console.log('▶ Test 7: route canonical rows preserve visual BOQ columns before AI');
     const originalComplete = aiService._complete;
     const originalParseDocument = boqExtractor.parseDocument;
     const pdfOcr = require('../../documents/pdfOcr');
     const originalVisualOcr = pdfOcr.ocrNativePdfPages;
+    const originalConsoleLog = console.log;
+    const originalDebugFlag = process.env.BOQ_DEBUG_SOURCE_ROWS;
+    const debugLogs = [];
     let renderedPages = [];
+    process.env.BOQ_DEBUG_SOURCE_ROWS = '1';
+    console.log = (...args) => { debugLogs.push(args.join(' ')); };
     aiService._complete = async (messages) => {
         const prompt = messages[0].content;
         assert.match(prompt, /SOURCE ROWS/);
+        const debug = debugLogs.join('\n');
+        assert.match(debug, /SOURCE ROW 97/);
+        assert.match(debug, /Quantity: 53847\.5/);
+        assert.match(debug, /Unit: m²/);
+        assert.match(debug, /Rate: 4807\.66/);
+        assert.match(debug, /Bounding boxes:/);
         const inputRows = structuredInputRows(prompt);
+        assert.ok(inputRows.every((row) => !['quantity', 'unit', 'rate', 'amount', 'serialNumber', 'itemCode'].some((field) => Object.hasOwn(row, field))),
+            'AI receives descriptive context only; source values stay backend-controlled');
+        for (const protectedValue of ['97', '53847.5', 'm²', '4807.66', '259000000.00']) {
+            assert.ok(!JSON.stringify(inputRows).includes(protectedValue), `${protectedValue} stays out of the AI row payload`);
+        }
         return JSON.stringify({ items: inputRows.map((row) => ({
             rowId: row.rowId,
-            product: 'Pump assembly',
-            size: '200 mm',
+            product: null,
+            size: null,
             specification: null,
             application: null,
             remarks: null,
-            confidence: { product: 0.9 },
+            confidence: {},
             warnings: [],
         })) });
     };
     boqExtractor.parseDocument = async (_buffer, ext, filename) => ({
         metadata: { filename, fileExt: ext },
-        rawText: 'S.No Item Description Unit Estimate Quantity\n72 Providing pump assembly m 22699.40',
-        pages: [{ page: 1, text: 'S.No Item Description Unit Estimate Quantity\n72 Providing pump assembly m 22699.40' }],
+        rawText: 'S.No Description Quantity Unit Rate Amount\n97 Prime Coat 53847.5 m² 4807.66 259000000.00',
+        pages: [{ page: 1, text: 'S.No Description Quantity Unit Rate Amount\n97 Prime Coat 53847.5 m² 4807.66 259000000.00' }],
         sheets: [],
         tables: [],
     });
@@ -486,43 +503,65 @@ async function test7_nativePdfUsesVisualTableReconstruction() {
             boundingBox: { points: [{ x: left, y: top }, { x: right, y: top }, { x: right, y: top + 8 }, { x: left, y: top + 8 }] },
             confidence: 0.99,
         });
+        const row = (serial, description, quantity, unit, rate, amount, y) => [
+            ...(serial ? [box(serial, 20, y, 55)] : []),
+            ...(description ? [box(description, 100, y, 540)] : []),
+            ...(quantity ? [box(quantity, 600, y, 665)] : []),
+            ...(unit ? [box(unit, 700, y, 730)] : []),
+            ...(rate ? [box(rate, 780, y, 820)] : []),
+            ...(amount ? [box(amount, 870, y, 930)] : []),
+        ];
         return {
             pageCount: 1,
             failedPages: [],
             pages: [{
                 page: 1,
-                width: 900,
+                width: 1000,
                 height: 1200,
                 rows: [
-                    [box('S.No', 20, 100, 50), box('Item Description', 100, 100, 260), box('Unit', 600, 100, 640), box('Estimate Quantity', 730, 100, 860)],
-                    [box('72', 20, 120, 35), box('200 mm dia coil pump assembly', 100, 120, 550), box('m', 600, 120, 620), box('22699.40', 730, 120, 800)],
+                    [box('S.No', 20, 100, 55), box('Description', 100, 100, 225), box('Quantity', 600, 100, 665), box('Unit', 700, 100, 730), box('Rate', 780, 100, 820), box('Amount', 870, 100, 930)],
+                    row('97', 'Prime Coat including preparation of surface', '', '', '', '', 130),
+                    row('', 'and spraying a uniform coat', '53847.5', 'm²', '4807.66', '259000000.00', 141),
+                    row('98', 'HDPE pipe 200mm PE80 PN6', '125', 'm', '121.25', '15156.25', 170),
+                    row('99', 'HDPE pipe 600mm SN8 DWC', '48', 'm³', '300.00', '14400.00', 190),
+                    row('100', 'HDPE pipe 250mm SN8 DWC', '300', 'No.', '4807.66', '100.00', 210),
+                    row('101', 'HDPE pipe 300mm SN8 DWC', '75', 'Each', '437.32', '32799.00', 230),
                 ],
             }],
         };
     };
     try {
         const { req, res, getStatus, getBody } = makeReqRes({
-            originalname: 'generic-native-layout.pdf',
+            originalname: 'visual-source-regression.pdf',
             size: 20,
             buffer: Buffer.from('%PDF-1.7 visual fixture'),
         });
         await runProcessHandler(req, res);
         assert.equal(getStatus(), 201, JSON.stringify(getBody()));
         assert.deepEqual(renderedPages, [1]);
-        const item = getBody().items[0];
-        assert.equal(item.serialNumber, '72');
-        assert.equal(item.quantity, 22699.4);
-        assert.equal(item.unit, 'm');
-        assert.equal(item.size, '200 mm');
-        assert.equal(item.sourceValues['Estimate Quantity'], '22699.40');
-        assert.equal(item.provenance.cellBounds.length, 4);
-        assert.ok(item.provenance.cellBounds[1].boundingBox.points.length > 0);
+        const items = getBody().items;
+        assert.equal(items.length, 5, 'canonical rows are correct before AI and remain one per visible BOQ item');
+        const primer = items.find((item) => item.serialNumber === '97');
+        assert.match(primer.description, /Prime Coat including preparation of surface and spraying a uniform coat/);
+        assert.equal(primer.quantity, 53847.5);
+        assert.equal(primer.unit, 'm²');
+        assert.equal(primer.sourceValues.Rate, '4807.66');
+        assert.equal(primer.sourceValues.Amount, '259000000.00');
+        const hdpe = items.filter((item) => /HDPE pipe/.test(item.description));
+        assert.deepEqual(hdpe.map((item) => item.description.match(/\d+mm[^ ]*(?: [^ ]+)*/)?.[0]), [
+            '200mm PE80 PN6', '600mm SN8 DWC', '250mm SN8 DWC', '300mm SN8 DWC',
+        ]);
+        assert.deepEqual(hdpe.map((item) => [item.quantity, item.unit]), [[125, 'm'], [48, 'm³'], [300, 'No.'], [75, 'Each']]);
+        assert.ok(primer.provenance.cellBounds.some((cell) => cell.column === 5 && cell.boundingBox.points.length > 0));
         assert.equal(getBody().extraction_metadata.strategy, 'pdf_visual_tables');
         assert.ok(getBody().extraction_metadata.pages[0].rows.length > 0);
     } finally {
         aiService._complete = originalComplete;
         boqExtractor.parseDocument = originalParseDocument;
         pdfOcr.ocrNativePdfPages = originalVisualOcr;
+        console.log = originalConsoleLog;
+        if (originalDebugFlag === undefined) delete process.env.BOQ_DEBUG_SOURCE_ROWS;
+        else process.env.BOQ_DEBUG_SOURCE_ROWS = originalDebugFlag;
     }
     console.log('✅ Test 7 passed\n');
 }

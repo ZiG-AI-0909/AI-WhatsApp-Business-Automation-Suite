@@ -136,7 +136,7 @@ function groupOcrDetections(detections) {
         return (a.center - b.center) || ((a.left ?? 0) - (b.left ?? 0));
     });
     const heights = positioned.filter((item) => item.top != null).map((item) => Math.max(0, item.bottom - item.top)).sort((a, b) => a - b);
-    const rowTolerance = heights.length ? Math.max(heights[Math.floor(heights.length / 2)] * 0.75, 0.001) : 0;
+    const rowTolerance = heights.length ? Math.max(heights[Math.floor(heights.length / 2)] * 1.25, 0.001) : 0;
     const rows = [];
     for (const detection of positioned) {
         const prior = rows[rows.length - 1];
