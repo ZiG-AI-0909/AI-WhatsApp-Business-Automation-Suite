@@ -5,7 +5,9 @@ const db = require('../database/db');
 const boqExtractor = require('../documents/boqExtractor');
 const documentModel = require('../documents/documentModel');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
+const { aiExtractLimiter } = require('../middleware/rateLimiterMiddleware');
 const { resolveAiConfig } = require('../utils/aiConfig');
+const { randomUUID } = require('crypto');
 
 const router = express.Router();
 
@@ -80,6 +82,11 @@ const BOQ_AI_MAX_CALL_MS = Math.max(
 // limits comfortable and turns the worst case from N × per-call latency
 // into ceil(N/4) × per-call latency.
 const BOQ_AI_CONCURRENCY = Math.max(1, Number(process.env.BOQ_AI_CONCURRENCY || 4));
+const BOQ_AI_GLOBAL_CONCURRENCY = Math.max(1, Number(process.env.BOQ_AI_GLOBAL_CONCURRENCY || 8));
+const BOQ_AI_MAX_PENDING = Math.max(0, Number(process.env.BOQ_AI_MAX_PENDING || 32));
+let activeBoqAiCalls = 0;
+const pendingBoqAiCalls = [];
+const boqJobs = new Map();
 // Chunk cap: how many extraction calls one request may make. The old
 // formula (budget ÷ min-call floor = 90s/20s = 4) silently regressed the
 // size-cap removal — it re-rejected the real 19-page tender at ~48k chars
@@ -87,7 +94,7 @@ const BOQ_AI_CONCURRENCY = Math.max(1, Number(process.env.BOQ_AI_CONCURRENCY || 
 // time is ceil(N/4) × per-call, and the cap is floored at 8 (~96k chars at
 // the 12k-char default chunk size — the real 19-page tender needs 7).
 const BOQ_MAX_CHUNKS = Number(process.env.BOQ_MAX_CHUNKS)
-    || Math.max(8, Math.floor(BOQ_TOTAL_BUDGET_MS / BOQ_AI_MIN_CALL_MS));
+    || Math.max(8, Math.floor(BOQ_TOTAL_BUDGET_MS / BOQ_AI_MIN_CALL_MS) * BOQ_AI_CONCURRENCY);
 // OCR page cap (scanned PDFs): enforced inside documents/pdfOcr.js — kept
 // visible here for the logging line. BOQ_OCR_MAX_PAGES is the env knob.
 const BOQ_OCR_MAX_PAGES = Number(process.env.BOQ_OCR_MAX_PAGES || 20);
@@ -113,6 +120,133 @@ function mapExtractionStatus(error) {
     const providerStatus = error?.providerStatus;
     if (providerStatus) return { status: 502, retryable: providerStatus === 429 || providerStatus >= 500 };
     return { status: 502, retryable: false };
+}
+
+function createCancellationError() {
+    const error = new Error('BOQ extraction was cancelled.');
+    error.name = 'AbortError';
+    error.code = 'ABORT_ERR';
+    return error;
+}
+
+function acquireBoqAiSlot(signal) {
+    if (signal?.aborted) return Promise.reject(createCancellationError());
+    if (activeBoqAiCalls < BOQ_AI_GLOBAL_CONCURRENCY && !pendingBoqAiCalls.length) {
+        activeBoqAiCalls++;
+        return Promise.resolve();
+    }
+    if (pendingBoqAiCalls.length >= BOQ_AI_MAX_PENDING) {
+        return Promise.reject(new Error('BOQ AI capacity is full; this batch was deferred for manual review.'));
+    }
+    return new Promise((resolve, reject) => {
+        const waiter = { resolve, reject, signal, onAbort: null };
+        waiter.onAbort = () => {
+            const index = pendingBoqAiCalls.indexOf(waiter);
+            if (index >= 0) pendingBoqAiCalls.splice(index, 1);
+            reject(createCancellationError());
+        };
+        signal?.addEventListener('abort', waiter.onAbort, { once: true });
+        pendingBoqAiCalls.push(waiter);
+    });
+}
+
+function releaseBoqAiSlot() {
+    activeBoqAiCalls--;
+    while (pendingBoqAiCalls.length) {
+        const waiter = pendingBoqAiCalls.shift();
+        waiter.signal?.removeEventListener('abort', waiter.onAbort);
+        if (waiter.signal?.aborted) {
+            waiter.reject(createCancellationError());
+            continue;
+        }
+        activeBoqAiCalls++;
+        waiter.resolve();
+        break;
+    }
+}
+
+async function withBoqAiSlot(task, signal) {
+    await acquireBoqAiSlot(signal);
+    try {
+        if (signal?.aborted) throw createCancellationError();
+        return await task();
+    } finally {
+        releaseBoqAiSlot();
+    }
+}
+
+function boqJobKey(userId, jobId) {
+    return `${userId}:${jobId}`;
+}
+
+function publicBoqProgress(job) {
+    return {
+        ...job.progress,
+        jobId: job.jobId,
+        activeBatches: [...job.activeBatches].sort((a, b) => a - b),
+    };
+}
+
+function updateBoqProgress(job, updates = {}) {
+    Object.assign(job.progress, updates, { updatedAt: new Date().toISOString() });
+    const total = job.progress.totalBatches;
+    job.progress.percent = total
+        ? Math.min(100, Math.floor((job.progress.completedBatches / total) * 100))
+        : 0;
+    return publicBoqProgress(job);
+}
+
+function createBoqJob(userId, requestedJobId) {
+    const jobId = /^[a-zA-Z0-9-]{1,100}$/.test(requestedJobId || '') ? requestedJobId : randomUUID();
+    const key = boqJobKey(userId, jobId);
+    const existing = boqJobs.get(key);
+    if (existing && ['reading', 'extracting', 'cancelling'].includes(existing.progress.status)) return null;
+    const job = {
+        userId,
+        jobId,
+        key,
+        controller: new AbortController(),
+        activeBatches: new Set(),
+        progress: {
+            status: 'reading',
+            totalBatches: 0,
+            completedBatches: 0,
+            currentBatch: 0,
+            totalSourceRows: 0,
+            handledRows: 0,
+            reviewCount: 0,
+            percent: 0,
+            documentId: null,
+            updatedAt: new Date().toISOString(),
+        },
+    };
+    boqJobs.set(key, job);
+    const expiry = setTimeout(() => {
+        if (boqJobs.get(key) === job) boqJobs.delete(key);
+    }, 10 * 60 * 1000);
+    expiry.unref?.();
+    return job;
+}
+
+function startBoqBatch(job, batchNumber) {
+    if (job.controller.signal.aborted) return false;
+    job.activeBatches.add(batchNumber);
+    updateBoqProgress(job, {
+        status: 'extracting',
+        currentBatch: batchNumber,
+        activeBatches: [...job.activeBatches],
+    });
+    return true;
+}
+
+function finishBoqBatch(job, batchNumber, rowCount, failed) {
+    job.activeBatches.delete(batchNumber);
+    updateBoqProgress(job, {
+        completedBatches: job.progress.completedBatches + 1,
+        handledRows: Math.min(job.progress.totalSourceRows, job.progress.handledRows + rowCount),
+        reviewCount: job.progress.reviewCount + (failed ? rowCount : 0),
+        activeBatches: [...job.activeBatches],
+    });
 }
 
 /**
@@ -158,7 +292,7 @@ function resolveDocIntelModel(storedModel) {
  * inherit whatever earlier ones left behind. Each call gets exactly one
  * transient retry (timeout/socket break, 429, 5xx) inside that deadline.
  */
-async function extractItemsWithAI(userId, documentText, filename = 'document', deadlineMs = 0) {
+async function extractItemsWithAI(userId, documentText, filename = 'document', deadlineMs = 0, job) {
     const { aiConfig, model, aiService } = await loadExtractionClient(userId);
 
     const chunks = boqExtractor.splitIntoChunks(documentText);
@@ -189,6 +323,9 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
     const failed = new Array(chunks.length).fill(null);
     const runChunk = async (i) => {
         const chunkStart = Date.now();
+        const batchNumber = i + 1;
+        if (!startBoqBatch(job, batchNumber)) return;
+        const sourceLines = chunks[i].split('\n').filter((line) => line.trim() && !boqExtractor.isPageBreak(line)).length;
         const chunksLeft = chunks.length - i; // chunks i+1.. have not started yet
         // The wave this chunk belongs to and how many waves remain AFTER it.
         // Waves, not chunks, are what serially consume the wall clock.
@@ -199,6 +336,7 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
             exhausted.statusCode = 504;
             exhausted.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: true };
             failed[i] = exhausted;
+            finishBoqBatch(job, batchNumber, sourceLines, true);
             return;
         }
         // Fair share of what is left, clamped to the per-call ceiling. A
@@ -209,7 +347,7 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
         console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} starting (${chunks[i].length} chars, budget ${Math.round(remaining / 1000)}s left, per-call timeout ${Math.round(perCallMs / 1000)}s, model ${model || 'default'})`);
         let content;
         try {
-            content = await aiService._complete(
+            content = await withBoqAiSlot(() => aiService._complete(
                 [{ role: 'user', content: boqExtractor.buildExtractionPrompt(chunks[i]) }],
                 {
                     apiKey: aiConfig.apiKey,
@@ -230,16 +368,23 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
                     minAttemptMs: BOQ_AI_MIN_CALL_MS,
                     retries: 1, // exactly ONE transient retry, inside the deadline
                     reasoningEffort: 'none', // raw JSON out; thinking burned the old token budget
+                    signal: job.controller.signal,
                     logLabel: `boq chunk ${i + 1}/${chunks.length}`,
                 }
-            );
+            ), job.controller.signal);
         } catch (error) {
+            if (job.controller.signal.aborted) {
+                failed[i] = createCancellationError();
+                finishBoqBatch(job, batchNumber, sourceLines, true);
+                return;
+            }
             const mapped = mapExtractionStatus(error);
             console.error(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} FAILED after ${Date.now() - chunkStart}ms (attempt(s): ${error.attempts || 1}, kind ${error.aiKind || 'unknown'}${error.providerStatus ? `, provider HTTP ${error.providerStatus}` : ''}${error.providerRequestId ? `, req-id ${error.providerRequestId}` : ''}): ${error.message}${error.providerBody ? ` | provider body: ${error.providerBody}` : ''}`);
             error.message = `Section ${i + 1} of ${chunks.length} of "${filename}" could not be extracted: ${error.message}`;
             error.statusCode = mapped.status;
             error.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: mapped.retryable };
             failed[i] = error;
+            finishBoqBatch(job, batchNumber, sourceLines, true);
             return;
         }
         let chunkItems;
@@ -251,12 +396,15 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
             parseError.statusCode = 502;
             parseError.extraction = { stage: 'ai_extraction', section: i + 1, of: chunks.length, retryable: true };
             failed[i] = parseError;
+            finishBoqBatch(job, batchNumber, sourceLines, true);
             return;
         }
         console.log(`[boq:${userId}] AI chunk ${i + 1}/${chunks.length} completed in ${Date.now() - chunkStart}ms → ${chunkItems.length} item(s)`);
         results[i] = chunkItems;
+        finishBoqBatch(job, batchNumber, sourceLines, false);
     };
     for (let waveStart = 0; waveStart < chunks.length; waveStart += BOQ_AI_CONCURRENCY) {
+        if (job.controller.signal.aborted) break;
         const wave = [];
         for (let i = waveStart; i < Math.min(chunks.length, waveStart + BOQ_AI_CONCURRENCY); i++) wave.push(i);
         const waveStartMs = Date.now();
@@ -266,29 +414,24 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
         await Promise.all(wave.map((i) => runChunk(i)));
         console.log(`[boq:${userId}] AI wave done in ${Date.now() - waveStartMs}ms (${wave.length} chunk(s), remaining ${Math.round((deadlineMs ? deadlineMs - Date.now() : BOQ_TOTAL_BUDGET_MS) / 1000)}s)`);
     }
+    if (job.controller.signal.aborted) {
+        for (let index = 0; index < chunks.length; index++) {
+            if (job.activeBatches.has(index + 1) || results[index] || failed[index]) continue;
+            failed[index] = createCancellationError();
+            const sourceLines = chunks[index].split('\n').filter((line) => line.trim() && !boqExtractor.isPageBreak(line)).length;
+            updateBoqProgress(job, {
+                handledRows: Math.min(job.progress.totalSourceRows, job.progress.handledRows + sourceLines),
+                reviewCount: job.progress.reviewCount + sourceLines,
+            });
+        }
+        return results.flatMap((chunkItems) => chunkItems || []);
+    }
     // One failure sinks the run with the FIRST (lowest-section) error so
     // messages stay deterministic and correctly attributed.
     const firstFailure = failed.find(Boolean);
     if (firstFailure) throw firstFailure;
 
-    // Merge slot-ordered, collapsing the chunk-boundary repeat: a soft
-    // break in splitIntoChunks repeats ONE line (header continuity), and
-    // the model can emit that repeated row again — the identical row from
-    // the END of chunk i and the START of chunk i+1 collapses to one.
-    // Adjacent-pair comparison ONLY: genuinely repeated line items
-    // elsewhere in the document survive and still surface as review
-    // warnings via flagAll.
-    const items = [];
-    for (const chunkItems of results) {
-        for (const item of chunkItems || []) {
-            if (items.length) {
-                const key = boqExtractor.chunkDedupeKey(item);
-                if (key && key === boqExtractor.chunkDedupeKey(items[items.length - 1])) continue;
-            }
-            items.push(item);
-        }
-    }
-    return items;
+    return results.flatMap((chunkItems) => chunkItems || []);
 }
 
 async function loadExtractionClient(userId) {
@@ -302,28 +445,10 @@ async function loadExtractionClient(userId) {
     return { aiConfig, model: resolveDocIntelModel(rows.AI_MODEL), aiService: require('../ai/aiService') };
 }
 
-function splitStructuredRows(table, entries) {
-    const groups = [];
-    let group = [];
-    let size = JSON.stringify(table.headers || []).length;
-    for (const entry of entries) {
-        const rowSize = JSON.stringify(entry.row.cells || []).length;
-        if (group.length && size + rowSize > boqExtractor.CHUNK_MAX_CHARS) {
-            groups.push(group);
-            group = [];
-            size = JSON.stringify(table.headers || []).length;
-        }
-        group.push(entry);
-        size += rowSize;
-    }
-    if (group.length) groups.push(group);
-    return groups;
-}
-
-async function extractStructuredTableWithAI(userId, table, entries, filename, deadlineMs) {
+async function extractStructuredTableWithAI(userId, table, entries, filename, deadlineMs, job, batchOffset = 0) {
     if (!entries.length) return [];
     const { aiConfig, model, aiService } = await loadExtractionClient(userId);
-    const groups = splitStructuredRows(table, entries);
+    const groups = boqExtractor.splitStructuredRowBatches(entries, undefined, undefined, table.headers || []);
     if (groups.length > BOQ_MAX_CHUNKS) {
         const error = new Error(`Document is too large to extract in one request (${groups.length} table sections, max ${BOQ_MAX_CHUNKS}). Split it into smaller parts and upload each separately.`);
         error.statusCode = 413;
@@ -331,8 +456,23 @@ async function extractStructuredTableWithAI(userId, table, entries, filename, de
     }
     const results = new Array(groups.length).fill(null);
     const failures = new Array(groups.length).fill(null);
+    const started = new Set();
     const runGroup = async (index) => {
         const group = groups[index];
+        const batchNumber = batchOffset + index + 1;
+        const expectedRowIds = group.map((entry) => entry.item.lineItemId);
+        if (!startBoqBatch(job, batchNumber)) {
+            failures[index] = createCancellationError();
+            return;
+        }
+        started.add(index);
+        const batchCharLimit = Number(process.env.BOQ_STRUCTURED_BATCH_MAX_CHARS || 12000);
+        if (group.length > Number(process.env.BOQ_STRUCTURED_BATCH_MAX_ROWS || 40)
+            || boqExtractor.estimateBatchChars(group, table.headers || []) > batchCharLimit) {
+            failures[index] = new Error(`Source batch ${index + 1} exceeds the configured row/character limit and was retained for review without sending an oversized prompt.`);
+            finishBoqBatch(job, batchNumber, group.length, true);
+            return;
+        }
         const chunksLeft = groups.length - index;
         const wavesLeft = Math.max(1, Math.ceil(chunksLeft / BOQ_AI_CONCURRENCY));
         const remaining = deadlineMs - Date.now();
@@ -341,11 +481,14 @@ async function extractStructuredTableWithAI(userId, table, entries, filename, de
             error.statusCode = 504;
             error.extraction = { stage: 'ai_extraction', section: index + 1, of: groups.length, retryable: true };
             failures[index] = error;
+            finishBoqBatch(job, batchNumber, group.length, true);
             return;
         }
         const timeoutMs = Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / wavesLeft)));
-        try {
-            const content = await aiService._complete(
+        const callGroup = async () => {
+            const attemptRemaining = deadlineMs - Date.now();
+            if (attemptRemaining <= 0) throw Object.assign(new Error('The shared AI extraction deadline expired.'), { aiKind: 'timeout' });
+            const content = await withBoqAiSlot(() => aiService._complete(
                 [{ role: 'user', content: boqExtractor.buildStructuredExtractionPrompt(table, group) }],
                 {
                     apiKey: aiConfig.apiKey,
@@ -353,40 +496,74 @@ async function extractStructuredTableWithAI(userId, table, entries, filename, de
                     model,
                     temperature: 0.1,
                     maxTokens: 8000,
-                    timeoutMs,
+                    timeoutMs: Math.min(timeoutMs, attemptRemaining),
                     deadlineMs,
                     minAttemptMs: BOQ_AI_MIN_CALL_MS,
-                    retries: 1,
+                    retries: 0,
                     reasoningEffort: 'none',
+                    signal: job.controller.signal,
                     logLabel: `boq structured ${index + 1}/${groups.length}`,
                 }
-            );
-            results[index] = boqExtractor.normalizeResponse(content);
+            ), job.controller.signal);
+            return boqExtractor.validateStructuredBatchResponse(content, expectedRowIds);
+        };
+        try {
+            results[index] = await callGroup();
         } catch (error) {
-            const mapped = mapExtractionStatus(error);
-            error.message = `Section ${index + 1} of ${groups.length} of "${filename}" could not be extracted: ${error.message}`;
-            error.statusCode = mapped.status;
-            error.extraction = { stage: 'ai_extraction', section: index + 1, of: groups.length, retryable: mapped.retryable };
-            failures[index] = error;
+            if (job.controller.signal.aborted) {
+                failures[index] = createCancellationError();
+                finishBoqBatch(job, batchNumber, group.length, true);
+                return;
+            }
+            try {
+                results[index] = await callGroup();
+            } catch (retryError) {
+                if (job.controller.signal.aborted) {
+                    failures[index] = createCancellationError();
+                    finishBoqBatch(job, batchNumber, group.length, true);
+                    return;
+                }
+                const mapped = mapExtractionStatus(retryError);
+                const wrapped = retryError instanceof Error ? retryError : new Error(String(retryError));
+                wrapped.message = `Section ${index + 1} of ${groups.length} of "${filename}" returned malformed or untrusted AI output; this batch was marked for review instead of failing the entire BOQ: ${wrapped.message}`;
+                wrapped.statusCode = mapped.status;
+                wrapped.extraction = { stage: 'ai_extraction', section: index + 1, of: groups.length, retryable: mapped.retryable };
+                failures[index] = wrapped;
+                results[index] = null;
+            }
         }
+        finishBoqBatch(job, batchNumber, group.length, Boolean(failures[index]));
     };
     for (let waveStart = 0; waveStart < groups.length; waveStart += BOQ_AI_CONCURRENCY) {
+        if (job.controller.signal.aborted) break;
         await Promise.all(Array.from(
             { length: Math.min(BOQ_AI_CONCURRENCY, groups.length - waveStart) },
             (_, offset) => runGroup(waveStart + offset)
         ));
     }
-    const failure = failures.find(Boolean);
-    if (failure) throw failure;
-
+    if (job.controller.signal.aborted) {
+        for (let index = 0; index < groups.length; index++) {
+            if (started.has(index)) continue;
+            failures[index] = createCancellationError();
+            updateBoqProgress(job, {
+                handledRows: Math.min(job.progress.totalSourceRows, job.progress.handledRows + groups[index].length),
+                reviewCount: job.progress.reviewCount + groups[index].length,
+            });
+        }
+    }
     return groups.flatMap((group, groupIndex) => {
         const derived = results[groupIndex] || [];
+        const failure = failures[groupIndex];
         const byId = new Map(derived.filter((item) => item?.rowId != null).map((item) => [String(item.rowId), item]));
         return group.map((entry, index) => {
             const enrichment = byId.get(String(entry.item.lineItemId))
-                || (derived.length === group.length ? derived[index] : null);
+                || null;
+            const fallbackWarnings = [
+                ...(failure ? [`AI batch review required: ${failure.message}`] : []),
+                ...(enrichment ? [] : ['AI enrichment could not be matched to this source row.']),
+            ];
             return documentModel.mergeDerivedFields(entry.item, enrichment || {
-                warnings: ['AI enrichment could not be matched to this source row.'],
+                warnings: fallbackWarnings,
             });
         });
     });
@@ -394,17 +571,36 @@ async function extractStructuredTableWithAI(userId, table, entries, filename, de
 
 // POST /api/boq/process — upload a requirement document, extract text,
 // run AI extraction, flag suspicious rows, and store everything for review.
-router.post('/process', upload.single('file'), async (req, res) => {
+router.post('/process', aiExtractLimiter, upload.single('file'), async (req, res) => {
     const startedAt = Date.now();
     const userId = req.user?.id;
     if (!req.file) return res.status(400).json({ error: 'Upload an XLSX, DOCX, PDF, TXT, or CSV document.' });
     if (!respondIfInvalidUpload(req, res)) return;
+
+    const requestedJobId = req.get?.('x-boq-job-id') || req.headers?.['x-boq-job-id'];
+    const job = createBoqJob(userId, requestedJobId);
+    if (!job) return res.status(409).json({ error: 'A BOQ extraction with this job ID is already active.' });
+    const markDisconnected = () => {
+        if (!job.controller.signal.aborted) {
+            updateBoqProgress(job, { status: 'cancelling' });
+            job.controller.abort();
+        }
+    };
+    req.on?.('aborted', markDisconnected);
+    res.on?.('close', () => {
+        if (!res.writableEnded) markDisconnected();
+    });
 
     const ext = extOf(req.file.originalname);
     console.log(`[boq:${userId}] process START: "${req.file.originalname}" (${req.file.size} bytes, ${ext})`);
     try {
         const textStart = Date.now();
         let document = await boqExtractor.parseDocument(req.file.buffer, ext, req.file.originalname);
+        if (job.controller.signal.aborted) {
+            updateBoqProgress(job, { status: 'cancelled' });
+            if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled.' });
+            return;
+        }
         let documentText = document.rawText || '';
         const lineCount = documentText.split('\n').filter((l) => l.trim()).length;
         console.log(`[boq:${userId}] text extraction done in ${Date.now() - textStart}ms: ${documentText.length} chars / ${lineCount} non-empty lines`);
@@ -425,8 +621,13 @@ router.post('/process', upload.single('file'), async (req, res) => {
                         req.file.buffer,
                         userId,
                         pageNumbers,
-                        { deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS }
+                        { deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS, signal: job.controller.signal }
                     );
+                    if (job.controller.signal.aborted) {
+                        updateBoqProgress(job, { status: 'cancelled' });
+                        if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled.' });
+                        return;
+                    }
                     const visualTables = documentModel.reconstructTablesFromLayoutPages(visual.pages);
                     if (visualTables.length) {
                         const visualByPage = new Map(visual.pages.map((page) => [page.page, page]));
@@ -442,6 +643,11 @@ router.post('/process', upload.single('file'), async (req, res) => {
                         console.log(`[boq:${userId}] visual PDF pass found no header-aligned table; retaining text fallback`);
                     }
                 } catch (visualError) {
+                    if (job.controller.signal.aborted) {
+                        updateBoqProgress(job, { status: 'cancelled' });
+                        if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled.' });
+                        return;
+                    }
                     console.warn(`[boq:${userId}] visual PDF table pass failed; retaining text fallback: ${visualError.message}`);
                 }
             }
@@ -450,6 +656,7 @@ router.post('/process', upload.single('file'), async (req, res) => {
             console.log(`[boq:${userId}] junk text detected (${documentText.trim().length} chars, alnum-starved) — scanned/image-only document?`);
             if (ext !== '.pdf') {
                 console.log(`[boq:${userId}] rejected: no readable text in a non-PDF document`);
+                updateBoqProgress(job, { status: 'failed' });
                 return res.status(400).json({ error: 'No readable text found in this document. If it is a scan or photo, upload it as a PDF — scanned PDFs are read with OCR.' });
             }
             const ocrStart = Date.now();
@@ -462,7 +669,13 @@ router.post('/process', upload.single('file'), async (req, res) => {
                 // the browser's 110s timeout fire first.
                 const ocr = await require('../documents/pdfOcr').ocrScannedPdf(req.file.buffer, userId, {
                     deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS,
+                    signal: job.controller.signal,
                 });
+                if (job.controller.signal.aborted) {
+                    updateBoqProgress(job, { status: 'cancelled' });
+                    if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled.' });
+                    return;
+                }
                 documentText = ocr.text;
                 document.pages = ocr.pages?.length ? ocr.pages : documentText
                     .split(/(?=^\s*-{2,}\s*\d+(?:\s+of\s+\d+)?\s*-{2,}\s*$)/m)
@@ -480,6 +693,11 @@ router.post('/process', upload.single('file'), async (req, res) => {
                 usedOcr = true;
                 console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages, ${ocr.failedPages.length} failed page(s))`);
             } catch (ocrError) {
+                if (job.controller.signal.aborted) {
+                    updateBoqProgress(job, { status: 'cancelled' });
+                    if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled.' });
+                    return;
+                }
                 const status = ocrError.statusCode || 502;
                 console.error(`[boq:${userId}] OCR fallback FAILED after ${Date.now() - ocrStart}ms (HTTP ${status}): ${ocrError.message}`);
                 // Forward retry/stage hints (deadline timeouts are usually
@@ -488,12 +706,14 @@ router.post('/process', upload.single('file'), async (req, res) => {
                 const body = { error: ocrError.message };
                 if (typeof ocrError.retryable === 'boolean') body.retryable = ocrError.retryable;
                 if (ocrError.extraction?.stage) body.stage = ocrError.extraction.stage;
+                updateBoqProgress(job, { status: 'failed' });
                 return res.status(status).json(body);
             }
             // OCR text gets the same junk check: an all-failed-pages run must
             // not hand the AI an empty string and silently extract 0 items.
             if (boqExtractor.looksLikeJunkText(documentText)) {
                 console.log(`[boq:${userId}] rejected: OCR produced no readable text either`);
+                updateBoqProgress(job, { status: 'failed' });
                 return res.status(422).json({ error: 'This scanned PDF could not be read even with OCR — the pages may be blank, handwritten, or too low-quality. Try the original Excel or Word file.' });
             }
         }
@@ -521,6 +741,7 @@ router.post('/process', upload.single('file'), async (req, res) => {
                 ? 'All pages were read successfully, but the request ran out of time before AI extraction could start — reading the scanned pages took the whole budget. Please retry; if this keeps happening for this document, extraction needs to run in the background.'
                 : 'The request ran out of its time budget before AI extraction could start. Please retry.';
             console.error(`[boq:${userId}] budget exhausted after ${Date.now() - startedAt}ms with ${documentText.length} chars in hand (${usedOcr ? 'OCR path' : 'direct-text path'}): ${Math.round(budgetLeftMs)}ms left — AI extraction cannot start inside this request, failing fast instead of a "0s of 90s" wave`);
+            updateBoqProgress(job, { status: 'failed' });
             return res.status(504).json({ error, retryable: true, stage: 'budget_exhausted_before_ai' });
         }
 
@@ -530,31 +751,58 @@ router.post('/process', upload.single('file'), async (req, res) => {
         const deadlineMs = startedAt + BOQ_TOTAL_BUDGET_MS;
         let items = [];
         const structuredTables = (document.tables || []).filter((table) => table.rows?.length);
+        const structuredEntries = structuredTables.map((table) => table.rows.map((row) => ({
+            row,
+            item: documentModel.lineItemFromRow({
+                headers: table.headers,
+                row: row.cells,
+                source: row.source || table.source,
+                filename: req.file.originalname,
+                headerMap: {
+                    columns: table.columnMap || documentModel.mapHeaders(table.headers).columns,
+                    ambiguous: table.ambiguousHeaders || {},
+                },
+            }),
+        })));
+        const batchCounts = structuredTables.map((table, index) =>
+            boqExtractor.splitStructuredRowBatches(structuredEntries[index], undefined, undefined, table.headers || []).length
+        );
+        const textChunks = structuredTables.length ? [] : boqExtractor.splitIntoChunks(documentText);
+        updateBoqProgress(job, {
+            status: 'extracting',
+            totalBatches: structuredTables.length ? batchCounts.reduce((sum, count) => sum + count, 0) : textChunks.length,
+            totalSourceRows: structuredTables.length
+                ? structuredEntries.reduce((sum, entries) => sum + entries.length, 0)
+                : lineCount,
+        });
         if (structuredTables.length) {
-            for (const table of structuredTables) {
-                const entries = table.rows.map((row) => ({
-                    row,
-                    item: documentModel.lineItemFromRow({
-                        headers: table.headers,
-                        row: row.cells,
-                        source: row.source || table.source,
-                        filename: req.file.originalname,
-                        headerMap: {
-                            columns: table.columnMap || documentModel.mapHeaders(table.headers).columns,
-                            ambiguous: table.ambiguousHeaders || {},
-                        },
-                    }),
-                }));
+            let batchOffset = 0;
+            for (let index = 0; index < structuredTables.length; index++) {
+                const table = structuredTables[index];
+                const entries = structuredEntries[index];
+                if (job.controller.signal.aborted) {
+                    const message = 'Extraction cancelled before this source batch was attempted; verify this row during review.';
+                    items.push(...entries.map((entry) => documentModel.mergeDerivedFields(entry.item, { warnings: [message] })));
+                    updateBoqProgress(job, {
+                        handledRows: job.progress.handledRows + entries.length,
+                        reviewCount: job.progress.reviewCount + entries.length,
+                    });
+                    batchOffset += batchCounts[index];
+                    continue;
+                }
                 items.push(...await extractStructuredTableWithAI(
                     userId,
                     table,
                     entries,
                     req.file.originalname,
-                    deadlineMs
+                    deadlineMs,
+                    job,
+                    batchOffset
                 ));
+                batchOffset += batchCounts[index];
             }
         } else {
-            const extracted = await extractItemsWithAI(userId, documentText, req.file.originalname, deadlineMs);
+            const extracted = await extractItemsWithAI(userId, documentText, req.file.originalname, deadlineMs, job);
             items = extracted.map((item, index) => ({
                 ...boqExtractor.cleanItem(item),
                 lineItemId: `${req.file.originalname}:text:${index + 1}`,
@@ -567,9 +815,16 @@ router.post('/process', upload.single('file'), async (req, res) => {
                 warnings: Array.isArray(item.warnings) ? item.warnings : [],
             }));
         }
+        if (job.controller.signal.aborted && !items.length) {
+            updateBoqProgress(job, { status: 'cancelled' });
+            if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled before any rows could be retained.' });
+            return;
+        }
+        const wasCancelled = job.controller.signal.aborted;
         const warnings = boqExtractor.flagAll(items);
         const extractionMetadata = {
             version: 1,
+            processingStatus: wasCancelled ? 'cancelled' : 'completed',
             documentType: structuredTables.length ? 'boq_table' : 'requirements_text',
             format: ext,
             strategy: structuredTables.length
@@ -594,11 +849,33 @@ router.post('/process', upload.single('file'), async (req, res) => {
             warnings: JSON.stringify(warnings),
             user_id: req.user.id,
         });
+        if (job.controller.signal.aborted && !wasCancelled) {
+            extractionMetadata.processingStatus = 'cancelled';
+            created.status = 'review';
+            created.extraction_metadata = extractionMetadata;
+            await db.update('boq_documents', {
+                status: 'review',
+                extraction_metadata: extractionMetadata,
+            }, 'id = ? AND user_id = ?', [created.id, userId]);
+        }
 
         const warnRows = warnings.filter((w) => Array.isArray(w) && w.length).length;
-        console.log(`[boq:${userId}] process COMPLETE in ${Date.now() - startedAt}ms: ${items.length} item(s), ${warnRows} row(s) flagged, saved as #${created?.id ?? '?'} (db ${Date.now() - dbStart}ms)`);
+        updateBoqProgress(job, {
+            status: job.controller.signal.aborted ? 'cancelled' : 'completed',
+            documentId: created?.id ?? null,
+            handledRows: job.controller.signal.aborted ? job.progress.handledRows : job.progress.totalSourceRows,
+            reviewCount: Math.max(job.progress.reviewCount, warnRows),
+            completedBatches: job.controller.signal.aborted ? job.progress.completedBatches : job.progress.totalBatches,
+        });
+        console.log(`[boq:${userId}] process ${job.controller.signal.aborted ? 'CANCELLED' : 'COMPLETE'} in ${Date.now() - startedAt}ms: ${items.length} item(s), ${warnRows} row(s) flagged, saved as #${created?.id ?? '?'} (db ${Date.now() - dbStart}ms)`);
         res.status(201).json(serializeDoc(created));
     } catch (error) {
+        if (job.controller.signal.aborted) {
+            updateBoqProgress(job, { status: 'cancelled' });
+            if (!res.destroyed && !res.writableEnded) res.status(499).json({ error: 'BOQ extraction cancelled.' });
+            return;
+        }
+        updateBoqProgress(job, { status: 'failed' });
         const status = error.statusCode || 500;
         // Full stack — this line is the whole point of the logging pass:
         // the original incident produced ZERO log lines, so the failure
@@ -616,6 +893,23 @@ router.post('/process', upload.single('file'), async (req, res) => {
         }
         res.status(status).json(body);
     }
+});
+
+router.get('/progress/:jobId', (req, res) => {
+    const job = boqJobs.get(boqJobKey(req.user.id, req.params.jobId));
+    if (!job) return res.status(404).json({ error: 'BOQ extraction progress not found.' });
+    res.set?.('Cache-Control', 'no-store');
+    res.json(publicBoqProgress(job));
+});
+
+router.delete('/progress/:jobId', (req, res) => {
+    const job = boqJobs.get(boqJobKey(req.user.id, req.params.jobId));
+    if (!job) return res.status(404).json({ error: 'BOQ extraction progress not found.' });
+    if (!['completed', 'cancelled', 'failed'].includes(job.progress.status)) {
+        updateBoqProgress(job, { status: 'cancelling' });
+        job.controller.abort();
+    }
+    res.json(publicBoqProgress(job));
 });
 
 // GET /api/boq — this user's processed documents (history).

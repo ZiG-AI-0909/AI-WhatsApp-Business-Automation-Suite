@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
@@ -26,7 +26,10 @@ export default function DocumentIntelView() {
   const [file, setFile] = useState(null)
   const [notice, setNotice] = useState({ type: '', text: '', retryable: false })
   const [busy, setBusy] = useState(false)
+  const [extracting, setExtracting] = useState(false)
   const [exporting, setExporting] = useState('')
+  const [progress, setProgress] = useState(null)
+  const activeExtraction = useRef(null)
 
   const load = async () => {
     try {
@@ -56,16 +59,69 @@ export default function DocumentIntelView() {
   const runExtraction = async () => {
     if (!file) return
     setBusy(true)
+    setExtracting(true)
+    const jobId = window.crypto?.randomUUID?.() || `boq-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const requestController = new AbortController()
+    const progressController = new AbortController()
+    activeExtraction.current = { jobId, requestController, progressController }
+    setProgress({ status: 'reading', totalBatches: 0, completedBatches: 0, currentBatch: 0, totalSourceRows: 0, handledRows: 0, reviewCount: 0, percent: 0 })
     setNotice({ type: '', text: '', retryable: false })
+    let keepPolling = true
+    const progressTask = (async () => {
+      for (let attempt = 0; keepPolling && attempt < 420; attempt++) {
+        try {
+          const snapshot = await apiFetch(`/boq/progress/${jobId}`, { signal: progressController.signal, cache: 'no-store' })
+          setProgress(snapshot)
+          if (['completed', 'cancelled', 'failed'].includes(snapshot.status)) return snapshot
+        } catch (error) {
+          if (progressController.signal.aborted) return null
+          if (error.status && error.status !== 404 && error.status < 500) return null
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400))
+      }
+      return null
+    })()
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const doc = await apiFetch('/boq/process', { method: 'POST', body: formData })
+      const doc = await apiFetch('/boq/process', {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-BOQ-Job-ID': jobId },
+        signal: requestController.signal,
+      })
       setSelected(doc)
       setFile(null)
       await load()
       setNotice({ type: 'success', text: `Extracted ${doc.items.length} line item(s) from ${doc.filename}. Review the rows below — warnings are marked inline.`, retryable: false })
+      keepPolling = false
+      progressController.abort()
+      setProgress((current) => ({ ...current, status: 'completed', completedBatches: current?.totalBatches || current?.completedBatches || 0, handledRows: current?.totalSourceRows || current?.handledRows || doc.items.length, reviewCount: doc.warnings.flat().filter((warnings) => warnings?.length).length, percent: 100 }))
     } catch (error) {
+      if (requestController.signal.aborted) {
+        let cancelAccepted = true
+        try {
+          await apiFetch(`/boq/progress/${jobId}`, { method: 'DELETE' })
+        } catch (cancelError) {
+          cancelAccepted = !cancelError.status || cancelError.status >= 500
+        }
+        if (!cancelAccepted) {
+          keepPolling = false
+          progressController.abort()
+        }
+        const finalProgress = cancelAccepted ? await progressTask : null
+        if (finalProgress?.documentId) {
+          try {
+            const partialDoc = await apiFetch(`/boq/${finalProgress.documentId}`)
+            setSelected(partialDoc)
+            setFile(null)
+            await load()
+          } catch { /* progress still reports cancellation if the partial sheet cannot be loaded */ }
+        }
+        setProgress(finalProgress || ((current) => ({ ...current, status: 'cancelled' })))
+        setNotice({ type: 'error', text: finalProgress?.documentId ? 'Extraction cancelled. Completed work was saved for review; unprocessed sections were not included.' : 'Extraction cancelled before a review sheet could be saved.' })
+        return
+      }
       // Backend messages for this endpoint are already user-facing
       // ("Section 1 of 1 of \"x.xlsx\" could not be extracted: …") — show
       // them verbatim instead of the generic friendly fallback.
@@ -75,8 +131,23 @@ export default function DocumentIntelView() {
         : friendlyErrorMessage(error, { context: 'Document Intelligence · extraction' })
       setNotice({ type: 'error', text: message, retryable: !!error?.retryable })
     } finally {
+      keepPolling = false
+      progressController.abort()
+      await progressTask
+      if (activeExtraction.current?.jobId === jobId) activeExtraction.current = null
+      setExtracting(false)
       setBusy(false)
     }
+  }
+
+  const cancelExtraction = () => {
+    const active = activeExtraction.current
+    if (!active) return
+    setProgress((current) => current ? { ...current, status: 'cancelling' } : current)
+    active.requestController.abort()
+    apiFetch(`/boq/progress/${active.jobId}`, { method: 'DELETE' })
+      .then(setProgress)
+      .catch(() => {})
   }
 
   const process = async (event) => {
@@ -186,9 +257,26 @@ export default function DocumentIntelView() {
           </label>
           <div className="button-row">
             <button type="submit" className="primary-btn" disabled={busy || !file}>{busy ? 'Extracting…' : 'Extract requirements'}</button>
+            {extracting && (
+              <button type="button" className="secondary-btn" onClick={cancelExtraction}>Cancel Extraction</button>
+            )}
           </div>
         </form>
       </section>
+
+      {(busy || progress?.status === 'cancelled') && progress && (
+        <section className="panel" role="status" aria-live="polite">
+          <div className="panel-header">
+            <strong>{progress.status === 'cancelled' ? 'Extraction cancelled — review partial results' : progress.status === 'cancelling' ? 'Cancelling extraction…' : progress.totalBatches ? `Processing BOQ — Batch ${progress.currentBatch || 0} of ${progress.totalBatches}` : 'Reading BOQ…'}</strong>
+            <span className="file-note">{progress.percent || 0}%</span>
+          </div>
+          <progress value={progress.percent || 0} max="100" style={{ width: '100%' }} />
+          <div className="panel-header">
+            <span className="file-note">{progress.handledRows || 0} / {progress.totalSourceRows || 0} rows processed</span>
+            <span className="file-note">{progress.reviewCount || 0} row(s) needing review</span>
+          </div>
+        </section>
+      )}
 
       {selected && (
         <section className="panel">

@@ -173,6 +173,7 @@ class AIService {
                             'Content-Type': 'application/json',
                         },
                         timeout: attemptTimeout,
+                        signal: options.signal,
                     }
                 );
                 const content = response.data?.choices?.[0]?.message?.content;

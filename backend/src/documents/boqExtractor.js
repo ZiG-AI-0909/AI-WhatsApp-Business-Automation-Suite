@@ -313,31 +313,145 @@ DOCUMENT:
 ${documentText}`;
 }
 
-function buildStructuredExtractionPrompt(table, rows) {
-    const sourceRows = rows.map((entry, index) => ({
+function structuredPromptRows(table, rows) {
+    const headerMap = documentModel.mapHeaders(table.headers || []);
+    const protectedIndexes = new Set();
+    for (const field of ['serialNumber', 'itemCode', 'quantity', 'unit', 'rate', 'amount']) {
+        if (headerMap.columns[field]) protectedIndexes.add(headerMap.columns[field].index);
+        for (const candidate of headerMap.ambiguous[field] || []) protectedIndexes.add(candidate.index);
+    }
+    return rows.map((entry) => ({
         rowId: entry.item.lineItemId,
-        source: entry.item.provenance,
-        cells: entry.row.cells,
+        source: {
+            page: entry.item.provenance.page,
+            sheet: entry.item.provenance.sheet,
+            table: entry.item.provenance.table,
+            row: entry.item.provenance.row,
+            continuationSources: entry.item.provenance.continuationSources || [],
+        },
+        description: entry.item.description || null,
+        product: entry.item.product || null,
+        size: entry.item.size || null,
+        specification: entry.item.specification || null,
+        application: entry.item.application || null,
+        notes: entry.item.notes || entry.item.remarks || null,
+        context: (table.headers || []).flatMap((header, index) => {
+            const value = String(entry.row.cells[index] ?? '').trim();
+            return !protectedIndexes.has(index) && value
+                ? [{ field: String(header || `Column ${index + 1}`), value }]
+                : [];
+        }),
     }));
-    const readableRows = rows.map(({ row }) => row.cells.map((cell) => String(cell ?? '')).join(' | ')).join('\n');
+}
+
+function buildStructuredExtractionPrompt(table, rows) {
+    const sourceRows = structuredPromptRows(table, rows);
     return `You normalize procurement requirements from a structured BOQ table. The source may describe any industry or material. Return ONLY valid JSON, no commentary.
 
-TABLE HEADERS (original wording, in source order):
-${JSON.stringify(table.headers)}
-
-STRUCTURED ROWS (cell arrays align to the headers; source values are authoritative):
+SOURCE ROWS (only descriptive fields and non-authoritative textual context are provided; source values remain backend-authoritative):
 ${JSON.stringify(sourceRows)}
 
 For each input row, return exactly one item in the same order with this shape:
 {"items":[{"rowId":"source rowId","product":null,"size":null,"specification":null,"application":null,"remarks":null,"confidence":{},"warnings":[]}]}
 
-Derive only product, size, specification, application, and remarks from the row description/cells. Do not output or alter serial number, item code, quantity, unit, rates, or amounts; the application copies those directly from their source columns. Do not move values between columns or rows. Use null when a derived value is unclear. Preserve original terminology when practical.
+Rules:
+- Do not include serialNumber, itemCode, quantity, unit, rate, amount, or source-value overrides.
+- rowId is an opaque source-row identifier for association only; do not alter it.
+- Do not infer or return source/provenance fields. They are retained by the backend.
+- Quantity, unit, serial number and item code remain authoritative in backend source data.
+- If a value is unclear, return null rather than guessing.
+- Preserve the original wording in description-related fields.
+- Do not move values between rows.
+- Respond with strict JSON only.
 
-DOCUMENT:
-${readableRows}`;
+Return one result for every supplied rowId, and no other row IDs.`;
+}
+
+function estimateBatchChars(entries, headers = []) {
+    return buildStructuredExtractionPrompt({ headers }, entries || []).length;
+}
+
+function splitStructuredRowBatches(entries, maxRows = Number(process.env.BOQ_STRUCTURED_BATCH_MAX_ROWS || 40), maxChars = Number(process.env.BOQ_STRUCTURED_BATCH_MAX_CHARS || 12000), headers = []) {
+    const safeEntries = Array.isArray(entries) ? entries : [];
+    const batches = [];
+    let current = [];
+    for (const entry of safeEntries) {
+        const candidate = [...current, entry];
+        if (current.length && (candidate.length > maxRows || estimateBatchChars(candidate, headers) > maxChars)) {
+            batches.push(current);
+            current = [];
+        }
+        current.push(entry);
+    }
+    if (current.length) batches.push(current);
+    return batches;
+}
+
+function validateStructuredBatchResponse(content, expectedRowIds) {
+    const data = normalizeResponse(content);
+    const ids = (expectedRowIds || []).map((rowId) => String(rowId));
+    const expected = new Set(ids);
+    if (expected.size !== ids.length) throw new Error('Source batch contains duplicate row IDs.');
+    if (!Array.isArray(data)) throw new Error('AI batch did not return a valid array of items.');
+    const map = new Map();
+    for (const item of data) {
+        if (!item || typeof item !== 'object') throw new Error('AI batch item is not an object.');
+        const rowId = String(item.rowId ?? '');
+        if (!rowId || !expected.has(rowId)) throw new Error(`AI batch returned unknown row ID: ${rowId}`);
+        if (map.has(rowId)) throw new Error(`AI batch returned duplicate row ID: ${rowId}`);
+        map.set(rowId, item);
+    }
+    if (map.size !== expected.size) {
+        throw new Error(`AI batch returned ${map.size} rows but expected ${expected.size}.`);
+    }
+    for (const rowId of expected) {
+        const item = map.get(rowId);
+        if (!item) throw new Error(`AI batch missing row ${rowId}.`);
+        const shouldHaveOnlyDerived = ['rowId', 'product', 'size', 'specification', 'application', 'remarks', 'confidence', 'warnings'];
+        for (const key of Object.keys(item)) {
+            if (!shouldHaveOnlyDerived.includes(key)) {
+                throw new Error(`AI batch included forbidden field "${key}" for row ${rowId}. Quantity, unit, serial number and item code are authoritative.`);
+            }
+        }
+        if (item.quantity != null || item.unit != null || item.serialNumber != null || item.itemCode != null) {
+            throw new Error(`AI batch included authoritative source fields for row ${rowId}. quantity/unit/serialNumber/itemCode must remain backend-source fields.`);
+        }
+        for (const field of ['product', 'size', 'specification', 'application', 'remarks']) {
+            if (item[field] != null && typeof item[field] !== 'string') {
+                throw new Error(`AI batch field "${field}" must be a string or null for row ${rowId}.`);
+            }
+        }
+        if (item.confidence != null && (typeof item.confidence !== 'object' || Array.isArray(item.confidence))) {
+            throw new Error(`AI batch confidence must be an object for row ${rowId}.`);
+        }
+        if (item.warnings != null && (!Array.isArray(item.warnings) || item.warnings.some((warning) => typeof warning !== 'string'))) {
+            throw new Error(`AI batch warnings must be an array of strings for row ${rowId}.`);
+        }
+    }
+    return ids.map((rowId) => map.get(rowId));
+}
+
+function coerceStructuredResponseItems(content) {
+    if (Array.isArray(content)) return content;
+    if (content && typeof content === 'object') {
+        if (Array.isArray(content.items)) return content.items;
+        if (Array.isArray(content.data)) return content.data;
+        if (Array.isArray(content.result)) return content.result;
+        const keys = Object.keys(content);
+        if (keys.some((key) => ['rowId', 'product', 'size', 'specification', 'application', 'remarks', 'notes', 'quantity', 'unit'].includes(key))) {
+            return [content];
+        }
+    }
+    return null;
 }
 
 function normalizeResponse(content) {
+    const direct = coerceStructuredResponseItems(content);
+    if (direct) return direct;
+    if (content && typeof content === 'object' && !Array.isArray(content)) {
+        const keys = Object.keys(content);
+        if (keys.length === 0) return [];
+    }
     // Reasoning models that ignored the "don't think" kwargs open with a
     // ɵink>…</think> preamble. It often CONTAINS JSON-shaped schema text,
     // which defeats the brace-slice fallback below — so it must go before
@@ -510,10 +624,8 @@ function isPageBreak(line) {
  * boundaries (whole OCR pages are packed per chunk; a chunk break lands
  * exactly on a "-- N of M --" marker). Pages larger than maxChars, and
  * text with no page markers, split on line boundaries (BOQ rows are one
- * line each). The first line of a line-walked chunk after the first may
- * repeat the previous chunk's last line so column headers are never
- * orphaned at a boundary — routes/boq.js dedupes that repeated row after
- * the per-chunk merge.
+ * line each). A recognized table header may be repeated into the next
+ * line-walked chunk for context; data rows are never repeated or deduplicated.
  */
 function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
     const text = String(documentText || '');
@@ -532,7 +644,13 @@ function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
     const chunks = [];
     let current = [];
     let length = 0;
-    let lastLine = null; // last line placed into any chunk (header repeat)
+    let lastHeaderLine = null;
+    const rememberHeader = (line) => {
+        const delimiter = line.includes('|') ? /\s*\|\s*/ : line.includes('\t') ? /\t/ : null;
+        if (delimiter && documentModel.isHeaderRow(line.split(delimiter).map((cell) => cell.trim()))) {
+            lastHeaderLine = line;
+        }
+    };
     const flush = () => {
         if (current.length) { chunks.push(current.join('\n')); current = []; length = 0; }
     };
@@ -543,7 +661,10 @@ function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
             // chunk BEFORE it when full — the boundary then sits exactly
             // on the next page marker.
             if (length + segLength > maxChars && current.length) flush();
-            for (const line of seg) { current.push(line); lastLine = line; }
+            for (const line of seg) {
+                current.push(line);
+                rememberHeader(line);
+            }
             length += segLength;
         } else {
             // Page longer than a whole chunk: walk its lines.
@@ -551,15 +672,14 @@ function splitIntoChunks(documentText, maxChars = CHUNK_MAX_CHARS) {
                 // A single overlong line still gets its own chunk (never dropped).
                 if (length + line.length + 1 > maxChars && current.length) {
                     flush();
-                    // Repeat the previous line into the new chunk so a table
-                    // header that landed at the end of the last chunk is present.
-                    current = lastLine ? [lastLine, line] : [line];
+                    // Carry the recognized header, never the previous data row.
+                    current = lastHeaderLine && lastHeaderLine !== line ? [lastHeaderLine, line] : [line];
                     length = current.reduce((n, l) => n + l.length + 1, 0);
                 } else {
                     current.push(line);
                     length += line.length + 1;
                 }
-                lastLine = line;
+                rememberHeader(line);
             }
         }
     }
@@ -593,6 +713,9 @@ module.exports = {
     splitIntoChunks,
     isPageBreak,
     chunkDedupeKey,
+    estimateBatchChars,
+    splitStructuredRowBatches,
+    validateStructuredBatchResponse,
     extractText,
     parseDocument,
     parseCsvText,

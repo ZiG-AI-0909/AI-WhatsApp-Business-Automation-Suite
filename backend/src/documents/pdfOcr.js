@@ -78,19 +78,28 @@ function ocrBudget(deadlineMs, startedAt) {
     return Math.max(2000, Math.floor((deadlineMs - Date.now()) * OCR_BUDGET_SHARE - elapsed));
 }
 
+function throwIfAborted(signal) {
+    if (!signal?.aborted) return;
+    const error = new Error('BOQ OCR was cancelled.');
+    error.name = 'AbortError';
+    error.code = 'ABORT_ERR';
+    throw error;
+}
+
 /**
  * OCR one page with a per-attempt timeout that fits the remaining
  * budget. Always resolves (never throws) so one bad page can never
  * sink the document — returns { text, failed } and keeps its slot in
  * the result array, preserving page order under concurrency.
  */
-async function ocrOnePage(ocrImage, page, perPageMs, userId, pageCount) {
+async function ocrOnePage(ocrImage, page, perPageMs, userId, pageCount, signal) {
     const pageStart = Date.now();
     try {
         const result = await ocrImage(Buffer.from(page.data), {
             mimeType: 'image/png',
             timeoutMs: perPageMs,
             returnLayout: true,
+            signal,
             // TEMP DIAGNOSTIC (remove after live verify): tags ocrService's
             // "[ocr-diag:…] HTTP + top-level keys" line with THIS page number,
             // so per-page status/keys/char-count evidence is attributable
@@ -157,7 +166,7 @@ function groupOcrDetections(detections) {
  * @param {number} [options.deadlineMs] wall-clock deadline (epoch ms) shared
  *   with the AI phase — from startedAt + BOQ_TOTAL_BUDGET_MS in boq.js.
  */
-async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
+async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0, signal } = {}) {
     const startedAt = Date.now();
     const { PDFParse } = require('pdf-parse');
     const { ocrImage } = require('../ai/ocrService');
@@ -167,6 +176,7 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
         // Page count comes free from getText() — no rendering needed —
         // so the cap trips BEFORE any render/OCR spend.
         const meta = await parser.getText();
+        throwIfAborted(signal);
         const pageCount = meta.total || meta.pages?.length || 0;
         if (pageCount > OCR_MAX_PAGES) {
             const error = new Error(`This scanned PDF has ${pageCount} pages — too many to OCR in one request (max ${OCR_MAX_PAGES}). Split it up (e.g. save page ranges as separate PDFs) and upload each part.`);
@@ -183,6 +193,7 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
         // instead of silently inflating the first NVIDIA batch's budget.
         const renderStart = Date.now();
         const screenshots = await parser.getScreenshot({ first: pageCount, scale: OCR_RENDER_SCALE, imageBuffer: true });
+        throwIfAborted(signal);
         const pages = screenshots.pages || [];
         const renderMs = Date.now() - renderStart;
         console.log(`[boq:${userId}] rendered ${pages.length} page(s) in ${renderMs}ms (${Math.round(renderMs / Math.max(1, pages.length))}ms/page)`);
@@ -203,6 +214,7 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
         ));
 
         for (let batchStart = 0; batchStart < pages.length; batchStart += OCR_CONCURRENCY) {
+            throwIfAborted(signal);
             const batch = pages.slice(batchStart, batchStart + OCR_CONCURRENCY);
             // Re-clamp per batch: earlier batches' spend shrinks what this
             // one may still use. Floor 2s keeps a pathological start from
@@ -226,8 +238,10 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
                 page,
                 remaining,
                 userId,
-                pageCount
+                pageCount,
+                signal
             )));
+            throwIfAborted(signal);
             // Slot = absolute batch position, NOT pageNumber: order must
             // survive regardless of what pageNumber the renderer reports.
             results.forEach((result, idx) => {
@@ -256,13 +270,14 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
     }
 }
 
-async function ocrNativePdfPages(pdfBuffer, userId, pageNumbers, { deadlineMs = 0 } = {}) {
+async function ocrNativePdfPages(pdfBuffer, userId, pageNumbers, { deadlineMs = 0, signal } = {}) {
     const startedAt = Date.now();
     const { PDFParse } = require('pdf-parse');
     const { ocrImage } = require('../ai/ocrService');
     const parser = new PDFParse({ data: pdfBuffer });
     try {
         const meta = await parser.getText();
+        throwIfAborted(signal);
         const pageCount = meta.total || meta.pages?.length || 0;
         const selectedPages = [...new Set((pageNumbers || []).map(Number))]
             .filter((page) => Number.isInteger(page) && page >= 1 && page <= pageCount)
@@ -279,10 +294,12 @@ async function ocrNativePdfPages(pdfBuffer, userId, pageNumbers, { deadlineMs = 
             scale: OCR_RENDER_SCALE,
             imageBuffer: true,
         });
+        throwIfAborted(signal);
         const renderedPages = screenshots.pages || [];
         const results = new Array(renderedPages.length).fill(null);
         const failedPages = [];
         for (let batchStart = 0; batchStart < renderedPages.length; batchStart += OCR_CONCURRENCY) {
+            throwIfAborted(signal);
             const batch = renderedPages.slice(batchStart, batchStart + OCR_CONCURRENCY);
             const remaining = deadlineMs ? deadlineMs - Date.now() : OCR_PER_PAGE_TIMEOUT_MS;
             if (deadlineMs && remaining < 2000) {
@@ -291,8 +308,9 @@ async function ocrNativePdfPages(pdfBuffer, userId, pageNumbers, { deadlineMs = 
             }
             const timeoutMs = Math.max(2000, Math.min(OCR_PER_PAGE_TIMEOUT_MS, remaining));
             const pageResults = await Promise.all(batch.map((page) =>
-                ocrOnePage(ocrImage, page, timeoutMs, userId, pageCount)
+                ocrOnePage(ocrImage, page, timeoutMs, userId, pageCount, signal)
             ));
+            throwIfAborted(signal);
             pageResults.forEach((result, index) => {
                 const page = batch[index];
                 results[batchStart + index] = {

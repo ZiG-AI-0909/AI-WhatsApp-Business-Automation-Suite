@@ -265,6 +265,95 @@ async function main() {
         { page: 4, text: 'Endnotes' },
     ]), [2, 3]);
 
+    const batchEntries = Array.from({ length: 10 }, (_, index) => ({
+        item: {
+            lineItemId: `row-${index + 1}`,
+            description: `Item ${index + 1}`,
+            product: `Product ${index + 1}`,
+            quantity: 1,
+            unit: 'm',
+            provenance: { page: 1, table: 1, row: index + 1 },
+        },
+        row: { cells: [`${index + 1}`, `Item ${index + 1}`, 'm', '1'] },
+    }));
+    const batches = boqExtractor.splitStructuredRowBatches(batchEntries, 4, 5000);
+    assert.equal(batches.length, 3);
+    assert.equal(batches[0].length, 4);
+    assert.equal(batches[2].length, 2);
+    const validated = boqExtractor.validateStructuredBatchResponse({
+        items: [
+            { rowId: 'row-1', product: 'Pipe', size: '200 mm', specification: null, application: null, remarks: null, confidence: {}, warnings: [] },
+            { rowId: 'row-2', product: 'Pipe', size: '110 mm', specification: null, application: null, remarks: null, confidence: {}, warnings: [] },
+        ],
+    }, ['row-1', 'row-2']);
+    assert.equal(validated.length, 2);
+    assert.equal(boqExtractor.validateStructuredBatchResponse({ items: [{ rowId: 'row-1', product: 'Pipe' }] }, ['row-1']).length, 1,
+        'object-shaped { items: [...] } responses validate');
+    assert.throws(() => boqExtractor.validateStructuredBatchResponse('{"items":[', ['row-1']), /structured extraction data/i,
+        'malformed JSON is rejected before merge');
+    assert.throws(() => boqExtractor.validateStructuredBatchResponse({
+        items: [{ rowId: 'row-1', quantity: 1, unit: 'm', product: 'Pipe', size: '200 mm', specification: null, application: null, remarks: null, confidence: {}, warnings: [] }],
+    }, ['row-1']), /quantity.*unit.*authoritative/i);
+    assert.throws(() => boqExtractor.validateStructuredBatchResponse({
+        items: [{ rowId: 'row-1', source: { page: 1 }, product: 'Pipe' }],
+    }, ['row-1']), /forbidden field "source"/i);
+
+    const protectedTable = {
+        headers: ['S.No', 'Serial No', 'Item Code', 'Qty', 'Quantity', 'Unit', 'Description'],
+    };
+    const protectedEntry = {
+        item: {
+            lineItemId: 'protected.xlsx:Tender:1:1:2',
+            description: 'Visible valve description',
+            provenance: { page: 1, sheet: 'Tender', table: 1, row: 2, continuationSources: [] },
+        },
+        row: { cells: ['SERIAL-PRIVATE-A', 'SERIAL-PRIVATE-B', 'CODE-PRIVATE', 'QTY-PRIVATE-A', 'QTY-PRIVATE-B', 'UNIT-PRIVATE', 'Visible valve description'] },
+    };
+    const protectedPrompt = boqExtractor.buildStructuredExtractionPrompt(protectedTable, [protectedEntry]);
+    for (const privateSourceValue of ['SERIAL-PRIVATE-A', 'SERIAL-PRIVATE-B', 'CODE-PRIVATE', 'QTY-PRIVATE-A', 'QTY-PRIVATE-B', 'UNIT-PRIVATE']) {
+        assert.ok(!protectedPrompt.includes(privateSourceValue), `${privateSourceValue} is excluded from the AI prompt`);
+    }
+    assert.ok(protectedPrompt.includes('Visible valve description'), 'descriptive content remains available for interpretation');
+
+    for (const rowCount of [10, 100, 500]) {
+        const largeEntries = Array.from({ length: rowCount }, (_, index) => ({
+            item: {
+                lineItemId: `source-${index + 1}`,
+                description: 'Repeated wrapped procurement description',
+                product: 'Pump assembly',
+                size: 'DN100',
+                specification: 'Class 150',
+                quantity: 5,
+                unit: 'nos',
+                provenance: { page: Math.floor(index / 25) + 1, table: 1, row: index + 2 },
+            },
+            row: { cells: [`${index + 1}`, 'Repeated wrapped procurement description', 'DN100', 'Class 150', '5', 'nos'] },
+        }));
+        const largeBatches = boqExtractor.splitStructuredRowBatches(largeEntries);
+        const flattened = largeBatches.flat();
+        assert.equal(flattened.length, rowCount, `${rowCount} source rows survive splitting`);
+        assert.deepEqual(flattened.map(({ item: sourceItem }) => sourceItem.lineItemId), largeEntries.map(({ item: sourceItem }) => sourceItem.lineItemId),
+            `${rowCount} rows merge in stable source order without deduplication`);
+        assert.ok(largeBatches.every((batch) => batch.length <= 40), `${rowCount} rows respect the row limit`);
+        assert.ok(largeBatches.every((batch) => batch.length === 1 || boqExtractor.estimateBatchChars(batch) <= 12000),
+            `${rowCount} rows respect the complete prompt character limit`);
+        assert.ok(largeBatches.length >= Math.ceil(rowCount / 40), `${rowCount} rows create at least the row-bound batch count`);
+        if (rowCount === 500) {
+            assert.equal(new Set(largeEntries.map(({ item: sourceItem }) => sourceItem.lineItemId)).size, 500,
+                'duplicate-looking descriptions and quantities retain distinct source row IDs');
+        }
+    }
+
+    const continuedEntries = continued[0].rows.map((row) => ({
+        row,
+        item: documentModel.lineItemFromRow({ headers: continued[0].headers, row: row.cells, source: row.source }),
+    }));
+    const continuationBatches = boqExtractor.splitStructuredRowBatches(continuedEntries, 1, 6000);
+    assert.equal(continuationBatches.length, 3);
+    assert.match(continuationBatches[0][0].item.description, /Concrete pump with trailer/,
+        'a multi-page wrapped row remains one complete source row even when it occupies a batch boundary');
+    assert.equal(continuationBatches[0][0].item.provenance.continuationSources[0].page, 2);
+
     console.log('✅ Structured BOQ model tests passed (XLSX variants, CSV, DOCX tables, native PDF, visual layouts, source authority, continuation, missing fields, non-pipe items).');
 }
 

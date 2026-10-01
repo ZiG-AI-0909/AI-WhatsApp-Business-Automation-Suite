@@ -406,7 +406,7 @@ function lineItemFromRow({ headers = [], row = [], source = {}, filename = '', h
     const sourceRow = source.row ?? '';
     const sourcePage = source.page ?? null;
     const sourceTable = source.table ?? null;
-    const lineItemId = [filename || 'document', source.sheet || '', sourcePage ?? '', sourceTable ?? '', sourceRow, serialNumber || itemCode || ''].join(':');
+    const lineItemId = [filename || 'document', source.sheet || '', sourcePage ?? '', sourceTable ?? '', sourceRow].join(':');
     const warnings = [];
     const quantity = quantityColumnPresent ? parseSourceQuantity(quantityRaw) : null;
 

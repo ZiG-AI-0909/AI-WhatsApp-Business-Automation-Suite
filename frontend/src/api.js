@@ -65,22 +65,40 @@ function timeoutSignal(ms) {
     : undefined // older browsers: no client timeout (same as before)
 }
 
+function requestSignal(userSignal, timeoutMs) {
+  if (!userSignal) return { signal: timeoutSignal(timeoutMs), cleanup: () => {} }
+  const controller = new AbortController()
+  const abortFromUser = () => controller.abort(userSignal.reason)
+  if (userSignal.aborted) abortFromUser()
+  else userSignal.addEventListener('abort', abortFromUser, { once: true })
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId)
+      userSignal.removeEventListener('abort', abortFromUser)
+    },
+  }
+}
+
 export async function apiFetch(path, options = {}) {
   // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
   const authHeaders = await authHeader()
 
   const budget = ENDPOINT_TIMEOUT_MS[path] || REQUEST_TIMEOUT_MS
+  const request = requestSignal(options.signal, budget)
   let response
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...options,
-      signal: options.signal || timeoutSignal(budget),
+      signal: request.signal,
       headers: {
         ...authHeaders,
         ...(options.headers || {}),
       },
     })
   } catch (fetchError) {
+    request.cleanup()
     // AbortSignal.timeout aborts produce a DOMException — convert to a
     // readable error so the UI says "timed out" instead of a raw
     // "signal is aborted without reason".
@@ -92,7 +110,24 @@ export async function apiFetch(path, options = {}) {
     throw fetchError
   }
 
-  const data = await response.json().catch(() => ({}))
+  let data
+  try {
+    data = await response.json()
+  } catch {
+    request.cleanup()
+    if (options.signal?.aborted) {
+      const abortError = new Error('Request cancelled.')
+      abortError.name = 'AbortError'
+      throw abortError
+    }
+    if (request.signal?.aborted) {
+      const timeoutError = new Error(`Request timed out after ${Math.round(budget / 1000)}s. Try again or use a smaller file.`)
+      timeoutError.status = 0
+      throw timeoutError
+    }
+    data = {}
+  }
+  request.cleanup()
 
   // 304 carries no body and response.ok is false for it, yet the browser
   // already has the cached copy — a revalidated 304 is a success, not an

@@ -29,7 +29,7 @@ const axios = require('axios');
  * @param {number} [options.timeoutMs] request timeout (default 60000).
  * @param {string} [options.logLabel] prefix for warnings.
  */
-async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000, logLabel = 'ocr', returnLayout = false } = {}) {
+async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000, logLabel = 'ocr', returnLayout = false, signal } = {}) {
     const key = process.env.NVIDIA_API_KEY || process.env.AI_API_KEY;
     if (!key) throw new Error('NVIDIA_API_KEY is not configured on the server.');
 
@@ -41,6 +41,7 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
             'Content-Type': 'application/json',
         },
         timeout: timeoutMs,
+        signal,
     };
 
     // Same URL derivation as the Image Extractor: NVIDIA_OCR_URL points at
