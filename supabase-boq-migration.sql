@@ -8,6 +8,7 @@ create table if not exists public.boq_documents (
     filename      text not null,
     file_ext      text default '',
     document_text text default '',
+    extraction_metadata jsonb not null default '{}'::jsonb,
     status        text default 'review',
     items         text default '[]',
     warnings      text default '[]',
@@ -16,12 +17,16 @@ create table if not exists public.boq_documents (
     updated_at    timestamptz default now()
 );
 
+alter table public.boq_documents
+    add column if not exists extraction_metadata jsonb not null default '{}'::jsonb;
+
 comment on table public.boq_documents is 'Processed BOQ / requirement documents with extracted line items, per tenant (user_id)';
 
 alter table public.boq_documents enable row level security;
 
 -- Same RLS safety net as other tenant tables: the backend uses the service
 -- role key; application-layer user_id scoping is the real enforcement.
+drop policy if exists "Tenant isolation for boq_documents" on public.boq_documents;
 create policy "Tenant isolation for boq_documents" on public.boq_documents
     for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 

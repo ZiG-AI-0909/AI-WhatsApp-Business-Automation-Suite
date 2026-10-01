@@ -3,6 +3,7 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const db = require('../database/db');
 const boqExtractor = require('../documents/boqExtractor');
+const documentModel = require('../documents/documentModel');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
 const { resolveAiConfig } = require('../utils/aiConfig');
 
@@ -158,15 +159,7 @@ function resolveDocIntelModel(storedModel) {
  * transient retry (timeout/socket break, 429, 5xx) inside that deadline.
  */
 async function extractItemsWithAI(userId, documentText, filename = 'document', deadlineMs = 0) {
-    const rows = await loadUserSettings(userId);
-    const aiConfig = resolveAiConfig({
-        storedKey: rows.AI_API_KEY,
-        storedBaseURL: rows.AI_BASE_URL,
-        ...resolveDocIntelServerConfig(),
-    });
-    if (!aiConfig.apiKey) throw new Error('AI is not configured. Set AI_API_KEY on the server or in Settings.');
-    const model = resolveDocIntelModel(rows.AI_MODEL);
-    const aiService = require('../ai/aiService');
+    const { aiConfig, model, aiService } = await loadExtractionClient(userId);
 
     const chunks = boqExtractor.splitIntoChunks(documentText);
     if (chunks.length > BOQ_MAX_CHUNKS) {
@@ -298,6 +291,107 @@ async function extractItemsWithAI(userId, documentText, filename = 'document', d
     return items;
 }
 
+async function loadExtractionClient(userId) {
+    const rows = await loadUserSettings(userId);
+    const aiConfig = resolveAiConfig({
+        storedKey: rows.AI_API_KEY,
+        storedBaseURL: rows.AI_BASE_URL,
+        ...resolveDocIntelServerConfig(),
+    });
+    if (!aiConfig.apiKey) throw new Error('AI is not configured. Set AI_API_KEY on the server or in Settings.');
+    return { aiConfig, model: resolveDocIntelModel(rows.AI_MODEL), aiService: require('../ai/aiService') };
+}
+
+function splitStructuredRows(table, entries) {
+    const groups = [];
+    let group = [];
+    let size = JSON.stringify(table.headers || []).length;
+    for (const entry of entries) {
+        const rowSize = JSON.stringify(entry.row.cells || []).length;
+        if (group.length && size + rowSize > boqExtractor.CHUNK_MAX_CHARS) {
+            groups.push(group);
+            group = [];
+            size = JSON.stringify(table.headers || []).length;
+        }
+        group.push(entry);
+        size += rowSize;
+    }
+    if (group.length) groups.push(group);
+    return groups;
+}
+
+async function extractStructuredTableWithAI(userId, table, entries, filename, deadlineMs) {
+    if (!entries.length) return [];
+    const { aiConfig, model, aiService } = await loadExtractionClient(userId);
+    const groups = splitStructuredRows(table, entries);
+    if (groups.length > BOQ_MAX_CHUNKS) {
+        const error = new Error(`Document is too large to extract in one request (${groups.length} table sections, max ${BOQ_MAX_CHUNKS}). Split it into smaller parts and upload each separately.`);
+        error.statusCode = 413;
+        throw error;
+    }
+    const results = new Array(groups.length).fill(null);
+    const failures = new Array(groups.length).fill(null);
+    const runGroup = async (index) => {
+        const group = groups[index];
+        const chunksLeft = groups.length - index;
+        const wavesLeft = Math.max(1, Math.ceil(chunksLeft / BOQ_AI_CONCURRENCY));
+        const remaining = deadlineMs - Date.now();
+        if (remaining <= 0) {
+            const error = new Error(`The AI extraction budget ran out before section ${index + 1} of ${groups.length} of "${filename}" could be attempted.`);
+            error.statusCode = 504;
+            error.extraction = { stage: 'ai_extraction', section: index + 1, of: groups.length, retryable: true };
+            failures[index] = error;
+            return;
+        }
+        const timeoutMs = Math.max(100, Math.min(BOQ_AI_MAX_CALL_MS, Math.floor(remaining / wavesLeft)));
+        try {
+            const content = await aiService._complete(
+                [{ role: 'user', content: boqExtractor.buildStructuredExtractionPrompt(table, group) }],
+                {
+                    apiKey: aiConfig.apiKey,
+                    baseURL: aiConfig.baseURL,
+                    model,
+                    temperature: 0.1,
+                    maxTokens: 8000,
+                    timeoutMs,
+                    deadlineMs,
+                    minAttemptMs: BOQ_AI_MIN_CALL_MS,
+                    retries: 1,
+                    reasoningEffort: 'none',
+                    logLabel: `boq structured ${index + 1}/${groups.length}`,
+                }
+            );
+            results[index] = boqExtractor.normalizeResponse(content);
+        } catch (error) {
+            const mapped = mapExtractionStatus(error);
+            error.message = `Section ${index + 1} of ${groups.length} of "${filename}" could not be extracted: ${error.message}`;
+            error.statusCode = mapped.status;
+            error.extraction = { stage: 'ai_extraction', section: index + 1, of: groups.length, retryable: mapped.retryable };
+            failures[index] = error;
+        }
+    };
+    for (let waveStart = 0; waveStart < groups.length; waveStart += BOQ_AI_CONCURRENCY) {
+        await Promise.all(Array.from(
+            { length: Math.min(BOQ_AI_CONCURRENCY, groups.length - waveStart) },
+            (_, offset) => runGroup(waveStart + offset)
+        ));
+    }
+    const failure = failures.find(Boolean);
+    if (failure) throw failure;
+
+    return groups.flatMap((group, groupIndex) => {
+        const derived = results[groupIndex] || [];
+        const byId = new Map(derived.filter((item) => item?.rowId != null).map((item) => [String(item.rowId), item]));
+        return group.map((entry, index) => {
+            const enrichment = byId.get(String(entry.item.lineItemId))
+                || (derived.length === group.length ? derived[index] : null);
+            return documentModel.mergeDerivedFields(entry.item, enrichment || {
+                warnings: ['AI enrichment could not be matched to this source row.'],
+            });
+        });
+    });
+}
+
 // POST /api/boq/process — upload a requirement document, extract text,
 // run AI extraction, flag suspicious rows, and store everything for review.
 router.post('/process', upload.single('file'), async (req, res) => {
@@ -310,9 +404,11 @@ router.post('/process', upload.single('file'), async (req, res) => {
     console.log(`[boq:${userId}] process START: "${req.file.originalname}" (${req.file.size} bytes, ${ext})`);
     try {
         const textStart = Date.now();
-        let documentText = await boqExtractor.extractText(req.file.buffer, ext);
+        let document = await boqExtractor.parseDocument(req.file.buffer, ext, req.file.originalname);
+        let documentText = document.rawText || '';
         const lineCount = documentText.split('\n').filter((l) => l.trim()).length;
         console.log(`[boq:${userId}] text extraction done in ${Date.now() - textStart}ms: ${documentText.length} chars / ${lineCount} non-empty lines`);
+        let usedVisualOcr = false;
 
         // Junk-text guard: a scanned/image-only PDF still yields "text" from
         // pdf-parse — the page separators alone ("-- 1 of 20 --") are
@@ -321,6 +417,35 @@ router.post('/process', upload.single('file'), async (req, res) => {
         // pages → NVIDIA Nemotron OCR → concatenated text) and continue with
         // that instead. Non-PDF junk is still a clear rejection.
         let usedOcr = false; // becomes true only if the OCR path produced the text
+        if (ext === '.pdf' && !(document.tables || []).length && !boqExtractor.looksLikeJunkText(documentText)) {
+            const pageNumbers = documentModel.findVisualTablePages(document.pages || []);
+            if (pageNumbers.length) {
+                try {
+                    const visual = await require('../documents/pdfOcr').ocrNativePdfPages(
+                        req.file.buffer,
+                        userId,
+                        pageNumbers,
+                        { deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS }
+                    );
+                    const visualTables = documentModel.reconstructTablesFromLayoutPages(visual.pages);
+                    if (visualTables.length) {
+                        const visualByPage = new Map(visual.pages.map((page) => [page.page, page]));
+                        document.pages = (document.pages || []).map((page) => ({
+                            ...page,
+                            ...(visualByPage.get(page.page) || {}),
+                            text: page.text,
+                        }));
+                        document.tables = visualTables;
+                        usedVisualOcr = true;
+                        console.log(`[boq:${userId}] visual PDF table reconstruction found ${visualTables.length} table(s) across ${visual.pages.length} rendered page(s)`);
+                    } else {
+                        console.log(`[boq:${userId}] visual PDF pass found no header-aligned table; retaining text fallback`);
+                    }
+                } catch (visualError) {
+                    console.warn(`[boq:${userId}] visual PDF table pass failed; retaining text fallback: ${visualError.message}`);
+                }
+            }
+        }
         if (boqExtractor.looksLikeJunkText(documentText)) {
             console.log(`[boq:${userId}] junk text detected (${documentText.trim().length} chars, alnum-starved) — scanned/image-only document?`);
             if (ext !== '.pdf') {
@@ -339,6 +464,19 @@ router.post('/process', upload.single('file'), async (req, res) => {
                     deadlineMs: startedAt + BOQ_TOTAL_BUDGET_MS,
                 });
                 documentText = ocr.text;
+                document.pages = ocr.pages?.length ? ocr.pages : documentText
+                    .split(/(?=^\s*-{2,}\s*\d+(?:\s+of\s+\d+)?\s*-{2,}\s*$)/m)
+                    .filter((text) => text.trim())
+                    .map((text, index) => ({ page: index + 1, text }));
+                const pageMatrices = document.pages.map((page) => {
+                    const layoutMatrix = (page.rows || []).map((row) => row.map((cell) => cell.text));
+                    const hasCellLayout = layoutMatrix.some((row) => row.length > 1);
+                    return {
+                        page: page.page,
+                        matrix: hasCellLayout ? layoutMatrix : boqExtractor.matrixFromDelimitedText(page.text || ''),
+                    };
+                });
+                document.tables = documentModel.extractTablesAcrossPages(pageMatrices);
                 usedOcr = true;
                 console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages, ${ocr.failedPages.length} failed page(s))`);
             } catch (ocrError) {
@@ -390,14 +528,67 @@ router.post('/process', upload.single('file'), async (req, res) => {
         // request start — text extraction and DB time are part of the same
         // budget, so per-chunk timeouts shrink to absorb slow parsing.
         const deadlineMs = startedAt + BOQ_TOTAL_BUDGET_MS;
-        const items = await extractItemsWithAI(userId, documentText, req.file.originalname, deadlineMs);
+        let items = [];
+        const structuredTables = (document.tables || []).filter((table) => table.rows?.length);
+        if (structuredTables.length) {
+            for (const table of structuredTables) {
+                const entries = table.rows.map((row) => ({
+                    row,
+                    item: documentModel.lineItemFromRow({
+                        headers: table.headers,
+                        row: row.cells,
+                        source: row.source || table.source,
+                        filename: req.file.originalname,
+                        headerMap: {
+                            columns: table.columnMap || documentModel.mapHeaders(table.headers).columns,
+                            ambiguous: table.ambiguousHeaders || {},
+                        },
+                    }),
+                }));
+                items.push(...await extractStructuredTableWithAI(
+                    userId,
+                    table,
+                    entries,
+                    req.file.originalname,
+                    deadlineMs
+                ));
+            }
+        } else {
+            const extracted = await extractItemsWithAI(userId, documentText, req.file.originalname, deadlineMs);
+            items = extracted.map((item, index) => ({
+                ...boqExtractor.cleanItem(item),
+                lineItemId: `${req.file.originalname}:text:${index + 1}`,
+                serialNumber: item.serialNumber ?? null,
+                itemCode: item.itemCode ?? null,
+                description: item.description ?? null,
+                sourceValues: {},
+                provenance: { document: req.file.originalname, page: null, table: null, row: null, columns: {} },
+                confidence: item.confidence || {},
+                warnings: Array.isArray(item.warnings) ? item.warnings : [],
+            }));
+        }
         const warnings = boqExtractor.flagAll(items);
+        const extractionMetadata = {
+            version: 1,
+            documentType: structuredTables.length ? 'boq_table' : 'requirements_text',
+            format: ext,
+            strategy: structuredTables.length
+                ? (usedVisualOcr ? 'pdf_visual_tables' : usedOcr ? 'ocr_tables' : 'structured_tables')
+                : 'text_fallback',
+            pageCount: document.pages?.length || null,
+            sheetCount: document.sheets?.length || null,
+            ...document.metadata,
+            pages: document.pages || [],
+            sheets: (document.sheets || []).map((sheet) => ({ name: sheet.name, tables: sheet.tables || [] })),
+            tables: structuredTables,
+        };
 
         const dbStart = Date.now();
         const created = await db.insert('boq_documents', {
             filename: req.file.originalname,
             file_ext: ext,
             document_text: documentText,
+            extraction_metadata: extractionMetadata,
             status: 'review',
             items: JSON.stringify(items),
             warnings: JSON.stringify(warnings),
@@ -432,7 +623,7 @@ router.get('/', async (req, res) => {
     try {
         const rows = await db.select(
             'boq_documents',
-            'id, filename, file_ext, status, items, warnings, created_at',
+            'id, filename, file_ext, status, items, warnings, extraction_metadata, created_at',
             'user_id = ?',
             [req.user.id],
             'created_at',
@@ -501,19 +692,26 @@ function rfqRows(doc) {
     const items = parseJsonArray(doc.items);
     return items.map((item, index) => ({
         'S.No': index + 1,
-        'Product': item.product || '',
+        'Product': item.product || item.description || '',
         'Size': item.size || '',
         'Specification': item.specification || '',
-        'Quantity': item.quantity || '',
+        'Quantity': item.quantity ?? '',
         'Unit': item.unit || '',
-        'Application / Remarks': [item.application, item.notes].filter(Boolean).join(' — '),
+        'Application / Remarks': [item.application, item.notes || item.remarks].filter(Boolean).join(' — '),
     }));
+}
+
+function requireConfirmedDocument(doc, res) {
+    if (doc.status === 'confirmed') return false;
+    res.status(409).json({ error: 'Confirm the requirement sheet before exporting an RFQ.' });
+    return true;
 }
 
 router.get('/:id/export/excel', async (req, res) => {
     try {
         const doc = await db.getById('boq_documents', req.params.id, req.user.id);
         if (!doc) return res.status(404).json({ error: 'Document not found.' });
+        if (requireConfirmedDocument(doc, res)) return;
         const rows = rfqRows(doc);
         if (!rows.length) return res.status(400).json({ error: 'This document has no extracted items to export.' });
 
@@ -563,26 +761,38 @@ function buildRfqPdf(doc) {
         return out.length ? out : [''];
     };
 
-    const contentParts = [];
+    const pageContents = [[]];
     let y = pageHeight - margin;
     for (const line of lines) {
         const fontSize = line.bold ? 16 : 10;
         for (const piece of wrap(line.text, fontSize)) {
-            if (y < margin) break;
+            if (y < margin) {
+                pageContents.push([]);
+                y = pageHeight - margin;
+                pageContents[pageContents.length - 1].push(`BT /F2 12 Tf ${margin} ${y} Td (REQUEST FOR QUOTATION - continued) Tj ET`);
+                y -= lineHeight;
+            }
             const font = line.bold ? '/F2' : '/F1';
-            contentParts.push(`BT ${font} ${fontSize} Tf ${margin} ${y} Td (${escapePdfText(piece)}) Tj ET`);
+            pageContents[pageContents.length - 1].push(`BT ${font} ${fontSize} Tf ${margin} ${y} Td (${escapePdfText(piece)}) Tj ET`);
             y -= lineHeight;
         }
     }
-    const content = contentParts.join('\n');
     const objects = [
         '<< /Type /Catalog /Pages 2 0 R >>',
-        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>`,
+        '',
         '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
         '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>',
-        `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
     ];
+    const pageReferences = [];
+    for (const pageLines of pageContents) {
+        const pageObjectNumber = objects.length + 1;
+        const contentObjectNumber = pageObjectNumber + 1;
+        pageReferences.push(`${pageObjectNumber} 0 R`);
+        objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObjectNumber} 0 R >>`);
+        const content = pageLines.join('\n');
+        objects.push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+    }
+    objects[1] = `<< /Type /Pages /Kids [${pageReferences.join(' ')}] /Count ${pageContents.length} >>`;
     let pdf = '%PDF-1.4\n';
     const offsets = [0];
     objects.forEach((obj, i) => {
@@ -606,6 +816,7 @@ router.get('/:id/export/pdf', async (req, res) => {
     try {
         const doc = await db.getById('boq_documents', req.params.id, req.user.id);
         if (!doc) return res.status(404).json({ error: 'Document not found.' });
+        if (requireConfirmedDocument(doc, res)) return;
         const items = parseJsonArray(doc.items);
         if (!items.length) return res.status(400).json({ error: 'This document has no extracted items to export.' });
         const buffer = buildRfqPdf(doc);
@@ -617,10 +828,15 @@ router.get('/:id/export/pdf', async (req, res) => {
 });
 
 function serializeDoc(doc) {
+    let extractionMetadata = doc.extraction_metadata || {};
+    if (typeof extractionMetadata === 'string') {
+        try { extractionMetadata = JSON.parse(extractionMetadata); } catch { extractionMetadata = {}; }
+    }
     return {
         ...doc,
         items: parseJsonArray(doc.items),
         warnings: parseJsonArray(doc.warnings),
+        extraction_metadata: extractionMetadata,
     };
 }
 

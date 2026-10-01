@@ -4,6 +4,16 @@ import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js
 import EmptyState from './components/EmptyState.jsx'
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : ''
+const formatSource = (source = {}) => [
+  source.page ? `Page ${source.page}` : '',
+  source.sheet ? `Sheet ${source.sheet}` : '',
+  source.table ? `Table ${source.table}` : '',
+  source.row ? `Row ${source.row}` : '',
+].filter(Boolean).join(' · ') || 'Not available'
+const formatConfidence = (confidence = {}) => Object.entries(confidence)
+  .filter(([, score]) => typeof score === 'number')
+  .map(([field, score]) => `${field} ${Math.round(score * 100)}%`)
+  .join(', ') || 'Not provided'
 
 const EMPTY_ITEM = { product: '', size: '', specification: '', quantity: '', unit: '', application: '', notes: '' }
 
@@ -75,9 +85,10 @@ export default function DocumentIntelView() {
   }
 
   const editItem = (index, field, value) => {
+    const changes = field === 'notes' ? { notes: value, remarks: value } : { [field]: value }
     setSelected((current) => ({
       ...current,
-      items: current.items.map((item, i) => i === index ? { ...item, [field]: value } : item),
+      items: current.items.map((item, i) => i === index ? { ...item, ...changes } : item),
     }))
   }
 
@@ -188,34 +199,36 @@ export default function DocumentIntelView() {
               <span className="file-note">{selected.items.length} items · {warnCount} row(s) with warnings · {formatDate(selected.created_at)}</span>
             </div>
             <div className="button-row">
-              <button type="button" className="secondary-btn" onClick={() => exportRfq('excel')} disabled={!!exporting || !selected.items.length}>{exporting === 'excel' ? 'Building…' : 'Export RFQ (Excel)'}</button>
-              <button type="button" className="secondary-btn" onClick={() => exportRfq('pdf')} disabled={!!exporting || !selected.items.length}>{exporting === 'pdf' ? 'Building…' : 'Export RFQ (PDF)'}</button>
+              <button type="button" className="secondary-btn" onClick={() => exportRfq('excel')} disabled={!!exporting || !selected.items.length || selected.status !== 'confirmed'}>{exporting === 'excel' ? 'Building…' : 'Export RFQ (Excel)'}</button>
+              <button type="button" className="secondary-btn" onClick={() => exportRfq('pdf')} disabled={!!exporting || !selected.items.length || selected.status !== 'confirmed'}>{exporting === 'pdf' ? 'Building…' : 'Export RFQ (PDF)'}</button>
             </div>
           </div>
 
           <div className="campaign-table-wrap">
             <table>
               <thead>
-                <tr><th>Product</th><th>Size</th><th>Specification</th><th>Quantity</th><th>Unit</th><th>Application</th><th>Notes</th><th /></tr>
+                <tr><th>Product</th><th>Size</th><th>Specification</th><th>Quantity</th><th>Unit</th><th>Application</th><th>Notes</th><th>Source</th><th>Confidence</th><th>Warnings</th><th>Actions</th></tr>
               </thead>
               <tbody>
                 {selected.items.map((item, index) => {
-                  const rowWarnings = selected.warnings?.[index] || []
+                  const rowWarnings = selected.warnings?.[index] || item.warnings || []
                   return (
                     <tr key={index} className={rowWarnings.length ? 'row-warnings' : ''}>
-                      <td data-label="Product"><input value={item.product} onChange={(event) => editItem(index, 'product', event.target.value)} /></td>
-                      <td data-label="Size"><input value={item.size} onChange={(event) => editItem(index, 'size', event.target.value)} /></td>
-                      <td data-label="Specification"><input value={item.specification} onChange={(event) => editItem(index, 'specification', event.target.value)} /></td>
-                      <td data-label="Quantity"><input value={item.quantity} onChange={(event) => editItem(index, 'quantity', event.target.value)} /></td>
-                      <td data-label="Unit"><input value={item.unit} onChange={(event) => editItem(index, 'unit', event.target.value)} /></td>
-                      <td data-label="Application"><input value={item.application} onChange={(event) => editItem(index, 'application', event.target.value)} /></td>
-                      <td data-label="Notes"><input value={item.notes} onChange={(event) => editItem(index, 'notes', event.target.value)} /></td>
+                      <td data-label="Product"><input value={item.product ?? ''} onChange={(event) => editItem(index, 'product', event.target.value)} /></td>
+                      <td data-label="Size"><input value={item.size ?? ''} onChange={(event) => editItem(index, 'size', event.target.value)} /></td>
+                      <td data-label="Specification"><input value={item.specification ?? ''} onChange={(event) => editItem(index, 'specification', event.target.value)} /></td>
+                      <td data-label="Quantity"><input value={item.quantity ?? ''} onChange={(event) => editItem(index, 'quantity', event.target.value)} /></td>
+                      <td data-label="Unit"><input value={item.unit ?? ''} onChange={(event) => editItem(index, 'unit', event.target.value)} /></td>
+                      <td data-label="Application"><input value={item.application ?? ''} onChange={(event) => editItem(index, 'application', event.target.value)} /></td>
+                      <td data-label="Notes"><input value={item.notes ?? item.remarks ?? ''} onChange={(event) => editItem(index, 'notes', event.target.value)} /></td>
+                      <td data-label="Source">{formatSource(item.provenance)}</td>
+                      <td data-label="Confidence">{formatConfidence(item.confidence)}</td>
+                      <td data-label="Warnings">{rowWarnings.length > 0 && (
+                        <ul className="warning-list">
+                          {rowWarnings.map((warning, wIndex) => <li key={wIndex}>{warning}</li>)}
+                        </ul>
+                      )}</td>
                       <td data-label="Actions">
-                        {rowWarnings.length > 0 && (
-                          <ul className="warning-list">
-                            {rowWarnings.map((warning, wIndex) => <li key={wIndex}>{warning}</li>)}
-                          </ul>
-                        )}
                         <button type="button" className="danger-btn" onClick={() => removeItem(index)}>Remove</button>
                       </td>
                     </tr>

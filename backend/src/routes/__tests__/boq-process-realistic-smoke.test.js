@@ -347,6 +347,139 @@ async function test5_perChunkBudgetDivision() {
     console.log('✅ Test 5 passed\n');
 }
 
+async function test6_sourceColumnsOverrideAiValues() {
+    console.log('▶ Test 6: source quantity/unit survive conflicting AI enrichment');
+    const original = aiService._complete;
+    aiService._complete = async (messages) => {
+        const prompt = messages[0].content;
+        assert.match(prompt, /STRUCTURED ROWS/);
+        const rowsMatch = prompt.match(/STRUCTURED ROWS[^\n]*:\n([\s\S]*?)\n\nFor each input row/);
+        const sourceRows = JSON.parse(rowsMatch[1]);
+        return JSON.stringify({ items: [{
+            rowId: sourceRows[0].rowId,
+            product: 'Water Pump',
+            size: '200 mm',
+            specification: 'Class 150',
+            quantity: 1,
+            unit: 'dia',
+            application: null,
+            remarks: null,
+            confidence: { product: 0.94, size: 0.9 },
+            warnings: [],
+        }] });
+    };
+    try {
+        const workbook = new ExcelJS.Workbook();
+        workbook.addWorksheet('Tender').addRows([
+            ['S.No', 'Item Code', 'Description', 'Unit', 'Estimate Quantity'],
+            ['72', 'ME-9.1', 'Providing and installing a 200 mm dia water pump', 'm', '22,699.40'],
+        ]);
+        const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+        const { req, res, getStatus, getBody } = makeReqRes({
+            originalname: 'generic-boq.xlsx',
+            size: buffer.length,
+            buffer,
+        });
+        await runProcessHandler(req, res);
+        assert.equal(getStatus(), 201, JSON.stringify(getBody()));
+        const item = getBody().items[0];
+        assert.equal(item.quantity, 22699.4);
+        assert.equal(item.unit, 'm');
+        assert.equal(item.serialNumber, '72');
+        assert.equal(item.itemCode, 'ME-9.1');
+        assert.equal(item.product, 'Water Pump');
+        assert.equal(item.sourceValues['Estimate Quantity'], '22,699.40');
+        assert.equal(item.provenance.columns.unit, 'Unit');
+        assert.equal(item.provenance.row, 2);
+        assert.equal(getBody().extraction_metadata.strategy, 'structured_tables');
+    } finally {
+        aiService._complete = original;
+    }
+    console.log('✅ Test 6 passed\n');
+}
+
+async function test7_nativePdfUsesVisualTableReconstruction() {
+    console.log('▶ Test 7: native PDF without text tables uses visual reconstruction');
+    const originalComplete = aiService._complete;
+    const originalParseDocument = boqExtractor.parseDocument;
+    const pdfOcr = require('../../documents/pdfOcr');
+    const originalVisualOcr = pdfOcr.ocrNativePdfPages;
+    let renderedPages = [];
+    aiService._complete = async (messages) => {
+        const prompt = messages[0].content;
+        assert.match(prompt, /STRUCTURED ROWS/);
+        const start = prompt.indexOf('STRUCTURED ROWS');
+        const jsonStart = prompt.indexOf('\n', start) + 1;
+        const jsonEnd = prompt.indexOf('\n\nFor each input row', jsonStart);
+        const inputRows = JSON.parse(prompt.slice(jsonStart, jsonEnd));
+        return JSON.stringify({ items: inputRows.map((row) => ({
+            rowId: row.rowId,
+            product: 'Pump assembly',
+            size: '200 mm',
+            specification: null,
+            quantity: 1,
+            unit: 'coil',
+            application: null,
+            remarks: null,
+            confidence: { product: 0.9 },
+            warnings: [],
+        })) });
+    };
+    boqExtractor.parseDocument = async (_buffer, ext, filename) => ({
+        metadata: { filename, fileExt: ext },
+        rawText: 'S.No Item Description Unit Estimate Quantity\n72 Providing pump assembly m 22699.40',
+        pages: [{ page: 1, text: 'S.No Item Description Unit Estimate Quantity\n72 Providing pump assembly m 22699.40' }],
+        sheets: [],
+        tables: [],
+    });
+    pdfOcr.ocrNativePdfPages = async (_buffer, _userId, pages) => {
+        renderedPages = pages;
+        const box = (text, left, top, right) => ({
+            text,
+            boundingBox: { points: [{ x: left, y: top }, { x: right, y: top }, { x: right, y: top + 8 }, { x: left, y: top + 8 }] },
+            confidence: 0.99,
+        });
+        return {
+            pageCount: 1,
+            failedPages: [],
+            pages: [{
+                page: 1,
+                width: 900,
+                height: 1200,
+                rows: [
+                    [box('S.No', 20, 100, 50), box('Item Description', 100, 100, 260), box('Unit', 600, 100, 640), box('Estimate Quantity', 730, 100, 860)],
+                    [box('72', 20, 120, 35), box('200 mm dia coil pump assembly', 100, 120, 550), box('m', 600, 120, 620), box('22699.40', 730, 120, 800)],
+                ],
+            }],
+        };
+    };
+    try {
+        const { req, res, getStatus, getBody } = makeReqRes({
+            originalname: 'generic-native-layout.pdf',
+            size: 20,
+            buffer: Buffer.from('%PDF-1.7 visual fixture'),
+        });
+        await runProcessHandler(req, res);
+        assert.equal(getStatus(), 201, JSON.stringify(getBody()));
+        assert.deepEqual(renderedPages, [1]);
+        const item = getBody().items[0];
+        assert.equal(item.serialNumber, '72');
+        assert.equal(item.quantity, 22699.4);
+        assert.equal(item.unit, 'm');
+        assert.equal(item.size, '200 mm');
+        assert.equal(item.sourceValues['Estimate Quantity'], '22699.40');
+        assert.equal(item.provenance.cellBounds.length, 4);
+        assert.ok(item.provenance.cellBounds[1].boundingBox.points.length > 0);
+        assert.equal(getBody().extraction_metadata.strategy, 'pdf_visual_tables');
+        assert.ok(getBody().extraction_metadata.pages[0].rows.length > 0);
+    } finally {
+        aiService._complete = originalComplete;
+        boqExtractor.parseDocument = originalParseDocument;
+        pdfOcr.ocrNativePdfPages = originalVisualOcr;
+    }
+    console.log('✅ Test 7 passed\n');
+}
+
 // The route module exports the router; pull the /process handler out of
 // the stack (mirrors how phase2-smoke.test.js drives route layers).
 const processLayer = boqRoute.router.stack.find(
@@ -368,6 +501,8 @@ async function main() {
         await test3_aiFailureSurfacesClearError();
         await test4_timeoutSurfaces504WithRetryHint();
         await test5_perChunkBudgetDivision();
+        await test6_sourceColumnsOverrideAiValues();
+        await test7_nativePdfUsesVisualTableReconstruction();
         console.log('🎉 ALL BOQ REALISTIC-SIZE SMOKE TESTS PASSED');
         process.exit(0);
     } catch (error) {

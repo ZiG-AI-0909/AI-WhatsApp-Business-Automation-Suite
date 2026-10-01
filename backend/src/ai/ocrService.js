@@ -29,7 +29,7 @@ const axios = require('axios');
  * @param {number} [options.timeoutMs] request timeout (default 60000).
  * @param {string} [options.logLabel] prefix for warnings.
  */
-async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000, logLabel = 'ocr' } = {}) {
+async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000, logLabel = 'ocr', returnLayout = false } = {}) {
     const key = process.env.NVIDIA_API_KEY || process.env.AI_API_KEY;
     if (!key) throw new Error('NVIDIA_API_KEY is not configured on the server.');
 
@@ -80,8 +80,8 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
     // columns) always join in visual reading order.
     const dataEntries = Array.isArray(ocr.data) ? ocr.data : [];
     let text = '';
+    let layout = [];
     if (dataEntries.length) {
-        const lines = [];
         for (const entry of dataEntries) {
             const detections = Array.isArray(entry?.text_detections) ? entry.text_detections : [];
             for (const det of detections) {
@@ -96,10 +96,16 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
             detections.sort((a, b) => (a.__top - b.__top) || (a.__left - b.__left));
             for (const det of detections) {
                 const line = det?.text_prediction?.text;
-                if (typeof line === 'string' && line.trim()) lines.push(line.trim());
+                if (typeof line === 'string' && line.trim()) {
+                    layout.push({
+                        text: line.trim(),
+                        boundingBox: det.bounding_box || null,
+                        confidence: det.confidence ?? det.text_prediction?.confidence ?? null,
+                    });
+                }
             }
         }
-        text = lines.join('\n');
+        text = layout.map((detection) => detection.text).join('\n');
         if (!text.trim()) {
             console.warn(`[ocr:${logLabel}] NVIDIA response had text_detections for ${dataEntries.length} image(s) but every detection was empty`);
         }
@@ -110,6 +116,7 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
             text = Array.isArray(ocrTexts)
                 ? ocrTexts.map((item) => typeof item === 'string' ? item : item?.text || item?.parsed_text || '').filter(Boolean).join('\n')
                 : String(ocrTexts || '');
+            layout = text.split(/\r?\n/).filter(Boolean).map((line) => ({ text: line, boundingBox: null }));
         } else {
             // The exact failure mode that silently zeroed OCR output for
             // weeks: a successful HTTP response whose shape we do not
@@ -123,7 +130,7 @@ async function ocrImage(imageBuffer, { mimeType = 'image/png', timeoutMs = 60000
     if (!text.trim() && process.env.BOQ_OCR_DIAG_DUMP === '1') {
         console.warn(`[ocr-diag:${logLabel}] parsed 0 chars — RAW response body (first 2000 chars): ${String(JSON.stringify(ocr)).slice(0, 2000)}`);
     }
-    return text;
+    return returnLayout ? { text, detections: layout } : text;
 }
 
 module.exports = { ocrImage };

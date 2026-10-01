@@ -13,6 +13,7 @@
 // extraction results are persisted so users can revisit past runs.
 // =============================================================
 const ExcelJS = require('exceljs');
+const documentModel = require('./documentModel');
 
 const ITEM_SCHEMA_KEYS = ['product', 'size', 'specification', 'quantity', 'unit', 'application', 'notes'];
 
@@ -66,6 +67,186 @@ async function extractXlsxText(buffer) {
     return lines.join('\n').trim();
 }
 
+async function parseXlsxDocument(buffer, filename) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const sheets = [];
+    const tables = [];
+    const textLines = [];
+    for (const worksheet of workbook.worksheets) {
+        const matrix = Array.from({ length: worksheet.rowCount }, () => []);
+        worksheet.eachRow({ includeEmpty: true }, (row) => {
+            const values = [];
+            for (let column = 1; column <= worksheet.columnCount; column++) {
+                const cell = row.getCell(column);
+                values.push(cell.isMerged && cell.master.address !== cell.address ? '' : stringifyCell(cell.value));
+            }
+            matrix[row.number - 1] = values;
+            if (values.some((value) => value !== '')) textLines.push(values.join(' | '));
+        });
+        const sheetTables = documentModel.extractTablesFromMatrix(matrix, { sheet: worksheet.name });
+        sheets.push({ name: worksheet.name, rows: matrix, merges: worksheet.model.merges || [], tables: sheetTables });
+        tables.push(...sheetTables);
+        textLines.push('');
+    }
+    return documentModel.createDocument({
+        filename,
+        fileExt: '.xlsx',
+        rawText: textLines.join('\n').trim(),
+        sheets,
+        tables,
+    });
+}
+
+function parseCsvText(text) {
+    const delimiters = [',', ';', '\t', '|'];
+    const input = String(text || '');
+    const { parse } = require('csv-parse/sync');
+    let delimiter = ',';
+    let widestFirstRecord = 0;
+    for (const candidate of delimiters) {
+        try {
+            const firstRecord = parse(input, {
+                bom: true,
+                delimiter: candidate,
+                relax_quotes: true,
+                to_line: 1,
+            })[0] || [];
+            if (firstRecord.length > widestFirstRecord) {
+                widestFirstRecord = firstRecord.length;
+                delimiter = candidate;
+            }
+        } catch {
+            // A candidate delimiter can be invalid for malformed CSV; try the others.
+        }
+    }
+    const rows = parse(input, {
+        bom: true,
+        delimiter,
+        relax_column_count: true,
+        skip_empty_lines: true,
+    });
+    return { delimiter, rows };
+}
+
+function decodeHtmlEntities(value) {
+    return String(value || '').replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, token) => {
+        const normalized = token.toLowerCase();
+        if (normalized[0] === '#') {
+            const code = normalized[1] === 'x' ? parseInt(normalized.slice(2), 16) : parseInt(normalized.slice(1), 10);
+            try { return String.fromCodePoint(code); } catch { return entity; }
+        }
+        return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' })[normalized] || entity;
+    });
+}
+
+function htmlCellText(html) {
+    return decodeHtmlEntities(String(html || '')
+        .replace(/<br\s*\/?\s*>/gi, '\n')
+        .replace(/<\/(?:p|div|li)>/gi, '\n')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\s*\n\s*/g, '\n')
+        .trim());
+}
+
+function parseDocxTables(html) {
+    const tables = [];
+    for (const tableMatch of String(html || '').matchAll(/<table\b[^>]*>([\s\S]*?)<\/table\s*>/gi)) {
+        const matrix = [];
+        for (const rowMatch of tableMatch[1].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi)) {
+            const cells = [...rowMatch[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]\s*>/gi)]
+                .map((cell) => htmlCellText(cell[1]));
+            if (cells.length) matrix.push(cells);
+        }
+        tables.push(...documentModel.extractTablesFromMatrix(matrix, { table: tables.length + 1 }));
+    }
+    return tables;
+}
+
+function matrixFromDelimitedText(text) {
+    return String(text || '').split(/\r?\n/).map((line) => {
+        if (line.includes('\t')) return line.split('\t').map((cell) => cell.trim());
+        if (line.includes('|')) return line.split('|').map((cell) => cell.trim());
+        return [line];
+    });
+}
+
+function delimitedTablesFromText(text, location = {}) {
+    const matrix = matrixFromDelimitedText(text);
+    return documentModel.extractTablesFromMatrix(matrix, location);
+}
+
+async function parseDocument(buffer, ext, filename = '') {
+    const normalizedExt = String(ext || '').toLowerCase();
+    if (normalizedExt === '.xlsx') return parseXlsxDocument(buffer, filename);
+    if (normalizedExt === '.csv') {
+        const rawText = buffer.toString('utf8');
+        const parsed = parseCsvText(rawText);
+        const tables = documentModel.extractTablesFromMatrix(parsed.rows, { table: 1 });
+        return documentModel.createDocument({
+            filename, fileExt: normalizedExt, rawText,
+            sheets: [{ name: 'CSV', rows: parsed.rows, tables }], tables,
+        });
+    }
+    if (normalizedExt === '.docx') {
+        const mammoth = require('mammoth');
+        const [raw, html] = await Promise.all([
+            mammoth.extractRawText({ buffer }),
+            mammoth.convertToHtml({ buffer }),
+        ]);
+        const tables = parseDocxTables(html.value || '');
+        return documentModel.createDocument({
+            filename, fileExt: normalizedExt, rawText: raw.value || '',
+            tables,
+        });
+    }
+    if (normalizedExt === '.pdf') {
+        const { PDFParse } = require('pdf-parse');
+        const parser = new PDFParse({ data: buffer });
+        try {
+            let parsed;
+            try {
+                parsed = await parser.getText({ cellSeparator: '\t' });
+            } catch (error) {
+                return documentModel.createDocument({
+                    filename,
+                    fileExt: normalizedExt,
+                    rawText: '',
+                    metadata: { textParseError: error.message },
+                });
+            }
+            const pages = (parsed.pages || []).map((page) => ({ page: page.num, text: page.text || '' }));
+            let tables = documentModel.extractTablesAcrossPages(pages.map((page) => ({
+                page: page.page,
+                matrix: matrixFromDelimitedText(page.text),
+            })));
+            if (!tables.length) {
+                try {
+                    const tableResult = await parser.getTable();
+                    const vectorTables = (tableResult.pages || []).flatMap((page) =>
+                        (page.tables || []).flatMap((matrix) =>
+                            documentModel.extractTablesFromMatrix(matrix, { page: page.num })
+                        )
+                    );
+                    tables = documentModel.mergeContinuedPageTables(vectorTables);
+                } catch (error) {
+                    console.warn(`[boq] native PDF vector-table extraction unavailable for "${filename}": ${error.message}`);
+                }
+            }
+            return documentModel.createDocument({
+                filename, fileExt: normalizedExt, rawText: parsed.text || '', pages, tables,
+            });
+        } finally {
+            await parser.destroy();
+        }
+    }
+
+    const rawText = await extractText(buffer, normalizedExt);
+    const tables = delimitedTablesFromText(rawText);
+    return documentModel.createDocument({ filename, fileExt: normalizedExt, rawText, tables });
+}
+
 function stringifyCell(value) {
     if (value === null || value === undefined) return '';
     if (value instanceof Date) return value.toISOString().slice(0, 10);
@@ -117,23 +298,43 @@ function looksLikeJunkText(text) {
 // ─── AI extraction ────────────────────────────────────────────
 
 function buildExtractionPrompt(documentText) {
-    return `You are extracting line items from a pipe-industry Bill of Quantities (BOQ) or project requirement document. Return ONLY valid JSON, no commentary.
+    return `You are extracting procurement line items from a Bill of Quantities (BOQ) or project requirement document. The document may describe any industry or material. Return ONLY valid JSON, no commentary.
 
-Extract every material line item into this shape:
-{"items":[{"product":"","size":"","specification":"","quantity":"","unit":"","application":"","notes":""}]}
+Extract every requirement line item into this shape:
+{"items":[{"product":null,"description":null,"size":null,"specification":null,"quantity":null,"unit":null,"application":null,"notes":null}]}
 
 Field rules:
-- product: pipe/product type (e.g. "HDPE Pipe", "uPVC Pipe", "Ductile Iron Pipe"). Empty if unclear.
-- size: diameter/rate size as written (e.g. "6 inch", "110mm", "DN200"). Empty if missing.
-- specification: standard or grade (e.g. "IS 4985:2020", "PE100 PN10", "Sch 40"). Empty if missing.
-- quantity: numeric quantity only (digits/decimal). Empty if missing or unreadable.
-- unit: unit of measure (e.g. "m", "meters", "nos", "kg"). Empty if missing.
-- application: stated use (e.g. "water supply", "irrigation"). Empty if missing.
-- notes: anything notable (delivery terms, remarks, brand). Empty if missing.
-- Keep one entry per table line. Never merge lines. Never invent values — leave a field empty when the document does not state it. Preserve the document's own wording.
+- Identify the actual material/product and preserve the item's description.
+- Quantity and unit must be copied only when plainly present in the document. Never infer either from a description, nearby row, serial number, rate, amount, or example. Use null when missing or uncertain.
+- Do not confuse rate or amount with quantity.
+- Keep one entry per source line. Never merge lines or invent values. Use null for unsupported fields and preserve the document's wording.
 
 DOCUMENT:
 ${documentText}`;
+}
+
+function buildStructuredExtractionPrompt(table, rows) {
+    const sourceRows = rows.map((entry, index) => ({
+        rowId: entry.item.lineItemId,
+        source: entry.item.provenance,
+        cells: entry.row.cells,
+    }));
+    const readableRows = rows.map(({ row }) => row.cells.map((cell) => String(cell ?? '')).join(' | ')).join('\n');
+    return `You normalize procurement requirements from a structured BOQ table. The source may describe any industry or material. Return ONLY valid JSON, no commentary.
+
+TABLE HEADERS (original wording, in source order):
+${JSON.stringify(table.headers)}
+
+STRUCTURED ROWS (cell arrays align to the headers; source values are authoritative):
+${JSON.stringify(sourceRows)}
+
+For each input row, return exactly one item in the same order with this shape:
+{"items":[{"rowId":"source rowId","product":null,"size":null,"specification":null,"application":null,"remarks":null,"confidence":{},"warnings":[]}]}
+
+Derive only product, size, specification, application, and remarks from the row description/cells. Do not output or alter serial number, item code, quantity, unit, rates, or amounts; the application copies those directly from their source columns. Do not move values between columns or rows. Use null when a derived value is unclear. Preserve original terminology when practical.
+
+DOCUMENT:
+${readableRows}`;
 }
 
 function normalizeResponse(content) {
@@ -164,11 +365,22 @@ function normalizeResponse(content) {
 
 function cleanItem(item) {
     const source = item && typeof item === 'object' ? item : {};
-    const cleaned = {};
-    for (const key of ITEM_SCHEMA_KEYS) {
-        cleaned[key] = String(source[key] ?? '').trim();
+    const cleaned = { ...source };
+    for (const key of ['product', 'size', 'specification', 'application', 'description', 'serialNumber', 'itemCode']) {
+        cleaned[key] = String(source[key] ?? '').trim() || null;
     }
-    if (source.row_label) cleaned.row_label = String(source.row_label).trim();
+    cleaned.remarks = String(source.remarks ?? source.notes ?? '').trim() || null;
+    cleaned.notes = String(source.notes ?? source.remarks ?? '').trim() || null;
+    const rawQuantity = source.quantity;
+    cleaned.quantity = rawQuantity === null || rawQuantity === undefined || String(rawQuantity).trim() === ''
+        ? null
+        : documentModel.parseSourceQuantity(rawQuantity);
+    cleaned.unit = String(source.unit ?? '').trim() || null;
+    cleaned.sourceValues = source.sourceValues && typeof source.sourceValues === 'object' ? source.sourceValues : {};
+    cleaned.sourceCells = Array.isArray(source.sourceCells) ? source.sourceCells : [];
+    cleaned.provenance = source.provenance && typeof source.provenance === 'object' ? source.provenance : {};
+    cleaned.confidence = source.confidence && typeof source.confidence === 'object' ? source.confidence : {};
+    cleaned.warnings = Array.isArray(source.warnings) ? source.warnings : [];
     return cleaned;
 }
 
@@ -201,24 +413,32 @@ const SIZE_UNIT_TOKENS = ['mm', 'cm', 'inch', 'inches', 'in', 'dn', 'nb', 'm', '
  * Deliberately rule-based (deterministic + testable): no AI involved.
  */
 function flagItem(item, seenKeys, index, allItems) {
-    const warnings = [];
+    const generatedWarning = /^(Missing (?:size|quantity|unit)|Quantity could not be determined from source\.|Unit could not be determined from source\.|Quantity .* is not a number|Quantity is zero or negative|Inconsistent unit for this product\+size:|Duplicate line item|Quantity .* is over 100x the document median)/i;
+    const warnings = Array.isArray(item.warnings) ? item.warnings.filter((warning) => !generatedWarning.test(warning)) : [];
     const size = String(item.size || '').trim();
-    const quantityRaw = String(item.quantity || '').trim();
+    const quantityRaw = String(item.quantity ?? '').trim();
     const quantity = parseQuantity(quantityRaw);
     const unit = normalizeUnit(item.unit);
 
     if (!size) warnings.push('Missing size');
     if (!quantityRaw) {
-        warnings.push('Missing quantity');
+        const message = item.provenance?.columns?.quantity
+            ? 'Quantity could not be determined from source.'
+            : 'Missing quantity';
+        warnings.push(message);
     } else if (quantity === null) {
         warnings.push(`Quantity "${quantityRaw}" is not a number`);
     } else if (quantity <= 0) {
         warnings.push('Quantity is zero or negative');
     }
+    if (!String(item.unit || '').trim() && !warnings.some((warning) => /unit/i.test(warning))) {
+        warnings.push(item.provenance?.columns?.unit ? 'Unit could not be determined from source.' : 'Missing unit');
+    }
 
     // Unit consistency: same product+size appearing with different units.
-    if (size && unit) {
-        const key = `${String(item.product || '').trim().toLowerCase()}|${size.toLowerCase()}`;
+    const identity = String(item.product || item.description || item.itemCode || '').trim().toLowerCase();
+    if (size && unit && identity) {
+        const key = `${identity}|${size.toLowerCase()}`;
         const prior = seenKeys.get(key);
         if (prior === undefined) {
             seenKeys.set(key, unit);
@@ -228,7 +448,7 @@ function flagItem(item, seenKeys, index, allItems) {
     }
 
     // Duplicate line items: exact product+size+spec match seen before.
-    const dupKey = [item.product, item.size, item.specification]
+    const dupKey = [item.itemCode || item.product || item.description, item.size, item.specification]
         .map((v) => String(v || '').trim().toLowerCase())
         .join('|');
     if (dupKey !== '||') {
@@ -374,8 +594,14 @@ module.exports = {
     isPageBreak,
     chunkDedupeKey,
     extractText,
+    parseDocument,
+    parseCsvText,
+    parseDocxTables,
+    delimitedTablesFromText,
+    matrixFromDelimitedText,
     extractXlsxText,
     buildExtractionPrompt,
+    buildStructuredExtractionPrompt,
     normalizeResponse,
     cleanItem,
     parseQuantity,

@@ -87,24 +87,63 @@ function ocrBudget(deadlineMs, startedAt) {
 async function ocrOnePage(ocrImage, page, perPageMs, userId, pageCount) {
     const pageStart = Date.now();
     try {
-        const text = await ocrImage(Buffer.from(page.data), {
+        const result = await ocrImage(Buffer.from(page.data), {
             mimeType: 'image/png',
             timeoutMs: perPageMs,
+            returnLayout: true,
             // TEMP DIAGNOSTIC (remove after live verify): tags ocrService's
             // "[ocr-diag:…] HTTP + top-level keys" line with THIS page number,
             // so per-page status/keys/char-count evidence is attributable
             // even with 5 pages interleaved in the logs.
             logLabel: `boq-page-${page.pageNumber}`,
         });
+        const text = typeof result === 'string' ? result : result?.text || '';
         const chars = (text || '').trim().length;
         console.log(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} ok in ${Date.now() - pageStart}ms (${chars} chars)`);
-        return { text: text || '', failed: false };
+        return { text, detections: typeof result === 'object' ? result.detections || [] : [], failed: false };
     } catch (error) {
         // One unreadable/failed page must not sink the document:
         // concatenate what we got and let the AI see partial text.
         console.error(`[boq:${userId}] OCR page ${page.pageNumber}/${pageCount} FAILED after ${Date.now() - pageStart}ms: ${error.message}`);
-        return { text: '', failed: true };
+        return { text: '', detections: [], failed: true };
     }
+}
+
+function groupOcrDetections(detections) {
+    const positioned = (detections || []).map((detection) => {
+        const points = detection.boundingBox?.points;
+        if (!Array.isArray(points) || !points.length) return { ...detection, top: null, bottom: null, left: null, center: null };
+        const ys = points.map((point) => Number(point?.y ?? 0));
+        const xs = points.map((point) => Number(point?.x ?? 0));
+        return {
+            ...detection,
+            top: Math.min(...ys),
+            bottom: Math.max(...ys),
+            left: Math.min(...xs),
+            center: (Math.min(...ys) + Math.max(...ys)) / 2,
+        };
+    }).sort((a, b) => {
+        if (a.center == null || b.center == null) return 0;
+        return (a.center - b.center) || ((a.left ?? 0) - (b.left ?? 0));
+    });
+    const heights = positioned.filter((item) => item.top != null).map((item) => Math.max(0, item.bottom - item.top)).sort((a, b) => a - b);
+    const rowTolerance = heights.length ? Math.max(heights[Math.floor(heights.length / 2)] * 0.75, 0.001) : 0;
+    const rows = [];
+    for (const detection of positioned) {
+        const prior = rows[rows.length - 1];
+        const priorCenter = prior?.center;
+        const sameLine = prior && detection.center != null && priorCenter != null
+            && Math.abs(detection.center - priorCenter) <= rowTolerance;
+        if (!sameLine) {
+            rows.push({ center: detection.center, cells: [detection] });
+        } else {
+            prior.cells.push(detection);
+            prior.center = prior.cells.reduce((sum, cell) => sum + cell.center, 0) / prior.cells.length;
+        }
+    }
+    return rows.map((row) => row.cells
+        .sort((a, b) => (a.left ?? 0) - (b.left ?? 0))
+        .map((cell) => ({ text: cell.text, boundingBox: cell.boundingBox || null, confidence: cell.confidence ?? null })));
 }
 
 /**
@@ -153,6 +192,7 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
         // own slots, so the final join is ALWAYS in page order regardless
         // of which batch finishes first.
         const pageTexts = new Array(pages.length).fill('');
+        const pageLayouts = new Array(pages.length).fill(null);
         const failedPages = [];
         // Per-attempt timeout: the 30s ceiling clamped to what the shared
         // deadline can still absorb for the CURRENT batch. Floor 2s keeps
@@ -192,13 +232,19 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
             // survive regardless of what pageNumber the renderer reports.
             results.forEach((result, idx) => {
                 pageTexts[batchStart + idx] = result.text;
+                pageLayouts[batchStart + idx] = {
+                    page: batch[ idx ].pageNumber,
+                    text: result.text,
+                    detections: result.detections,
+                    rows: groupOcrDetections(result.detections),
+                };
                 if (result.failed) failedPages.push(batch[idx].pageNumber);
             });
         }
         const totalMs = Date.now() - startedAt;
         const text = pageTexts.join('\n');
         console.log(`[boq:${userId}] OCR done in ${totalMs}ms: ${pageCount - failedPages.length}/${pageCount} page(s) succeeded, ${text.trim().length} chars total (OCR phase ${Date.now() - ocrStart}ms, batches of ${OCR_CONCURRENCY})${failedPages.length ? ` — failed pages: ${failedPages.join(', ')}` : ''}`);
-        return { text, ocrUsed: true, failedPages, totalMs, pageCount };
+        return { text, pages: pageLayouts.filter(Boolean), ocrUsed: true, failedPages, totalMs, pageCount };
     } catch (error) {
         // The cap error (413) is already user-facing — pass it through.
         // Anything else escaping here is a pipeline failure (corrupt PDF,
@@ -210,4 +256,69 @@ async function ocrScannedPdf(pdfBuffer, userId, { deadlineMs = 0 } = {}) {
     }
 }
 
-module.exports = { ocrScannedPdf, ocrConfig };
+async function ocrNativePdfPages(pdfBuffer, userId, pageNumbers, { deadlineMs = 0 } = {}) {
+    const startedAt = Date.now();
+    const { PDFParse } = require('pdf-parse');
+    const { ocrImage } = require('../ai/ocrService');
+    const parser = new PDFParse({ data: pdfBuffer });
+    try {
+        const meta = await parser.getText();
+        const pageCount = meta.total || meta.pages?.length || 0;
+        const selectedPages = [...new Set((pageNumbers || []).map(Number))]
+            .filter((page) => Number.isInteger(page) && page >= 1 && page <= pageCount)
+            .sort((a, b) => a - b);
+        if (!selectedPages.length) return { pages: [], failedPages: [], pageCount, totalMs: Date.now() - startedAt };
+        if (selectedPages.length > OCR_MAX_PAGES) {
+            const error = new Error(`This PDF has ${selectedPages.length} candidate table pages — too many for visual table extraction in one request (max ${OCR_MAX_PAGES}).`);
+            error.statusCode = 413;
+            throw error;
+        }
+
+        const screenshots = await parser.getScreenshot({
+            partial: selectedPages,
+            scale: OCR_RENDER_SCALE,
+            imageBuffer: true,
+        });
+        const renderedPages = screenshots.pages || [];
+        const results = new Array(renderedPages.length).fill(null);
+        const failedPages = [];
+        for (let batchStart = 0; batchStart < renderedPages.length; batchStart += OCR_CONCURRENCY) {
+            const batch = renderedPages.slice(batchStart, batchStart + OCR_CONCURRENCY);
+            const remaining = deadlineMs ? deadlineMs - Date.now() : OCR_PER_PAGE_TIMEOUT_MS;
+            if (deadlineMs && remaining < 2000) {
+                for (const page of renderedPages.slice(batchStart)) failedPages.push(page.pageNumber);
+                break;
+            }
+            const timeoutMs = Math.max(2000, Math.min(OCR_PER_PAGE_TIMEOUT_MS, remaining));
+            const pageResults = await Promise.all(batch.map((page) =>
+                ocrOnePage(ocrImage, page, timeoutMs, userId, pageCount)
+            ));
+            pageResults.forEach((result, index) => {
+                const page = batch[index];
+                results[batchStart + index] = {
+                    page: page.pageNumber,
+                    text: result.text,
+                    detections: result.detections,
+                    rows: groupOcrDetections(result.detections),
+                    width: page.width,
+                    height: page.height,
+                };
+                if (result.failed) failedPages.push(page.pageNumber);
+            });
+        }
+        return {
+            pages: results.filter(Boolean),
+            failedPages,
+            pageCount,
+            totalMs: Date.now() - startedAt,
+            ocrUsed: true,
+        };
+    } catch (error) {
+        if (error.statusCode) throw error;
+        throw new Error(`Native-PDF visual table extraction failed: ${error.message}`);
+    } finally {
+        await parser.destroy();
+    }
+}
+
+module.exports = { ocrScannedPdf, ocrNativePdfPages, ocrConfig, groupOcrDetections };
