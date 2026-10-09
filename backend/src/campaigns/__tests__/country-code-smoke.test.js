@@ -132,7 +132,7 @@ async function test3_excelParseAppliesCode() {
         { Name: 'Amira', Phone: '971501234567', City: 'Dubai' },   // already intl → unchanged
         { Name: 'Bad', Phone: '123', City: 'Nashik' },             // still invalid after prefix
     ]);
-    const result = await campaignService.validateExcelBuffer(buffer, { countryCode: '91' }, null);
+    const result = await campaignService.validateExcelBuffer(buffer, { countryCode: '91' }, USER_A);
     assert.strictEqual(result.valid, 2, 'two valid rows');
     const raj = result.previewRows.find((r) => r.name === 'Raj');
     const amira = result.previewRows.find((r) => r.name === 'Amira');

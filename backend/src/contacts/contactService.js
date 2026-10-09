@@ -2,8 +2,8 @@ const db = require('../database/db');
 const { supabase, isAvailable } = require('../database/supabaseClient');
 
 class ContactService {
-    // userId is optional for the webhook (no request context); route calls always pass it.
-    async upsert(phone, data = {}, userId = null) {
+    async upsert(phone, data = {}, userId) {
+        if (!userId) throw new Error('userId is required for contact upsert');
         const clean = this._cleanPhone(phone);
         const existing = await db.getOne('contacts', 'phone', clean, userId);
 
@@ -47,11 +47,13 @@ class ContactService {
         }
     }
 
-    findByPhone(phone, userId = null) {
+    findByPhone(phone, userId) {
+        if (!userId) throw new Error('userId is required for contact lookup');
         return db.getOne('contacts', 'phone', this._cleanPhone(phone), userId);
     }
 
-    findById(id, userId = null) {
+    findById(id, userId) {
+        if (!userId) throw new Error('userId is required for contact lookup');
         return db.getById('contacts', id, userId);
     }
 
@@ -79,6 +81,7 @@ class ContactService {
     }
 
     async update(id, data, userId) {
+        if (!userId) throw new Error('userId is required for contact update');
         const contact = await db.getById('contacts', id, userId);
         if (!contact) return null;
 
@@ -97,6 +100,7 @@ class ContactService {
     }
 
     async delete(id, userId) {
+        if (!userId) throw new Error('userId is required for contact deletion');
         await db.del('contacts', 'id = ? AND user_id = ?', [id, userId]);
     }
 
@@ -106,10 +110,11 @@ class ContactService {
         }
     }
 
-    async setOptOut(phone, userId = null) {
+    async setOptOut(phone, userId) {
+        if (!userId) throw new Error('userId is required to update contact opt-out status');
         const clean = this._cleanPhone(phone);
-        const where = userId ? 'phone = ? AND user_id = ?' : 'phone = ?';
-        const params = userId ? [clean, userId] : [clean];
+        const where = 'phone = ? AND user_id = ?';
+        const params = [clean, userId];
         await db.update('contacts', {
             marketing_opt_in: 0,
             updated_at: new Date(),

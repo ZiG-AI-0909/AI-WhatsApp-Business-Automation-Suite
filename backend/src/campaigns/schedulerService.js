@@ -19,6 +19,9 @@ class SchedulerService {
         if (data?.scheduleId) {
             const { emitToUser } = require('../realtime');
             // Per-owner emit: resolve the owner for this schedule lazily.
+            // Background polling resolves legacy schedules by ID because there
+            // is no request owner context at emit time; this is the sole read
+            // path allowed to pass null to db.getById.
             db.getById('campaign_schedules', data.scheduleId, null).then((row) => {
                 if (row?.user_id) emitToUser(this._io, row.user_id, event, data);
                 else this._io?.emit(event, data);

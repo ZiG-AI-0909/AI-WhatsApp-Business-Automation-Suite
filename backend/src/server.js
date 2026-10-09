@@ -24,16 +24,17 @@ const FRONTEND_DIST = path.join(__dirname, '..', '..', 'frontend', 'dist');
 server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
         console.error(`Port ${PORT} is already in use. Stop the existing backend before starting another one.`);
-        return;
+        process.exit(1);
     }
     console.error('Server error:', error);
+    process.exit(1);
 });
 
 const io = new Server(server, {
     cors: {
         origin: (origin, callback) => {
             if (isAllowedOrigin(origin)) return callback(null, true);
-            callback(new Error(`Origin not allowed: ${origin}`));
+            callback(null, false);
         },
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     },
@@ -43,10 +44,15 @@ app.set('io', io);
 app.use(cors({
     origin: (origin, callback) => {
         if (isAllowedOrigin(origin)) return callback(null, true);
-        callback(new Error(`Origin not allowed: ${origin}`));
+        return callback(null, false);
     },
     credentials: true,
 }));
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && !isAllowedOrigin(origin)) return res.status(403).json({ error: 'Origin not allowed' });
+    next();
+});
 app.use(express.json({
     limit: '10mb',
     verify: (req, _res, buf) => { req.rawBody = buf; }, // raw bytes for webhook HMAC

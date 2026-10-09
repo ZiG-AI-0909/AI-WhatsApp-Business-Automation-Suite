@@ -21,75 +21,101 @@ const OPT_OUT_PATTERNS = [
 
 class MessageQueue {
     constructor() {
-        this._running = false;
-        this._paused = false;
-        this._campaignId = null;
-        this._ownerUserId = null; // tenant isolation: owner of the loaded campaign
-        this._provider = 'web';   // provider this campaign was created with
-        this._rateLimiter = null;
+        this._queues = new Map();
         this._io = null;
-        this._processPromise = null;
+        this._resumePageSize = 1000;
     }
 
     setIO(io) { this._io = io; }
+    _worker(userId) { return this._queues.get(userId) || null; }
     _emit(event, data) {
-        if (this._ownerUserId) emitToUser(this._io, this._ownerUserId, event, data);
+        if (!this._ownerUserId) throw new Error('Cannot emit campaign event without an owner.');
+        emitToUser(this._io, this._ownerUserId, event, data);
     }
-    isRunning() { return this._running && !this._paused; }
-    isPaused() { return this._paused; }
-    getCurrentCampaignId() { return this._campaignId; }
-    getCurrentOwnerUserId() { return this._ownerUserId; }
+    isRunning(userId) { const q = this._worker(userId); return !!q && q._running && !q._paused; }
+    isPaused(userId) { return !!this._worker(userId)?._paused; }
+    getCurrentCampaignId(userId) { return this._worker(userId)?._campaignId ?? null; }
+    getCurrentOwnerUserId(userId) { return this._worker(userId)?._ownerUserId ?? null; }
 
-    async start(campaignId, settings = {}, userId = null) {
-        if (this._running) throw new Error('A campaign is already running. Stop or pause it first.');
+    async start(campaignId, settings = {}, userId) {
         if (!userId) throw new Error('Campaign must be started by its owner.');
-        const campaign = await db.getById('campaigns', campaignId, userId);
-        if (!campaign) throw new Error('Campaign not found');
-        this._campaignId = campaignId;
-        this._ownerUserId = userId;
-        this._provider = campaign.provider || 'web';
-        this._running = true;
-        this._paused = false;
-        this._rateLimiter = new RateLimiter(settings);
-        await db.update('campaigns', {
-            status: 'running',
-            started_at: campaign.started_at || new Date(),
-            updated_at: new Date(),
-        }, 'id = ? AND user_id = ?', [campaignId, userId]);
-        this._emit('campaign:started', { campaignId, name: campaign.name });
-        this._processPromise = this._process().catch(error => {
-            console.error('Campaign processor error:', error);
-            db.update('campaigns', { status: 'failed', updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
-            this._emit('campaign:error', { campaignId, error: error.message });
-        });
+        if (this._worker(userId)?._running) throw new Error('A campaign is already running. Stop or pause it first.');
+        const worker = Object.create(this);
+        Object.assign(worker, { _campaignId: campaignId, _ownerUserId: userId, _provider: 'web', _running: true, _paused: false, _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
+        this._queues.set(userId, worker);
+        try {
+            const campaign = await db.getById('campaigns', campaignId, userId);
+            if (!campaign) throw new Error('Campaign not found');
+            worker._provider = campaign.provider || 'web';
+            await this._update(worker, 'campaigns', {
+                status: 'running',
+                started_at: campaign.started_at || new Date(),
+                updated_at: new Date(),
+            }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            worker._emit('campaign:started', { campaignId, name: campaign.name });
+            this._startProcessor(worker);
+        } catch (error) {
+            worker._running = false;
+            if (this._queues.get(userId) === worker) this._queues.delete(userId);
+            throw error;
+        }
     }
 
-    pause() {
-        if (!this._campaignId) return;
-        this._paused = true;
-        db.update('campaigns', { status: 'paused', updated_at: new Date() }, 'id = ? AND user_id = ?', [this._campaignId, this._ownerUserId]);
-        this._emit('campaign:paused', { campaignId: this._campaignId });
+    async _update(worker, table, data, where, params) {
+        try {
+            return await db.update(table, data, where, params);
+        } catch (error) {
+            console.error(`[messageQueue] ${table} update failed for campaign ${worker?._campaignId ?? 'unknown'}:`, error);
+            throw error;
+        }
     }
 
-    resume() {
-        if (!this._running) throw new Error('No campaign is loaded. Start first.');
-        this._paused = false;
-        db.update('campaigns', { status: 'running', updated_at: new Date() }, 'id = ? AND user_id = ?', [this._campaignId, this._ownerUserId]);
-        this._emit('campaign:resumed', { campaignId: this._campaignId });
+    _startProcessor(worker) {
+        worker._processPromise = worker._process().catch(error => this._handleProcessorCrash(worker, error));
+        return worker._processPromise;
     }
 
-    stop() {
-        if (!this._campaignId) return;
-        const campaignId = this._campaignId;
-        const userId = this._ownerUserId;
-        this._running = false;
-        this._paused = false;
-        db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
-        db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
-        this._emit('campaign:stopped', { campaignId });
-        this._campaignId = null;
-        this._ownerUserId = null;
-        this._provider = 'web';
+    async _handleProcessorCrash(worker, error) {
+        console.error('Campaign processor error:', error);
+        worker._running = false;
+        if (this._queues.get(worker._ownerUserId) === worker) this._queues.delete(worker._ownerUserId);
+        try {
+            await this._update(worker, 'campaigns', { status: 'failed', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, worker._ownerUserId]);
+        } catch (updateError) {
+            console.error('[messageQueue] failed to mark crashed campaign failed:', updateError);
+        }
+        try {
+            worker._emit('campaign:error', { campaignId: worker._campaignId, error: error.message });
+        } catch (emitError) {
+            console.error('[messageQueue] failed to emit campaign:error:', emitError);
+        }
+    }
+
+    async pause(userId) {
+        const worker = this._worker(userId); if (!worker?._campaignId) return;
+        worker._paused = true;
+        await this._update(worker, 'campaigns', { status: 'paused', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, userId]);
+        worker._emit('campaign:paused', { campaignId: worker._campaignId });
+    }
+
+    async resume(userId) {
+        const worker = this._worker(userId); if (!worker?._running) throw new Error('No campaign is loaded. Start first.');
+        worker._paused = false;
+        await this._update(worker, 'campaigns', { status: 'running', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, userId]);
+        if (worker._processPromise === null) this._startProcessor(worker);
+        worker._emit('campaign:resumed', { campaignId: worker._campaignId });
+    }
+
+    async stop(userId) {
+        const worker = this._worker(userId); if (!worker?._campaignId) return;
+        const campaignId = worker._campaignId;
+        worker._running = false; worker._paused = false;
+        try {
+            await this._update(worker, 'campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+            await this._update(worker, 'campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+        } catch (e) { console.error('Campaign stop update failed:', e); throw e; }
+        worker._emit('campaign:stopped', { campaignId });
+        this._queues.delete(userId);
     }
 
     /**
@@ -136,7 +162,7 @@ class MessageQueue {
 
             const campaignId = this._campaignId;
             const userId = this._ownerUserId;
-            db.update('campaign_contacts', { status: 'pending' }, 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing']);
+            await this._update(this, 'campaign_contacts', { status: 'pending' }, 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing']);
 
             const item = await db.select(
                 'campaign_contacts',
@@ -151,11 +177,10 @@ class MessageQueue {
             if (!item || item.length === 0) {
                 const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
                 if (remaining > 0) { await this._sleep(1000); continue; }
-                db.update('campaigns', { status: 'completed', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                await this._update(this, 'campaigns', { status: 'completed', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._emit('campaign:completed', { campaignId });
                 this._running = false;
-                this._campaignId = null;
-                this._ownerUserId = null;
+                this._queues.delete(userId);
                 break;
             }
 
@@ -183,14 +208,14 @@ class MessageQueue {
             };
             const contact = await contactService.findByPhone(contactItem.phone, userId);
             if (contact && !contact.marketing_opt_in) {
-                db.update('campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                await this._update(this, 'campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 const campaignRow = await db.getById('campaigns', campaignId, userId);
-                db.update('campaigns', { processed: (parseInt(campaignRow?.processed) || 0) + 1, opt_outs: (parseInt(campaignRow?.opt_outs) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                await this._update(this, 'campaigns', { processed: (parseInt(campaignRow?.processed) || 0) + 1, opt_outs: (parseInt(campaignRow?.opt_outs) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._emitProgress(campaignId);
                 continue;
             }
 
-            db.update('campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+            await this._update(this, 'campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
             try {
                 // SECURITY: resolve the send function to THIS user's own
                 // session. If it isn't connected, the send fails — there is
@@ -201,20 +226,20 @@ class MessageQueue {
                 const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
                 const result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
                 const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
-                db.update('campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                await this._update(this, 'campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 const sentRow = await db.getById('campaigns', campaignId, userId);
-                db.update('campaigns', { processed: (parseInt(sentRow?.processed) || 0) + 1, sent: (parseInt(sentRow?.sent) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                await this._update(this, 'campaigns', { processed: (parseInt(sentRow?.processed) || 0) + 1, sent: (parseInt(sentRow?.sent) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._rateLimiter?.recordSent();
             } catch (error) {
                 const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
                 const attempts = (parseInt(contactItem.attempts) || 0) + 1;
                 if (attempts <= maxAttempts) {
                     const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
-                    db.update('campaign_contacts', { status: 'pending', last_error: error.message, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    await this._update(this, 'campaign_contacts', { status: 'pending', last_error: error.message, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 } else {
-                    db.update('campaign_contacts', { status: 'failed', last_error: error.message, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    await this._update(this, 'campaign_contacts', { status: 'failed', last_error: error.message, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                     const failedRow = await db.getById('campaigns', campaignId, userId);
-                    db.update('campaigns', { processed: (parseInt(failedRow?.processed) || 0) + 1, failed: (parseInt(failedRow?.failed) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                    await this._update(this, 'campaigns', { processed: (parseInt(failedRow?.processed) || 0) + 1, failed: (parseInt(failedRow?.failed) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 }
             }
             this._emitProgress(campaignId);
@@ -225,32 +250,54 @@ class MessageQueue {
     _emitProgress(campaignId) {
         db.getById('campaigns', campaignId, this._ownerUserId).then(campaign => {
             if (campaign) this._emit('campaign:progress', campaign);
-        });
+        }).catch(error => console.error('[messageQueue] campaign progress lookup failed:', error));
     }
 
     _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
     async resumeInterrupted(io) {
         this.setIO(io);
-        // Resume any campaign left running/paused by a restart. Ownership
-        // comes from the row's own user_id — each resumed campaign sends
-        // only through its owner's session.
-        const campaigns = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', 10, 0);
-        if (!campaigns || campaigns.length === 0) return;
-        const activeCampaign = campaigns[0];
-        this._campaignId = activeCampaign.id;
-        this._ownerUserId = activeCampaign.user_id || null;
-        if (!this._ownerUserId) {
-            console.warn(`[messageQueue] campaign ${activeCampaign.id} has no user_id; skipping resume`);
-            return;
+        // Resume any campaign left running/paused by a restart. The startup
+        // sweep has no request user context, so it discovers rows globally;
+        // each row is then isolated by its own user_id and one queue per owner.
+        const pageSize = this._resumePageSize || 1000;
+        const campaigns = [];
+        let offset = 0;
+        while (true) {
+            const page = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', pageSize, offset);
+            if (!page?.length) break;
+            campaigns.push(...page);
+            offset += page.length;
+            if (page.length < pageSize) break;
         }
-        this._running = true;
-        this._paused = activeCampaign.status === 'paused';
-        this._provider = activeCampaign.provider || 'web';
-        let settings = {};
-        try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
-        this._rateLimiter = new RateLimiter(settings);
-        if (!this._paused) this._processPromise = this._process().catch(console.error);
+
+        campaigns.sort((a, b) => Number(a.id) - Number(b.id));
+        const byOwner = new Map();
+        for (const row of campaigns) {
+            if (!row.user_id) {
+                console.warn(`[messageQueue] campaign ${row.id} has no user_id; skipping resume`);
+                continue;
+            }
+            if (!byOwner.has(row.user_id)) byOwner.set(row.user_id, []);
+            byOwner.get(row.user_id).push(row);
+        }
+
+        for (const [userId, ownerCampaigns] of byOwner) {
+            const activeCampaign = ownerCampaigns[0];
+            const worker = Object.create(this);
+            let settings = {}; try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
+            Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
+            this._queues.set(userId, worker);
+            if (!worker._paused) this._startProcessor(worker);
+
+            for (const extra of ownerCampaigns.slice(1)) {
+                try {
+                    await this._update(worker, 'campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [extra.id, userId]);
+                } catch (error) {
+                    console.error(`[messageQueue] failed to stop duplicate interrupted campaign ${extra.id}:`, error);
+                }
+            }
+        }
     }
 
     static isOptOut(message) { return OPT_OUT_PATTERNS.some(pattern => pattern.test(message)); }

@@ -5,6 +5,7 @@ node_modules/
 .baileys_auth/
 *.log
 uploads/
+campaign-media/
 data/
 backups/
 justhr_leads.xlsx

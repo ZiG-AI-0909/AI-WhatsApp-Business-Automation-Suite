@@ -48,7 +48,8 @@ class CampaignService {
         return filePath; // local path during transition
     }
 
-    async validateExcel(filePath, { countryCode = null } = {}, userId = null) {
+    async validateExcel(filePath, { countryCode = null } = {}, userId) {
+        if (!userId) throw new Error('userId is required to validate campaign data');
         // Per-upload override wins; otherwise fall back to the account's
         // Settings default (per-user app_settings → env → '91').
         const resolvedCode = await resolveCountryCode(userId, countryCode);
@@ -70,7 +71,8 @@ class CampaignService {
         };
     }
 
-    async validateExcelBuffer(fileBuffer, { countryCode = null } = {}, userId = null) {
+    async validateExcelBuffer(fileBuffer, { countryCode = null } = {}, userId) {
+        if (!userId) throw new Error('userId is required to validate campaign data');
         const resolvedCode = await resolveCountryCode(userId, countryCode);
         const result = await excelParser.parseBuffer(fileBuffer, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
@@ -90,7 +92,8 @@ class CampaignService {
         };
     }
 
-    async previewMessages(filePath, template, previewCount = 5, { countryCode = null } = {}, userId = null) {
+    async previewMessages(filePath, template, previewCount = 5, { countryCode = null } = {}, userId) {
+        if (!userId) throw new Error('userId is required to preview campaign data');
         const source = await this._resolveExcelSource(filePath);
         // Use the same code resolution as validation/create so the previewed
         // numbers match what will actually be stored.
@@ -216,11 +219,11 @@ class CampaignService {
         await messageQueue.start(campaignId, settings, userId);
     }
 
-    pause(campaignId) {
-        if (messageQueue.getCurrentCampaignId() !== campaignId) {
+    pause(campaignId, userId) {
+        if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
             throw new Error('This campaign is not currently running.');
         }
-        messageQueue.pause();
+        return messageQueue.pause(userId);
     }
 
     async resume(campaignId, io, userId) {
@@ -229,34 +232,45 @@ class CampaignService {
         if (campaign.status !== 'paused') {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
         }
-        if (messageQueue.getCurrentOwnerUserId() !== userId || messageQueue.getCurrentCampaignId() !== campaignId) {
+        if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
             throw new Error('This campaign is not currently loaded in the queue.');
         }
         await this._assertOwnerConnected(userId, campaign.provider || 'web');
         messageQueue.setIO(io);
-        messageQueue.resume();
+        return messageQueue.resume(userId);
     }
 
-    stop(campaignId, userId) {
-        if (messageQueue.getCurrentCampaignId() !== campaignId) {
+    async stop(campaignId, userId) {
+        const ownedCampaign = await this.get(campaignId, userId);
+        if (!ownedCampaign) throw new Error('Campaign not found');
+        if (messageQueue.getCurrentCampaignId(userId) !== campaignId) {
             // Force-stop from DB even if queue doesn't match
-            db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
-            db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            await db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+            await db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
             return;
         }
-        messageQueue.stop();
+        if (messageQueue.getCurrentOwnerUserId(userId) === userId) await messageQueue.stop(userId);
     }
 
     async delete(id, userId) {
-        this.stop(id, userId);
+        if (!await this.get(id, userId)) throw new Error('Campaign not found');
+        await this.stop(id, userId);
         await db.del('campaigns', 'id = ? AND user_id = ?', [id, userId]);
     }
 
     async deleteMany(ids, userId) {
+        const deleted = [];
+        const skipped = [];
         for (const id of ids) {
-            this.stop(id, userId);
+            if (!await this.get(id, userId)) {
+                skipped.push(id);
+                continue;
+            }
+            await this.stop(id, userId);
             await db.del('campaigns', 'id = ? AND user_id = ?', [id, userId]);
+            deleted.push(id);
         }
+        return { deleted, skipped };
     }
 
     async getContacts(campaignId, userId, { page = 1, limit = 50, status } = {}) {
@@ -297,11 +311,14 @@ class CampaignService {
         return { total, active, totalSent, totalFailed, totalReplies, totalOptOuts };
     }
 
-    getQueueStatus() {
+    getQueueStatus(userId) {
+        if (messageQueue.getCurrentOwnerUserId(userId) !== userId) {
+            return { running: false, paused: false, currentCampaignId: null };
+        }
         return {
-            running: messageQueue.isRunning(),
-            paused: messageQueue.isPaused(),
-            currentCampaignId: messageQueue.getCurrentCampaignId(),
+            running: messageQueue.isRunning(userId),
+            paused: messageQueue.isPaused(userId),
+            currentCampaignId: messageQueue.getCurrentCampaignId(userId),
         };
     }
 }

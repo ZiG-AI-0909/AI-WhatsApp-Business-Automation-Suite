@@ -87,7 +87,7 @@ async function test1_validateExcelBufferParsesUpload() {
         { Name: 'Bad Row', Phone: '123', City: 'Nashik' },     // invalid phone
         { Name: 'Dup', Phone: '919812345678', City: 'Pune' },  // duplicate
     ]);
-    const result = await campaignService.validateExcelBuffer(buffer);
+    const result = await campaignService.validateExcelBuffer(buffer, {}, 'exceljs-smoke-user');
 
     assert.strictEqual(result.phoneColumn, 'phone', 'Phone header normalized to phone column');
     assert.ok(result.dynamicFields.includes('name') && result.dynamicFields.includes('city'), 'dynamic fields detected');
@@ -110,7 +110,7 @@ async function test2_previewMessagesRendersFromParsedRows() {
     const tmp = path.join(os.tmpdir(), `exceljs-smoke-${Date.now()}.xlsx`);
     fs.writeFileSync(tmp, buffer);
     try {
-        const preview = await campaignService.previewMessages(tmp, 'Hello {{name}} from {{city}}!');
+        const preview = await campaignService.previewMessages(tmp, 'Hello {{name}} from {{city}}!', 5, {}, 'exceljs-smoke-user');
         assert.strictEqual(preview.previews.length, 2, 'one preview per valid row');
         assert.ok(preview.previews[0].rendered.includes('Raj'), 'first preview rendered with parsed value');
         assert.ok(preview.previews.some((p) => p.rendered.includes('Mumbai')), 'city values rendered');

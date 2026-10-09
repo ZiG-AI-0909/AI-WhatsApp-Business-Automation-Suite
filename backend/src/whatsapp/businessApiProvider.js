@@ -55,12 +55,58 @@ class WhatsAppBusinessProvider extends WhatsAppProvider {
      * Find which user configured the phone_number_id a webhook
      * message came in for. Returns null if nobody claimed it.
      */
-    findUserIdByPhoneNumberId(phoneNumberId) {
+    async findUserIdByPhoneNumberId(phoneNumberId) {
         if (!phoneNumberId) return null;
         for (const [userId, config] of this.userConfigs) {
             if (config.phoneNumberId && config.phoneNumberId === phoneNumberId) return userId;
         }
+        const db = require('../database/db');
+        if (!db.isAvailable()) return null;
+        const rows = await db.select('app_settings', 'user_id, key, value', "key IN ('WABA_CONFIG','WHATSAPP_BUSINESS_API','BUSINESS_API_CONFIG','WABA_PHONE_NUMBER_ID','PHONE_NUMBER_ID','WABA_ACCESS_TOKEN','WABA_WEBHOOK_VERIFY_TOKEN')", [], 'user_id', 1000, 0);
+        const { decryptSettingIfSecret } = require('../utils/encryption');
+        const configs = new Map();
+        for (const row of rows || []) {
+            if (!row.user_id) continue;
+            const raw = decryptSettingIfSecret(row.key, row.value || '');
+            let config = configs.get(row.user_id) || {};
+            try {
+                const parsed = typeof raw === 'string' && raw.trim().startsWith('{') ? JSON.parse(raw) : null;
+                if (parsed) config = { ...config, ...parsed };
+            } catch { /* ignore unrelated or malformed settings */ }
+            if (row.key === 'WABA_PHONE_NUMBER_ID' || row.key === 'PHONE_NUMBER_ID') config.phoneNumberId = raw;
+            if (row.key === 'WABA_ACCESS_TOKEN') config.accessToken = raw;
+            if (row.key === 'WABA_WEBHOOK_VERIFY_TOKEN') config.verifyToken = raw;
+            configs.set(row.user_id, config);
+        }
+        for (const [userId, config] of configs) {
+            const id = config.phoneNumberId || config.phone_number_id;
+            if (id && String(id) === String(phoneNumberId)) {
+                this.configure(userId, { ...config, phoneNumberId: id });
+                return userId;
+            }
+        }
         return null;
+    }
+
+    async getAppSecret(userId) {
+        if (userId) {
+            try {
+                const db = require('../database/db');
+                const { decryptSettingIfSecret } = require('../utils/encryption');
+                const rows = await db.select('app_settings', 'key, value', "user_id = ? AND key IN ('APP_SECRET','WABA_CONFIG','WHATSAPP_BUSINESS_API','BUSINESS_API_CONFIG')", [userId], '', 20, 0);
+                for (const row of rows || []) {
+                    const value = decryptSettingIfSecret(row.key, row.value || '');
+                    try {
+                        const parsed = JSON.parse(value);
+                        const secret = parsed?.appSecret || parsed?.app_secret || parsed?.APP_SECRET;
+                        if (secret) return secret;
+                    } catch { if (row.key === 'APP_SECRET' && value) return value; }
+                }
+            } catch (error) {
+                console.error('[businessApi] failed to load app secret:', error.message);
+            }
+        }
+        return process.env.WABA_APP_SECRET || process.env.META_APP_SECRET || '';
     }
 
     async testConnection(userId, config = {}) {
