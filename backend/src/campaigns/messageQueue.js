@@ -1,0 +1,307 @@
+// =============================================================
+// Campaign message queue — per-user edition.
+//
+// Every campaign is owned by a user (campaigns.user_id). Messages
+// are sent ONLY through that user's own WhatsApp session — never
+// through another user's connection. If the owner's session is not
+// connected, the item fails with a clear error (retry/backoff per
+// rate limiter settings); there is no fallback path.
+// =============================================================
+const db = require('../database/db');
+const contactService = require('../contacts/contactService');
+const RateLimiter = require('./rateLimiter');
+const { emitToUser } = require('../realtime');
+
+const OPT_OUT_PATTERNS = [
+    /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\s*me\b/i,
+    /\bdon['\u2019]?t\s*(message|contact|text|whatsapp)\s*me\b/i,
+    /\bno\s*more\s*(messages?|texts?)\b/i, /\bbandh\s*karo\b/i,
+    /\bmat\s*bhejo\b/i, /\bnahi\s*chahiye\b/i,
+];
+
+class MessageQueue {
+    constructor() {
+        this._queues = new Map();
+        this._io = null;
+        this._resumePageSize = 1000;
+    }
+
+    setIO(io) { this._io = io; }
+    _worker(userId) { return this._queues.get(userId) || null; }
+    _emit(event, data) {
+        if (!this._ownerUserId) throw new Error('Cannot emit campaign event without an owner.');
+        emitToUser(this._io, this._ownerUserId, event, data);
+    }
+    isRunning(userId) { const q = this._worker(userId); return !!q && q._running && !q._paused; }
+    isPaused(userId) { return !!this._worker(userId)?._paused; }
+    getCurrentCampaignId(userId) { return this._worker(userId)?._campaignId ?? null; }
+    getCurrentOwnerUserId(userId) { return this._worker(userId)?._ownerUserId ?? null; }
+
+    async start(campaignId, settings = {}, userId) {
+        if (!userId) throw new Error('Campaign must be started by its owner.');
+        if (this._worker(userId)?._running) throw new Error('A campaign is already running. Stop or pause it first.');
+        const worker = Object.create(this);
+        Object.assign(worker, { _campaignId: campaignId, _ownerUserId: userId, _provider: 'web', _running: true, _paused: false, _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
+        this._queues.set(userId, worker);
+        try {
+            const campaign = await db.getById('campaigns', campaignId, userId);
+            if (!campaign) throw new Error('Campaign not found');
+            worker._provider = campaign.provider || 'web';
+            await this._update(worker, 'campaigns', {
+                status: 'running',
+                started_at: campaign.started_at || new Date(),
+                updated_at: new Date(),
+            }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            worker._emit('campaign:started', { campaignId, name: campaign.name });
+            this._startProcessor(worker);
+        } catch (error) {
+            worker._running = false;
+            if (this._queues.get(userId) === worker) this._queues.delete(userId);
+            throw error;
+        }
+    }
+
+    async _update(worker, table, data, where, params) {
+        try {
+            return await db.update(table, data, where, params);
+        } catch (error) {
+            console.error(`[messageQueue] ${table} update failed for campaign ${worker?._campaignId ?? 'unknown'}:`, error);
+            throw error;
+        }
+    }
+
+    _startProcessor(worker) {
+        worker._processPromise = worker._process().catch(error => this._handleProcessorCrash(worker, error));
+        return worker._processPromise;
+    }
+
+    async _handleProcessorCrash(worker, error) {
+        console.error('Campaign processor error:', error);
+        worker._running = false;
+        if (this._queues.get(worker._ownerUserId) === worker) this._queues.delete(worker._ownerUserId);
+        try {
+            await this._update(worker, 'campaigns', { status: 'failed', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, worker._ownerUserId]);
+        } catch (updateError) {
+            console.error('[messageQueue] failed to mark crashed campaign failed:', updateError);
+        }
+        try {
+            worker._emit('campaign:error', { campaignId: worker._campaignId, error: error.message });
+        } catch (emitError) {
+            console.error('[messageQueue] failed to emit campaign:error:', emitError);
+        }
+    }
+
+    async pause(userId) {
+        const worker = this._worker(userId); if (!worker?._campaignId) return;
+        worker._paused = true;
+        await this._update(worker, 'campaigns', { status: 'paused', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, userId]);
+        worker._emit('campaign:paused', { campaignId: worker._campaignId });
+    }
+
+    async resume(userId) {
+        const worker = this._worker(userId); if (!worker?._running) throw new Error('No campaign is loaded. Start first.');
+        worker._paused = false;
+        await this._update(worker, 'campaigns', { status: 'running', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, userId]);
+        if (worker._processPromise === null) this._startProcessor(worker);
+        worker._emit('campaign:resumed', { campaignId: worker._campaignId });
+    }
+
+    async stop(userId) {
+        const worker = this._worker(userId); if (!worker?._campaignId) return;
+        const campaignId = worker._campaignId;
+        worker._running = false; worker._paused = false;
+        try {
+            await this._update(worker, 'campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+            await this._update(worker, 'campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+        } catch (e) { console.error('Campaign stop update failed:', e); throw e; }
+        worker._emit('campaign:stopped', { campaignId });
+        this._queues.delete(userId);
+    }
+
+    /**
+     * Resolve the send function for THIS campaign owner and provider.
+     * Sends only ever go through the owner's own session — there is
+     * deliberately no fallback to any other user's connection.
+     */
+    async _getSender(userId, provider) {
+        if (provider === 'business') {
+            const businessApiProvider = require('../whatsapp/businessApiProvider');
+            if (businessApiProvider.getStatus(userId) !== 'connected') {
+                throw new Error('Your WhatsApp Business API is not connected. Reconnect it to continue this campaign.');
+            }
+            return (phone, body, media, buttons) => businessApiProvider.sendMessage(userId, phone, body, media, buttons);
+        }
+        const sessionManager = require('../whatsapp/sessionManager');
+        if (sessionManager.getStatus(userId) !== 'connected') {
+            // Unattended revival: a scheduled campaign may fire after the
+            // 2h idle timeout dropped the socket. Try reconnecting from the
+            // stored Supabase auth state BEFORE giving up — the existing
+            // error message stays so the queue's retry/backoff and any
+            // failure record look exactly like before when revival fails.
+            const revived = await sessionManager.ensureConnected(
+                userId,
+                Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000)
+            );
+            if (!revived) {
+                throw new Error('Your WhatsApp session is not connected. Reconnect WhatsApp to continue this campaign.');
+            }
+        }
+        return (phone, body, media) => sessionManager.sendMessage(userId, phone, body, null, media);
+    }
+
+    async _process() {
+        while (this._running) {
+            if (this._paused) { await this._sleep(500); continue; }
+            if (this._rateLimiter && !this._rateLimiter.isWithinBusinessHours()) {
+                this._emit('campaign:waiting_hours', { campaignId: this._campaignId });
+                await this._sleep(Math.min(this._rateLimiter.msUntilBusinessHours(), 60000));
+                continue;
+            }
+            const limitCheck = this._rateLimiter?.checkLimits() ?? { allowed: true };
+            if (!limitCheck.allowed) { await this._sleep(60000); continue; }
+
+            const campaignId = this._campaignId;
+            const userId = this._ownerUserId;
+            await this._update(this, 'campaign_contacts', { status: 'pending' }, 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing']);
+
+            const item = await db.select(
+                'campaign_contacts',
+                '*, contacts(phone), campaigns(media_path, media_type, media_filename, media_mimetype, buttons)',
+                'campaign_id = ? AND user_id = ? AND status = ? AND (retry_at IS NULL OR retry_at <= ?)',
+                [campaignId, userId, 'pending', new Date()],
+                'id',
+                1,
+                0
+            );
+
+            if (!item || item.length === 0) {
+                const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+                if (remaining > 0) { await this._sleep(1000); continue; }
+                await this._update(this, 'campaigns', { status: 'completed', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                this._emit('campaign:completed', { campaignId });
+                this._running = false;
+                this._queues.delete(userId);
+                break;
+            }
+
+            // PostgREST returns embedded resources as nested objects
+            // (contacts, campaigns); flatten them back to the flat shape
+            // the rest of _process() expects.
+            const rawItem = item[0];
+            const contactItem = {
+                id: rawItem.id,
+                campaign_id: rawItem.campaign_id,
+                contact_id: rawItem.contact_id,
+                rendered_message: rawItem.rendered_message,
+                status: rawItem.status,
+                attempts: rawItem.attempts,
+                last_error: rawItem.last_error,
+                sent_at: rawItem.sent_at,
+                provider_message_id: rawItem.provider_message_id,
+                retry_at: rawItem.retry_at,
+                phone: rawItem.contacts?.phone || '',
+                media_path: rawItem.campaigns?.media_path || null,
+                media_type: rawItem.campaigns?.media_type || null,
+                media_filename: rawItem.campaigns?.media_filename || null,
+                media_mimetype: rawItem.campaigns?.media_mimetype || null,
+                buttons: rawItem.campaigns?.buttons || '[]',
+            };
+            const contact = await contactService.findByPhone(contactItem.phone, userId);
+            if (contact && !contact.marketing_opt_in) {
+                await this._update(this, 'campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                const campaignRow = await db.getById('campaigns', campaignId, userId);
+                await this._update(this, 'campaigns', { processed: (parseInt(campaignRow?.processed) || 0) + 1, opt_outs: (parseInt(campaignRow?.opt_outs) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                this._emitProgress(campaignId);
+                continue;
+            }
+
+            await this._update(this, 'campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+            try {
+                // SECURITY: resolve the send function to THIS user's own
+                // session. If it isn't connected, the send fails — there is
+                // deliberately no fallback to any other user's session.
+                const send = await this._getSender(userId, this._provider || 'web');
+                let buttons = [];
+                try { buttons = JSON.parse(contactItem.buttons || '[]'); } catch { buttons = []; }
+                const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
+                const result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
+                const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
+                await this._update(this, 'campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                const sentRow = await db.getById('campaigns', campaignId, userId);
+                await this._update(this, 'campaigns', { processed: (parseInt(sentRow?.processed) || 0) + 1, sent: (parseInt(sentRow?.sent) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                this._rateLimiter?.recordSent();
+            } catch (error) {
+                const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
+                const attempts = (parseInt(contactItem.attempts) || 0) + 1;
+                if (attempts <= maxAttempts) {
+                    const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
+                    await this._update(this, 'campaign_contacts', { status: 'pending', last_error: error.message, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                } else {
+                    await this._update(this, 'campaign_contacts', { status: 'failed', last_error: error.message, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    const failedRow = await db.getById('campaigns', campaignId, userId);
+                    await this._update(this, 'campaigns', { processed: (parseInt(failedRow?.processed) || 0) + 1, failed: (parseInt(failedRow?.failed) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                }
+            }
+            this._emitProgress(campaignId);
+            if (this._rateLimiter && this._running) await this._rateLimiter.wait();
+        }
+    }
+
+    _emitProgress(campaignId) {
+        db.getById('campaigns', campaignId, this._ownerUserId).then(campaign => {
+            if (campaign) this._emit('campaign:progress', campaign);
+        }).catch(error => console.error('[messageQueue] campaign progress lookup failed:', error));
+    }
+
+    _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+    async resumeInterrupted(io) {
+        this.setIO(io);
+        // Resume any campaign left running/paused by a restart. The startup
+        // sweep has no request user context, so it discovers rows globally;
+        // each row is then isolated by its own user_id and one queue per owner.
+        const pageSize = this._resumePageSize || 1000;
+        const campaigns = [];
+        let offset = 0;
+        while (true) {
+            const page = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', pageSize, offset);
+            if (!page?.length) break;
+            campaigns.push(...page);
+            offset += page.length;
+            if (page.length < pageSize) break;
+        }
+
+        campaigns.sort((a, b) => Number(a.id) - Number(b.id));
+        const byOwner = new Map();
+        for (const row of campaigns) {
+            if (!row.user_id) {
+                console.warn(`[messageQueue] campaign ${row.id} has no user_id; skipping resume`);
+                continue;
+            }
+            if (!byOwner.has(row.user_id)) byOwner.set(row.user_id, []);
+            byOwner.get(row.user_id).push(row);
+        }
+
+        for (const [userId, ownerCampaigns] of byOwner) {
+            const activeCampaign = ownerCampaigns[0];
+            const worker = Object.create(this);
+            let settings = {}; try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
+            Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
+            this._queues.set(userId, worker);
+            if (!worker._paused) this._startProcessor(worker);
+
+            for (const extra of ownerCampaigns.slice(1)) {
+                try {
+                    await this._update(worker, 'campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [extra.id, userId]);
+                } catch (error) {
+                    console.error(`[messageQueue] failed to stop duplicate interrupted campaign ${extra.id}:`, error);
+                }
+            }
+        }
+    }
+
+    static isOptOut(message) { return OPT_OUT_PATTERNS.some(pattern => pattern.test(message)); }
+}
+
+module.exports = new MessageQueue();
+module.exports.OPT_OUT_PATTERNS = OPT_OUT_PATTERNS;

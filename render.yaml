@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: sudarshan-pipes-api
+    env: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically — do not hardcode it.
+      # Supabase (set these in the Render dashboard — Render never reads
+      # backend/.env; env vars must be configured in the dashboard or render.yaml)
+      # - key: SUPABASE_URL
+      #   value: your-supabase-project-url
+      # - key: SUPABASE_SECRET_KEY
+      #   value: your-service-role-key
+      # - key: SUPABASE_ANON_KEY
+      #   value: your-anon-key
+      # WhatsApp & AI keys (set in Render dashboard)
+      # - key: AI_API_KEY
+      #   value: your-ai-api-key
+      # - key: AI_BASE_URL
+      #   value: your-ai-base-url
+      # - key: AI_MODEL
+      #   value: deepseek-ai/deepseek-v4-flash-0731
+      # - key: BUSINESS_NAME
+      #   value: Your Business Name
+      # Other env vars as needed

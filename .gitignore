@@ -1,0 +1,15 @@
+node_modules/
+.env
+.wwebjs_auth/
+.wwebjs_cache/
+.baileys_auth/
+*.log
+uploads/
+campaign-media/
+data/
+backups/
+justhr_leads.xlsx
+leads.json
+memory.json
+backend/test-fixtures/private/
+leads_*.xlsx

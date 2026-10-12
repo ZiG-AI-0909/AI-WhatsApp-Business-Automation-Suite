@@ -1,0 +1,13 @@
+import { useEffect, useState } from 'react'
+import { apiFetch, apiFetchRaw } from './api.js'
+
+const empty = { sku: '', name: '', product_family: 'DWC', unit: 'm', rate: '', gst_percent: '18' }
+export default function PriceListView() {
+  const [rows, setRows] = useState([]); const [form, setForm] = useState(empty); const [message, setMessage] = useState('')
+  const load = async () => { const data = await apiFetch('/price-list'); setRows(data.data || []) }
+  useEffect(() => { load().catch((error) => setMessage(error.message)) }, [])
+  const save = async (event) => { event.preventDefault(); try { await apiFetch('/price-list', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) }); setForm(empty); await load() } catch (error) { setMessage(error.message) } }
+  const importFile = async (event) => { const file = event.target.files?.[0]; if (!file) return; const body = new FormData(); body.append('file', file); try { const result = await apiFetch('/price-list/import', { method: 'POST', body }); setMessage(`Imported ${result.inserted}; updated ${result.updated}. ${result.errors.length ? result.errors.map((x) => `Row ${x.row}: ${x.message}`).join(' ') : ''}`); await load() } catch (error) { setMessage(error.message) } }
+  const template = async () => { const response = await apiFetchRaw('/price-list/template'); const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'price-list-template.xlsx'; link.click(); URL.revokeObjectURL(link.href) }
+  return <section className="panel"><div className="panel-header"><h2>Price List</h2><button type="button" onClick={template}>Download template</button></div><input type="file" accept=".xlsx" onChange={importFile} />{message && <p className="muted-copy">{message}</p>}<form onSubmit={save} className="form-grid">{Object.keys(empty).map((key) => <label key={key}>{key.replace(/_/g, ' ')}<input required={['sku', 'name', 'rate'].includes(key)} value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} /></label>)}<button className="primary-btn">Add row</button></form><div style={{ overflowX: 'auto' }}><table><thead><tr>{['SKU', 'Name', 'Family', 'Size', 'Standard', 'Grade', 'Unit', 'Rate', 'GST %', 'Active'].map((x) => <th key={x}>{x}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.sku}</td><td>{row.name}</td><td>{row.product_family}</td><td>{row.size_mm}</td><td>{row.standard}</td><td>{row.grade}</td><td>{row.unit}</td><td>{row.rate}</td><td>{row.gst_percent}</td><td>{String(row.active)}</td></tr>)}</tbody></table></div></section>
+}

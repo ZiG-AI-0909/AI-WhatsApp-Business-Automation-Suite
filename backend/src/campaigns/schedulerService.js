@@ -1,0 +1,298 @@
+const db = require('../database/db');
+const excelParser = require('./excelParser');
+const campaignService = require('./campaignService');
+const cronParser = require('cron-parser');
+const { resolveCountryCode } = require('../utils/countryCodes');
+
+const { CronExpressionParser } = cronParser;
+
+class SchedulerService {
+    constructor() {
+        this._io = null;
+        this._interval = null;
+        this._polling = false;
+    }
+
+    _emit(event, data) {
+        // Schedule events belong to their owner; fall back to broadcast only
+        // for legacy rows without a user_id (pre-Phase-1 data).
+        if (data?.scheduleId) {
+            const { emitToUser } = require('../realtime');
+            // Per-owner emit: resolve the owner for this schedule lazily.
+            // Background polling resolves legacy schedules by ID because there
+            // is no request owner context at emit time; this is the sole read
+            // path allowed to pass null to db.getById.
+            db.getById('campaign_schedules', data.scheduleId, null).then((row) => {
+                if (row?.user_id) emitToUser(this._io, row.user_id, event, data);
+                else this._io?.emit(event, data);
+            }).catch(() => this._io?.emit(event, data));
+            return;
+        }
+        this._io?.emit(event, data);
+    }
+
+    _emitToUser(userId, event, data) {
+        const { emitToUser } = require('../realtime');
+        emitToUser(this._io, userId, event, data);
+    }
+
+    _toDbDate(value) {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) throw new Error('Invalid schedule date');
+        return date.toISOString().slice(0, 19).replace('T', ' ');
+    }
+
+    _nextCron(cron, from = new Date()) {
+        return this._toDbDate(CronExpressionParser.parse(cron, { currentDate: from }).next().toDate());
+    }
+
+    async create(userId, { name, templateMessage, filePath, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], settings = {}, allowMissingFields = false, scheduleType, runAt, recurrenceCron, countryCode = null }) {
+        // Resolve the code ONCE at schedule creation (per-upload override →
+        // account default) so the validation-time parse and the campaign the
+        // schedule later fires both use the same code.
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(filePath, { countryCode: resolvedCode });
+        if (excelParser.getValidRows(result).length === 0) throw new Error('No valid contacts found in the Excel file.');
+
+        const nextRunAt = scheduleType === 'once' ? this._toDbDate(runAt) : this._nextCron(recurrenceCron);
+        const status = scheduleType === 'once' ? 'pending' : 'active';
+        const safeButtons = Array.isArray(buttons) ? buttons.slice(0, 3) : [];
+
+        const created = await db.insert('campaign_schedules', {
+            name: name.trim(),
+            template_message: templateMessage.trim(),
+            file_path: filePath,
+            media_path: mediaPath,
+            media_type: mediaType,
+            media_filename: mediaFilename,
+            media_mimetype: mediaMimetype,
+            buttons: JSON.stringify(safeButtons),
+            settings: JSON.stringify({ ...settings, countryCode: resolvedCode }),
+            allow_missing_fields: allowMissingFields ? 1 : 0,
+            schedule_type: scheduleType,
+            run_at: scheduleType === 'once' ? new Date(nextRunAt) : null,
+            recurrence_cron: scheduleType === 'recurring' ? recurrenceCron : null,
+            status,
+            next_run_at: new Date(nextRunAt),
+            updated_at: new Date(),
+            user_id: userId,
+        });
+
+        return this.get(created.id, userId);
+    }
+
+    async list(userId) {
+        const schedules = await db.select('campaign_schedules', '*', 'user_id = ?', [userId], 'next_run_at', 1000, 0);
+        return schedules.map(s => this._parseSchedule(s));
+    }
+
+    _parseSchedule(schedule) {
+        if (!schedule) return schedule;
+        try { schedule.buttons = JSON.parse(schedule.buttons || '[]'); } catch { schedule.buttons = []; }
+        try { schedule.settings = JSON.parse(schedule.settings || '{}'); } catch { schedule.settings = {}; }
+        if (schedule.created_at && schedule.created_at instanceof Date) {
+            schedule.created_at = schedule.created_at.toISOString();
+        }
+        if (schedule.updated_at && schedule.updated_at instanceof Date) {
+            schedule.updated_at = schedule.updated_at.toISOString();
+        }
+        if (schedule.run_at && schedule.run_at instanceof Date) {
+            schedule.run_at = schedule.run_at.toISOString();
+        }
+        if (schedule.last_run_at && schedule.last_run_at instanceof Date) {
+            schedule.last_run_at = schedule.last_run_at.toISOString();
+        }
+        if (schedule.next_run_at && schedule.next_run_at instanceof Date) {
+            schedule.next_run_at = schedule.next_run_at.toISOString();
+        }
+        return schedule;
+    }
+
+    async get(id, userId) {
+        const schedule = await db.getById('campaign_schedules', id, userId);
+        return this._parseSchedule(schedule);
+    }
+
+    async pause(id, userId) {
+        const schedule = await this.get(id, userId);
+        if (!schedule || !['active', 'pending'].includes(schedule.status)) throw new Error('Schedule cannot be paused in its current state.');
+        const updated = await db.update('campaign_schedules', {
+            status: 'paused',
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [id, userId]);
+        return this._parseSchedule(Array.isArray(updated) ? updated[0] : updated);
+    }
+
+    async resume(id, userId) {
+        const schedule = await this.get(id, userId);
+        if (!schedule || schedule.status !== 'paused') throw new Error('Only paused schedules can be resumed.');
+        const newStatus = schedule.schedule_type === 'once' ? 'pending' : 'active';
+        const updated = await db.update('campaign_schedules', {
+            status: newStatus,
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [id, userId]);
+        return this._parseSchedule(Array.isArray(updated) ? updated[0] : updated);
+    }
+
+    async retry(id, userId) {
+        const schedule = await this.get(id, userId);
+        if (!schedule || schedule.status !== 'failed') throw new Error('Only failed schedules can be retried.');
+        const status = schedule.schedule_type === 'once' ? 'pending' : 'active';
+        const updated = await db.update('campaign_schedules', {
+            status,
+            next_run_at: new Date(),
+            last_error: null,
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [id, userId]);
+        return this._parseSchedule(Array.isArray(updated) ? updated[0] : updated);
+    }
+
+    async cancel(id, userId) {
+        const schedule = await this.get(id, userId);
+        if (!schedule) return;
+        const updated = await db.update('campaign_schedules', {
+            status: 'cancelled',
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [id, userId]);
+        return this._parseSchedule(Array.isArray(updated) ? updated[0] : updated);
+    }
+
+    async delete(id, userId) {
+        const schedule = await this.get(id, userId);
+        if (!schedule) return;
+        if (schedule.status === 'active') await this.cancel(id, userId);
+        await db.del('campaign_schedules', 'id = ? AND user_id = ?', [id, userId]);
+    }
+
+    async deleteMany(ids, userId) {
+        for (const id of ids) {
+            await this.delete(id, userId);
+        }
+    }
+
+    async _fireDueSchedules() {
+        if (this._polling) return;
+        this._polling = true;
+        try {
+            const now = new Date();
+            const dueSchedules = await db.select(
+                'campaign_schedules',
+                '*',
+                '(status = ? OR status = ?) AND next_run_at <= ?',
+                ['pending', 'active', now],
+                'next_run_at',
+                100,
+                0
+            );
+
+            for (const schedule of dueSchedules) {
+                // Per-user connection check: the schedule fires only if ITS
+                // OWNER's own WhatsApp connection is live. Background sending
+                // never depends on the browser being open. If the owner's
+                // session is down (e.g. the 2h idle timeout dropped it), we
+                // first TRY to revive it from the stored Supabase auth state
+                // — scheduled sends must not silently wait for a human to
+                // open the app. Only when revival fails do we skip, and we
+                // record WHY on the schedule row so the wait is visible in
+                // the UI instead of being a silent limbo.
+                let ownerConnected = false;
+                try {
+                    const provider = schedule.provider || 'web';
+                    if (provider === 'business') {
+                        const businessApiProvider = require('../whatsapp/businessApiProvider');
+                        ownerConnected = businessApiProvider.getStatus(schedule.user_id) === 'connected';
+                    } else {
+                        const sessionManager = require('../whatsapp/sessionManager');
+                        if (sessionManager.getStatus(schedule.user_id) === 'connected') {
+                            ownerConnected = true;
+                        } else {
+                            ownerConnected = await sessionManager.ensureConnected(
+                                schedule.user_id,
+                                Number(process.env.WA_SCHEDULE_REVIVE_TIMEOUT_MS || 45000)
+                            );
+                        }
+                    }
+                } catch { ownerConnected = false; }
+                if (!ownerConnected) {
+                    console.log(`Schedule ${schedule.id} waiting: owner ${schedule.user_id} has no connected WhatsApp session (auto-reconnect attempted).`);
+                    const waitReason = 'Waiting for WhatsApp connection. Reconnect WhatsApp (Settings → Connection) to let this schedule run.';
+                    await db.update('campaign_schedules', {
+                        last_error: waitReason,
+                        updated_at: new Date(),
+                    }, 'id = ? AND user_id = ? AND status IN (\'pending\', \'active\')', [schedule.id, schedule.user_id]).catch(() => {});
+                    this._emitToUser(schedule.user_id, 'schedule:waiting_connection', {
+                        scheduleId: schedule.id,
+                        name: schedule.name,
+                        error: waitReason,
+                    });
+                    continue;
+                }
+                if (schedule.schedule_type === 'recurring' && schedule.last_campaign_id) {
+                    const previousCampaign = await db.getById('campaigns', schedule.last_campaign_id, schedule.user_id);
+                    if (previousCampaign?.status === 'running') {
+                        console.warn(`Schedule ${schedule.id} skipped because campaign ${schedule.last_campaign_id} is still running.`);
+                        const nextRun = this._nextCron(schedule.recurrence_cron, new Date());
+                        await db.update('campaign_schedules', {
+                            next_run_at: new Date(nextRun),
+                            updated_at: new Date(),
+                        }, 'id = ? AND user_id = ? AND status = ?', [schedule.id, schedule.user_id, 'active']);
+                        this._emit('schedule:skipped_overlap', { scheduleId: schedule.id });
+                        continue;
+                    }
+                }
+                try {
+                    const campaign = await campaignService.create(schedule.user_id, {
+                        name: `${schedule.name} - ${new Date().toISOString()}`,
+                        templateMessage: schedule.template_message,
+                        filePath: schedule.file_path,
+                        mediaPath: schedule.media_path,
+                        mediaType: schedule.media_type,
+                        mediaFilename: schedule.media_filename,
+                        mediaMimetype: schedule.media_mimetype,
+                        buttons: JSON.parse(schedule.buttons || '[]'),
+                        settings: JSON.parse(schedule.settings || '{}'),
+                        allowMissingFields: !!schedule.allow_missing_fields,
+                        // The schedule's stored code wins over the account default
+                        // so the fired campaign matches the numbers it validated.
+                        countryCode: JSON.parse(schedule.settings || '{}').countryCode || null,
+                    });
+                    await campaignService.start(campaign.id, this._io, schedule.user_id);
+
+                    const nextRunAt = schedule.schedule_type === 'recurring' ? this._nextCron(schedule.recurrence_cron, new Date()) : null;
+                    await db.update('campaign_schedules', {
+                        last_run_at: new Date(),
+                        last_campaign_id: campaign.id,
+                        last_error: null,
+                        status: schedule.schedule_type === 'once' ? 'completed' : schedule.status,
+                        next_run_at: schedule.schedule_type === 'recurring' ? new Date(nextRunAt) : null,
+                        updated_at: new Date(),
+                    }, 'id = ? AND user_id = ?', [schedule.id, schedule.user_id]);
+
+                    this._emit('schedule:fired', { scheduleId: schedule.id, campaignId: campaign.id });
+                } catch (error) {
+                    const nextRunAt = schedule.schedule_type === 'recurring' ? this._nextCron(schedule.recurrence_cron, new Date()) : schedule.next_run_at;
+                    await db.update('campaign_schedules', {
+                        status: schedule.schedule_type === 'once' ? 'failed' : 'active',
+                        last_error: error.message,
+                        last_run_at: new Date(),
+                        next_run_at: new Date(nextRunAt),
+                        updated_at: new Date(),
+                    }, 'id = ? AND user_id = ?', [schedule.id, schedule.user_id]);
+                    console.error(`Schedule ${schedule.id} failed:`, error.message);
+                    this._emit('schedule:failed', { scheduleId: schedule.id, name: schedule.name, error: error.message });
+                }
+            }
+        } finally {
+            this._polling = false;
+        }
+    }
+
+    startPolling(io) {
+        this._io = io;
+        if (this._interval) return;
+        this._fireDueSchedules();
+        this._interval = setInterval(() => this._fireDueSchedules(), 30000);
+    }
+}
+
+module.exports = new SchedulerService();

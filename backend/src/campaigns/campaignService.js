@@ -1,0 +1,326 @@
+const db = require('../database/db');
+const contactService = require('../contacts/contactService');
+const excelParser = require('./excelParser');
+const { downloadFromStorage, isRemotePath } = require('../middleware/upload');
+const fieldRenderer = require('./fieldRenderer');
+const messageQueue = require('./messageQueue');
+const { resolveCountryCode, findCountry } = require('../utils/countryCodes');
+
+class CampaignService {
+    _parseCampaign(campaign) {
+        if (!campaign) return campaign;
+        try { campaign.buttons = JSON.parse(campaign.buttons || '[]'); } catch { campaign.buttons = []; }
+        // Convert timestamps to ISO strings if they're Date objects
+        if (campaign.created_at && campaign.created_at instanceof Date) {
+            campaign.created_at = campaign.created_at.toISOString();
+        }
+        if (campaign.started_at && campaign.started_at instanceof Date) {
+            campaign.started_at = campaign.started_at.toISOString();
+        }
+        if (campaign.completed_at && campaign.completed_at instanceof Date) {
+            campaign.completed_at = campaign.completed_at.toISOString();
+        }
+        if (campaign.updated_at && campaign.updated_at instanceof Date) {
+            campaign.updated_at = campaign.updated_at.toISOString();
+        }
+        return campaign;
+    }
+
+    async list(userId, { page = 1, limit = 20 } = {}) {
+        const result = await db.paginate('campaigns', 'user_id = ?', [userId], 'created_at', 'desc', limit, (page - 1) * limit);
+        const data = await Promise.all(result.data.map(c => this._parseCampaign(c)));
+        return { total: result.total, page, limit, data };
+    }
+
+    async get(id, userId) {
+        const campaign = await db.getById('campaigns', id, userId);
+        return this._parseCampaign(campaign);
+    }
+
+    /**
+     * Resolve a file source (local path or Supabase Storage URL) into a Buffer
+     * so the Excel parser can work without a local file path.
+     */
+    async _resolveExcelSource(filePath) {
+        if (isRemotePath(filePath)) {
+            return downloadFromStorage('campaign-excel-uploads', filePath);
+        }
+        return filePath; // local path during transition
+    }
+
+    async validateExcel(filePath, { countryCode = null } = {}, userId) {
+        if (!userId) throw new Error('userId is required to validate campaign data');
+        // Per-upload override wins; otherwise fall back to the account's
+        // Settings default (per-user app_settings → env → '91').
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(filePath, { countryCode: resolvedCode });
+        const validRows = excelParser.getValidRows(result);
+        const dynamicFields = excelParser.getDynamicFields(result);
+        return {
+            ...result.validation,
+            dynamicFields,
+            phoneColumn: result.phoneColumn,
+            countryCode: resolvedCode,
+            countryName: findCountry(resolvedCode)?.name || null,
+            previewRows: validRows.slice(0, 3).map(r => {
+                const preview = { ...r };
+                delete preview._rowIndex;
+                delete preview._valid;
+                return preview;
+            }),
+        };
+    }
+
+    async validateExcelBuffer(fileBuffer, { countryCode = null } = {}, userId) {
+        if (!userId) throw new Error('userId is required to validate campaign data');
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parseBuffer(fileBuffer, { countryCode: resolvedCode });
+        const validRows = excelParser.getValidRows(result);
+        const dynamicFields = excelParser.getDynamicFields(result);
+        return {
+            ...result.validation,
+            dynamicFields,
+            phoneColumn: result.phoneColumn,
+            countryCode: resolvedCode,
+            countryName: findCountry(resolvedCode)?.name || null,
+            previewRows: validRows.slice(0, 3).map(r => {
+                const preview = { ...r };
+                delete preview._rowIndex;
+                delete preview._valid;
+                return preview;
+            }),
+        };
+    }
+
+    async previewMessages(filePath, template, previewCount = 5, { countryCode = null } = {}, userId) {
+        if (!userId) throw new Error('userId is required to preview campaign data');
+        const source = await this._resolveExcelSource(filePath);
+        // Use the same code resolution as validation/create so the previewed
+        // numbers match what will actually be stored.
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(source, { countryCode: resolvedCode });
+        const validRows = excelParser.getValidRows(result);
+        const requiredFields = fieldRenderer.extractFields(template);
+        return {
+            dynamicFields: excelParser.getDynamicFields(result),
+            previews: fieldRenderer.previewBatch(template, validRows, previewCount),
+            requiredFields,
+            missingByField: Object.fromEntries(requiredFields.map(field => [field, validRows.filter(row => !row[field]).length])),
+        };
+    }
+
+    async create(userId, { name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], countryCode = null }) {
+        const source = await this._resolveExcelSource(filePath);
+        // Same resolution order as validate*: per-upload override → account
+        // Settings default → env → '91'. The resolved code is stored on the
+        // campaign row's settings for traceability.
+        const resolvedCode = await resolveCountryCode(userId, countryCode);
+        const result = await excelParser.parse(source, { countryCode: resolvedCode });
+        const validRows = excelParser.getValidRows(result);
+
+        if (validRows.length === 0) {
+            throw new Error('No valid contacts found in the Excel file.');
+        }
+
+        const missingFields = fieldRenderer.extractFields(templateMessage).filter(field => validRows.some(row => !row[field]));
+        if (missingFields.length && !allowMissingFields) {
+            throw new Error(`Missing values found for: ${missingFields.map(field => `{{${field}}}`).join(', ')}. Review the preview or explicitly allow missing fields.`);
+        }
+
+        const safeButtons = Array.isArray(buttons) ? buttons.slice(0, 3).map(button => ({
+            type: button?.type === 'url' ? 'url' : 'quick_reply',
+            text: String(button?.text || '').trim(),
+            url: String(button?.url || '').trim(),
+        })).filter(button => button.text) : [];
+
+        // Use transaction-like sequential operations
+        const campaign = await db.insert('campaigns', {
+            name,
+            template_message: templateMessage,
+            total_contacts: validRows.length,
+            settings: JSON.stringify({ ...settings, countryCode: resolvedCode }),
+            // Provider is resolved per user at creation time: business if
+            // THIS user has the Cloud API connected, otherwise web.
+            provider: require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected' ? 'business' : 'web',
+            media_path: mediaPath,
+            media_type: mediaType,
+            media_filename: mediaFilename,
+            media_mimetype: mediaMimetype,
+            buttons: JSON.stringify(safeButtons),
+            updated_at: new Date(),
+            user_id: userId,
+        });
+
+        const campaignId = campaign.id;
+
+        // Upsert contacts and create campaign_contacts entries
+        for (const row of validRows) {
+            const phone = row[result.phoneColumn] || row._phone;
+            const contact = await contactService.upsert(phone, {
+                name: row.name || row.Name || '',
+                company: row.company || row.Company || '',
+                city: row.city || row.City || '',
+            }, userId);
+
+            // Check opt-out
+            if (!contact.marketing_opt_in) {
+                await db.insert('campaign_contacts', {
+                    campaign_id: campaignId,
+                    contact_id: contact.id,
+                    rendered_message: null,
+                    status: 'opted_out',
+                    user_id: userId,
+                });
+                continue;
+            }
+
+            const rendered = fieldRenderer.render(templateMessage, row, { strict: !allowMissingFields });
+            await db.insert('campaign_contacts', {
+                campaign_id: campaignId,
+                contact_id: contact.id,
+                rendered_message: rendered,
+                status: 'pending',
+                user_id: userId,
+            });
+        }
+
+        const created = await db.getById('campaigns', campaignId, userId);
+        return this._parseCampaign(created);
+    }
+
+    /**
+     * Per-user connection check: the campaign can only start through its
+     * OWNER's own connection — never another user's session.
+     */
+    async _assertOwnerConnected(userId, provider) {
+        if (provider === 'business') {
+            const businessApiProvider = require('../whatsapp/businessApiProvider');
+            if (businessApiProvider.getStatus(userId) !== 'connected') {
+                throw new Error('Your WhatsApp Business API is not connected. Connect it and try again.');
+            }
+            return;
+        }
+        const sessionManager = require('../whatsapp/sessionManager');
+        if (sessionManager.getStatus(userId) !== 'connected') {
+            throw new Error('Your WhatsApp session is not connected. Connect WhatsApp and try again.');
+        }
+    }
+
+    async start(campaignId, io, userId) {
+        const campaign = await this.get(campaignId, userId);
+        if (!campaign) throw new Error('Campaign not found');
+        if (!['draft', 'stopped', 'paused'].includes(campaign.status)) {
+            throw new Error(`Cannot start campaign in status: ${campaign.status}`);
+        }
+        await this._assertOwnerConnected(userId, campaign.provider || 'web');
+
+        messageQueue.setIO(io);
+        const settings = JSON.parse(campaign.settings || '{}');
+        await messageQueue.start(campaignId, settings, userId);
+    }
+
+    pause(campaignId, userId) {
+        if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
+            throw new Error('This campaign is not currently running.');
+        }
+        return messageQueue.pause(userId);
+    }
+
+    async resume(campaignId, io, userId) {
+        const campaign = await this.get(campaignId, userId);
+        if (!campaign) throw new Error('Campaign not found');
+        if (campaign.status !== 'paused') {
+            throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
+        }
+        if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
+            throw new Error('This campaign is not currently loaded in the queue.');
+        }
+        await this._assertOwnerConnected(userId, campaign.provider || 'web');
+        messageQueue.setIO(io);
+        return messageQueue.resume(userId);
+    }
+
+    async stop(campaignId, userId) {
+        const ownedCampaign = await this.get(campaignId, userId);
+        if (!ownedCampaign) throw new Error('Campaign not found');
+        if (messageQueue.getCurrentCampaignId(userId) !== campaignId) {
+            // Force-stop from DB even if queue doesn't match
+            await db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+            await db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            return;
+        }
+        if (messageQueue.getCurrentOwnerUserId(userId) === userId) await messageQueue.stop(userId);
+    }
+
+    async delete(id, userId) {
+        if (!await this.get(id, userId)) throw new Error('Campaign not found');
+        await this.stop(id, userId);
+        await db.del('campaigns', 'id = ? AND user_id = ?', [id, userId]);
+    }
+
+    async deleteMany(ids, userId) {
+        const deleted = [];
+        const skipped = [];
+        for (const id of ids) {
+            if (!await this.get(id, userId)) {
+                skipped.push(id);
+                continue;
+            }
+            await this.stop(id, userId);
+            await db.del('campaigns', 'id = ? AND user_id = ?', [id, userId]);
+            deleted.push(id);
+        }
+        return { deleted, skipped };
+    }
+
+    async getContacts(campaignId, userId, { page = 1, limit = 50, status } = {}) {
+        let where = 'campaign_id = ? AND user_id = ?';
+        const params = [campaignId, userId];
+        if (status) {
+            where += ' AND status = ?';
+            params.push(status);
+        }
+
+        const result = await db.paginate('campaign_contacts', where, params, 'id', 'asc', limit, (page - 1) * limit);
+        
+        // Fetch contact details for each row
+        const data = await Promise.all(result.data.map(async (cc) => {
+            const contact = await db.getById('contacts', cc.contact_id, userId);
+            return {
+                ...cc,
+                phone: contact?.phone || '',
+                name: contact?.name || '',
+                company: contact?.company || '',
+                city: contact?.city || '',
+            };
+        }));
+
+        return { total: result.total, page, limit, data };
+    }
+
+    async stats(userId) {
+        const total = await db.count('campaigns', 'user_id = ?', [userId]);
+        const active = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'running']);
+        const campaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', 'user_id = ?', [userId], '', 1000, 0);
+        
+        const totalSent = campaigns.reduce((sum, c) => sum + (parseInt(c.sent) || 0), 0);
+        const totalFailed = campaigns.reduce((sum, c) => sum + (parseInt(c.failed) || 0), 0);
+        const totalReplies = campaigns.reduce((sum, c) => sum + (parseInt(c.replies) || 0), 0);
+        const totalOptOuts = campaigns.reduce((sum, c) => sum + (parseInt(c.opt_outs) || 0), 0);
+
+        return { total, active, totalSent, totalFailed, totalReplies, totalOptOuts };
+    }
+
+    getQueueStatus(userId) {
+        if (messageQueue.getCurrentOwnerUserId(userId) !== userId) {
+            return { running: false, paused: false, currentCampaignId: null };
+        }
+        return {
+            running: messageQueue.isRunning(userId),
+            paused: messageQueue.isPaused(userId),
+            currentCampaignId: messageQueue.getCurrentCampaignId(userId),
+        };
+    }
+}
+
+module.exports = new CampaignService();

@@ -1,0 +1,172 @@
+const db = require('../database/db');
+const { supabase, isAvailable } = require('../database/supabaseClient');
+
+class ContactService {
+    async upsert(phone, data = {}, userId) {
+        if (!userId) throw new Error('userId is required for contact upsert');
+        const clean = this._cleanPhone(phone);
+        const existing = await db.getOne('contacts', 'phone', clean, userId);
+
+        if (existing) {
+            const updates = {};
+            if (typeof data.name === 'string' && data.name.trim()) updates.name = data.name;
+            if (data.email !== undefined) updates.email = this._cleanEmail(data.email);
+            if (data.company !== undefined) updates.company = data.company;
+            if (data.city !== undefined) updates.city = data.city;
+            if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags);
+            if (data.notes !== undefined) updates.notes = data.notes;
+            if (data.marketing_opt_in !== undefined) updates.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
+            if (data.last_message_at !== undefined) {
+                updates.last_message_at = new Date(data.last_message_at);
+            }
+            if (data.jid) updates.jid = data.jid;
+            if (data.is_lid !== undefined) updates.is_lid = data.is_lid ? 1 : 0;
+
+            if (Object.keys(updates).length > 0) {
+                const updated = await db.update('contacts', updates, 'phone = ? AND user_id = ?', [clean, userId]);
+                // Get fresh data with parsed JSON
+                const fresh = await db.getOne('contacts', 'phone', clean, userId);
+                return this._parse(fresh);
+            }
+            return this._parse(existing);
+        } else {
+            const newContact = await db.insert('contacts', {
+                phone: clean,
+                name: data.name || '',
+                email: this._cleanEmail(data.email),
+                company: data.company || '',
+                city: data.city || '',
+                tags: JSON.stringify(data.tags || []),
+                notes: data.notes || '',
+                marketing_opt_in: data.marketing_opt_in !== false ? 1 : 0,
+                jid: data.jid || null,
+                is_lid: data.is_lid ? 1 : 0,
+                user_id: userId,
+            });
+            return this._parse(newContact);
+        }
+    }
+
+    findByPhone(phone, userId) {
+        if (!userId) throw new Error('userId is required for contact lookup');
+        return db.getOne('contacts', 'phone', this._cleanPhone(phone), userId);
+    }
+
+    findById(id, userId) {
+        if (!userId) throw new Error('userId is required for contact lookup');
+        return db.getById('contacts', id, userId);
+    }
+
+    async list(userId, { search = '', page = 1, limit = 50, optIn } = {}) {
+        let where = 'user_id = ?';
+        const params = [userId];
+        if (search) {
+            where += ` AND (phone LIKE ? OR name LIKE ? OR company LIKE ? OR city LIKE ? OR email LIKE ?)`;
+            const s = `%${search}%`;
+            params.push(s, s, s, s, s);
+        }
+        if (optIn !== undefined) {
+            where += ' AND marketing_opt_in = ?';
+            params.push(optIn ? 1 : 0);
+        }
+        const offset = (page - 1) * limit;
+
+        const result = await db.paginate('contacts', where, params, 'updated_at', 'desc', limit, offset);
+        return {
+            total: result.total,
+            page,
+            limit,
+            data: result.data.map(this._parse),
+        };
+    }
+
+    async update(id, data, userId) {
+        if (!userId) throw new Error('userId is required for contact update');
+        const contact = await db.getById('contacts', id, userId);
+        if (!contact) return null;
+
+        const updates = { updated_at: new Date() };
+        if (data.name !== undefined) updates.name = data.name;
+        if (data.email !== undefined) updates.email = this._cleanEmail(data.email);
+        if (data.company !== undefined) updates.company = data.company;
+        if (data.city !== undefined) updates.city = data.city;
+        if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags);
+        if (data.notes !== undefined) updates.notes = data.notes;
+        if (data.marketing_opt_in !== undefined) updates.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
+
+        await db.update('contacts', updates, 'id = ? AND user_id = ?', [id, userId]);
+        const updated = await db.getById('contacts', id, userId);
+        return this._parse(updated);
+    }
+
+    async delete(id, userId) {
+        if (!userId) throw new Error('userId is required for contact deletion');
+        await db.del('contacts', 'id = ? AND user_id = ?', [id, userId]);
+    }
+
+    async deleteMany(ids, userId) {
+        for (const id of ids) {
+            await this.delete(id, userId);
+        }
+    }
+
+    async setOptOut(phone, userId) {
+        if (!userId) throw new Error('userId is required to update contact opt-out status');
+        const clean = this._cleanPhone(phone);
+        const where = 'phone = ? AND user_id = ?';
+        const params = [clean, userId];
+        await db.update('contacts', {
+            marketing_opt_in: 0,
+            updated_at: new Date(),
+        }, where, params);
+    }
+
+    importFromArray(rows, userId) {
+        const results = { added: 0, updated: 0, invalid: 0, duplicates: 0 };
+        const seen = new Set();
+
+        // This is synchronous in the original; we return a promise-like structure
+        // For full async, we'd need to make this async. Keeping sync-compatible for now.
+        const syncUpsert = async (row) => {
+            const clean = this._cleanPhone(row.phone || '');
+            if (!clean || clean.length < 10 || clean.length > 15) { results.invalid++; return; }
+            if (seen.has(clean)) { results.duplicates++; return; }
+            seen.add(clean);
+            const existing = await db.getOne('contacts', 'phone', clean, userId);
+            await this.upsert(clean, { name: row.name, email: row.email, company: row.company, city: row.city }, userId);
+            if (existing) results.updated++;
+            else results.added++;
+        };
+
+        return Promise.all(rows.map(syncUpsert)).then(() => results);
+    }
+
+    async stats(userId) {
+        const total = await db.count('contacts', 'user_id = ?', [userId]);
+        const optedOut = await db.count('contacts', 'user_id = ? AND marketing_opt_in = ?', [userId, 0]);
+        return { total, optedIn: total - optedOut, optedOut };
+    }
+
+    _cleanPhone(phone) {
+        return String(phone).replace(/[^\d]/g, '');
+    }
+
+    /**
+     * Normalize an email address: trim, lowercase, empty string -> null.
+     * Email is optional, so absence is stored as NULL rather than ''.
+     * No format validation here — the UI hints at format; invalid values
+     * simply never match a campaign send (Phase 2 filters them out).
+     */
+    _cleanEmail(email) {
+        const clean = String(email || '').trim().toLowerCase() || null;
+        return clean;
+    }
+
+    _parse(contact) {
+        if (!contact) return contact;
+        try { contact.tags = JSON.parse(contact.tags || '[]'); } catch { contact.tags = []; }
+        return contact;
+    }
+}
+
+module.exports = new ContactService();

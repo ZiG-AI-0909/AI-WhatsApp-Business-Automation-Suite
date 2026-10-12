@@ -1,0 +1,10 @@
+const express = require('express'); const multer = require('multer'); const service = require('../boq/priceListService');
+const router = express.Router(); const upload = multer({ storage: multer.memoryStorage() });
+router.get('/', async (req, res) => { try { res.json(await service.list(req.user.id, req.query)); } catch (e) { res.status(500).json({ error: e.message }); } });
+router.get('/template', async (_req, res) => { try { const file = await service.templateWorkbook(); res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').attachment('price-list-template.xlsx').send(Buffer.from(file)); } catch (e) { res.status(500).json({ error: e.message }); } });
+router.post('/import', upload.single('file'), async (req, res) => { try { if (!req.file) return res.status(400).json({ error: 'Excel file is required.' }); res.json(await service.bulkImport(req.user.id, req.file.buffer)); } catch (e) { res.status(400).json({ error: e.message }); } });
+router.post('/', async (req, res) => { try { res.status(201).json(await service.create(req.user.id, req.body)); } catch (e) { res.status(400).json({ error: e.message }); } });
+router.get('/:id', async (req, res) => { const row = await service.get(req.user.id, req.params.id); if (!row) return res.status(404).json({ error: 'Price list row not found.' }); res.json(row); });
+router.patch('/:id', async (req, res) => { try { const row = await service.update(req.user.id, req.params.id, req.body); if (!row) return res.status(404).json({ error: 'Price list row not found.' }); res.json(row); } catch (e) { res.status(400).json({ error: e.message }); } });
+router.delete('/:id', async (req, res) => { const row = await service.remove(req.user.id, req.params.id); if (!row) return res.status(404).json({ error: 'Price list row not found.' }); res.json(row); });
+module.exports = router;
