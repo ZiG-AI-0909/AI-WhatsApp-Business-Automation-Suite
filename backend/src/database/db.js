@@ -176,10 +176,7 @@ function normalizeParam(value) {
 function applyOperator(query, column, operator, param, literal) {
     const col = column.replace(/^\w+\./, ''); // strip table alias
     switch (operator) {
-        case '=': {
-            if (typeof param === 'string' && param.includes('%')) return query.like(col, param);
-            return query.eq(col, param);
-        }
+        case '=': return query.eq(col, param);
         case '!=':
         case '<>': return query.neq(col, param);
         case '>=': return query.gte(col, param);
@@ -320,11 +317,12 @@ async function insertMany(table, rows) {
 /**
  * UPDATE rows matching conditions
  */
-async function update(table, data, where = '', params = []) {
+async function update(table, data, where = '', params = [], { allowAll = false } = {}) {
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured.');
     }
 
+    if ((!where || /^\s*(?:WHERE\s+)?1\s*=\s*1\s*$/i.test(where)) && !allowAll) throw new Error('[db] Refusing unfiltered update; pass { allowAll: true } explicitly.');
     let query = supabase.from(table).update(data);
 
     if (where) {
@@ -339,11 +337,12 @@ async function update(table, data, where = '', params = []) {
 /**
  * DELETE rows matching conditions
  */
-async function del(table, where = '', params = []) {
+async function del(table, where = '', params = [], { allowAll = false } = {}) {
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured.');
     }
 
+    if ((!where || /^\s*(?:WHERE\s+)?1\s*=\s*1\s*$/i.test(where)) && !allowAll) throw new Error('[db] Refusing unfiltered delete; pass { allowAll: true } explicitly.');
     let query = supabase.from(table).delete();
 
     if (where) {
@@ -358,7 +357,9 @@ async function del(table, where = '', params = []) {
 /**
  * Get a single row by ID
  */
-async function getById(table, id, userId = null) {
+async function getById(table, id, userId) {
+    if (userId === undefined) throw new Error('[db] userId is required for getById');
+    if (userId === null && table !== 'campaign_schedules') throw new Error('[db] null userId is only allowed for scheduler polling');
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured.');
     }
@@ -381,7 +382,8 @@ async function getById(table, id, userId = null) {
 /**
  * Get a single row matching a condition
  */
-async function getOne(table, column, value, userId = null) {
+async function getOne(table, column, value, userId) {
+    if (!userId) throw new Error('[db] userId is required for getOne');
     if (!isAvailable()) {
         throw new Error('Supabase client is not configured.');
     }

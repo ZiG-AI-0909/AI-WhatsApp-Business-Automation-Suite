@@ -38,15 +38,14 @@ router.get('/stats', async (req, res) => {
 
 // GET /api/campaigns/queue-status
 router.get('/queue-status', (req, res) => {
-    res.json(campaignService.getQueueStatus());
+    res.json(campaignService.getQueueStatus(req.user.id));
 });
 
 // POST /api/campaigns/bulk-delete
 router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
     try {
-        await campaignService.deleteMany(req.body.ids, req.user.id);
-        res.json({ deleted: req.body.ids.length });
+        res.json(await campaignService.deleteMany(req.body.ids, req.user.id));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -180,7 +179,7 @@ router.post('/:id/start', async (req, res) => {
 // POST /api/campaigns/:id/pause
 router.post('/:id/pause', async (req, res) => {
     try {
-        await campaignService.pause(+req.params.id);
+        await campaignService.pause(+req.params.id, req.user.id);
         res.json({ success: true, message: 'Campaign paused' });
     } catch (err) {
         res.status(400).json({ error: err.message });

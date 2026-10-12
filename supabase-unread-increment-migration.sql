@@ -23,5 +23,6 @@ begin
 end;
 $$;
 
-revoke execute on function public.increment_unread(bigint, uuid) from public, anon, authenticated;
+revoke all on function public.increment_unread(bigint, uuid) from public, anon, authenticated;
 grant execute on function public.increment_unread(bigint, uuid) to service_role;
+notify pgrst, 'reload schema';

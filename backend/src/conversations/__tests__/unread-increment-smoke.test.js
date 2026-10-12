@@ -9,7 +9,7 @@ const owners = new Map([[CONVERSATION_ID, USER_A]]);
 const dbCalls = [];
 const rpcCalls = [];
 let rpcError = null;
-let warnings = [];
+let errors = [];
 
 const dbPath = require.resolve('../../database/db');
 require.cache[dbPath] = {
@@ -38,18 +38,15 @@ require.cache[clientPath] = {
             rpc: async (name, params) => {
                 rpcCalls.push([name, params]);
                 if (rpcError) return { data: null, error: rpcError };
-                return {
-                    data: owners.get(params.p_conversation_id) === params.p_user_id ? 3 : null,
-                    error: null,
-                };
+                return { data: null, error: null };
             },
         },
         isAvailable: () => true,
     },
 };
 
-const originalWarn = console.warn;
-console.warn = (...args) => { warnings.push(args); };
+const originalError = console.error;
+console.error = (...args) => { errors.push(args); };
 const conversationService = require('../conversationService');
 
 async function saveInbound(userId) {
@@ -63,9 +60,13 @@ async function main() {
     const migration = fs.readFileSync(migrationPath, 'utf8');
     assert.match(migration, /p_conversation_id\s+bigint/i);
     assert.match(migration, /p_user_id\s+uuid/i);
+    assert.match(migration, /returns integer/i);
+    assert.match(migration, /language plpgsql/i);
+    assert.match(migration, /drop function if exists public\.increment_unread\(bigint, uuid\)/i);
     assert.match(migration, /where id = p_conversation_id\s+and user_id = p_user_id/i);
-    assert.match(migration, /revoke execute on function public\.increment_unread\(bigint, uuid\) from public, anon, authenticated/i);
+    assert.match(migration, /revoke all on function public\.increment_unread\(bigint, uuid\) from public, anon, authenticated/i);
     assert.match(migration, /grant execute on function public\.increment_unread\(bigint, uuid\) to service_role/i);
+    assert.match(migration, /notify pgrst, 'reload schema'/i);
 
     await saveInbound(USER_A);
     assert.deepStrictEqual(rpcCalls[0], [
@@ -75,18 +76,45 @@ async function main() {
     assert.strictEqual(dbCalls.filter(([method]) => method === 'getById').length, 0,
         'successful RPC avoids the read-then-write fallback');
 
-    rpcError = new Error('function not deployed');
+    rpcError = { code: 'PGRST202', message: 'function not deployed' };
     await saveInbound(USER_A);
-    assert.strictEqual(warnings.length, 1, 'RPC error is logged');
+    assert.strictEqual(errors.length, 0, 'a missing RPC falls back quietly');
     assert.strictEqual(dbCalls.filter(([method]) => method === 'getById').length, 1,
         'RPC error runs the fallback read');
     const unreadUpdate = dbCalls.find((call) => call[0] === 'update' && call[2]?.unread_count !== undefined);
     assert.ok(unreadUpdate, 'fallback writes unread_count');
     assert.strictEqual(unreadUpdate[2].unread_count, 3, 'fallback increments existing unread count');
+    assert.deepStrictEqual(unreadUpdate.slice(3), ['id = ? AND user_id = ?', [CONVERSATION_ID, USER_A]],
+        'fallback update is scoped to both conversation and owner');
+
+    rpcError = { code: '42883', message: 'function does not exist' };
+    dbCalls.length = 0;
+    await saveInbound(USER_A);
+    assert.strictEqual(errors.length, 0, 'a missing PostgreSQL function falls back quietly');
+    assert.strictEqual(dbCalls.filter(([method]) => method === 'getById').length, 1,
+        '42883 runs the scoped fallback read');
+
+    rpcError = { code: 'XX000', message: 'database unavailable' };
+    dbCalls.length = 0;
+    assert.strictEqual(await saveInbound(USER_A), true, 'an RPC error does not drop an incoming message');
+    assert.strictEqual(errors.length, 1, 'non-missing RPC errors are logged');
+    assert.strictEqual(dbCalls.filter(([method]) => method === 'getById').length, 1,
+        'non-missing RPC errors also run the fallback read');
+
+    const mockedDb = require.cache[dbPath].exports;
+    const originalUpdate = mockedDb.update;
+    mockedDb.update = async (...args) => {
+        if (args[1]?.unread_count !== undefined) throw new Error('planned unread update failure');
+        return originalUpdate(...args);
+    };
+    errors.length = 0;
+    assert.strictEqual(await saveInbound(USER_A), true, 'a failed unread fallback does not drop an incoming message');
+    assert.strictEqual(errors.length, 2, 'the RPC error and fallback failure are both reported');
+    mockedDb.update = originalUpdate;
 
     dbCalls.length = 0;
     await saveInbound(USER_B);
-    assert.deepStrictEqual(rpcCalls[2], [
+    assert.deepStrictEqual(rpcCalls[5], [
         'increment_unread',
         { p_conversation_id: CONVERSATION_ID, p_user_id: USER_B },
     ], 'RPC receives user B as the owner filter');
@@ -95,12 +123,12 @@ async function main() {
     assert.strictEqual(dbCalls.some((call) => call[0] === 'update' && call[2]?.unread_count !== undefined), false,
         'user B cannot update user A conversation unread count');
 
-    console.warn = originalWarn;
+    console.error = originalError;
     console.log('✅ Unread increment RPC and tenant isolation smoke tests passed');
 }
 
 main().catch((error) => {
-    console.warn = originalWarn;
+    console.error = originalError;
     console.error('❌ TEST FAILED:', error);
     process.exitCode = 1;
 });

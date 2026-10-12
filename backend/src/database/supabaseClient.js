@@ -35,12 +35,8 @@ function isAvailable() {
 }
 
 /**
- * Execute multiple queries in a transaction.
- * Supabase does not support traditional transactions via the JS client,
- * so we use the Postgres function approach or sequential operations with
- * manual rollback tracking.
- *
- * For simple cases, operations are sequential and we track errors.
+ * Execute multiple queries sequentially. This is NOT atomic; a later failure
+ * does not roll back earlier operations. Use a Postgres RPC for atomic work.
  */
 async function transaction(operations) {
     // Supabase JS client doesn't support native transactions.

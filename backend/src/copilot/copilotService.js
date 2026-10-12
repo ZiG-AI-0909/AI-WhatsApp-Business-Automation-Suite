@@ -192,7 +192,7 @@ function buildTalkingPoints(contact, { waitingOnCustomer, openQuestions, product
     if (inboundCount === 0 && outboundCount === 0) {
         points.push('No conversation history yet: open with their requirement, quantity, and delivery location.');
     }
-    if (contact.marketing_opt_in === false) {
+    if (!contact.marketing_opt_in) {
         points.push('This contact opted out of marketing — keep the conversation strictly to their own enquiries.');
     }
     return points.slice(0, 6);

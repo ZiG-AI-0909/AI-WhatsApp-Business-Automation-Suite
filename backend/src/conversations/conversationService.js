@@ -2,9 +2,8 @@ const db = require('../database/db');
 const contactService = require('../contacts/contactService');
 
 class ConversationService {
-    // userId is optional: the WhatsApp webhook path (Phase 2) has no request
-    // context yet and creates user-less rows; route calls always pass it.
-    async getOrCreate(phone, jid, phoneKnown = true, name = '', userId = null) {
+    async getOrCreate(phone, jid, phoneKnown = true, name = '', userId) {
+        if (!userId) throw new Error('userId is required for conversation lookup');
         let contact = await contactService.findByPhone(phone, userId);
         if (!contact) {
             contact = await contactService.upsert(phone, { jid, name, is_lid: phoneKnown ? 0 : 1 }, userId);
@@ -24,7 +23,8 @@ class ConversationService {
         return { conversation: conv, contact };
     }
 
-    async saveMessage(conversationId, direction, body, waMessageId = null, status = 'sent', metadata = {}, userId = null) {
+    async saveMessage(conversationId, direction, body, waMessageId = null, status = 'sent', metadata = {}, userId) {
+        if (!userId) throw new Error('userId is required to save a message');
         if (waMessageId) {
             const existing = await db.getOne('messages', 'wa_message_id', waMessageId, userId);
             if (existing) return null;
@@ -42,53 +42,59 @@ class ConversationService {
             user_id: userId,
         });
 
-        const convWhere = userId ? 'id = ? AND user_id = ?' : 'id = ?';
-        const convParams = userId ? [conversationId, userId] : [conversationId];
+        const convWhere = 'id = ? AND user_id = ?';
+        const convParams = [conversationId, userId];
         await db.update('conversations', {
             last_message_at: new Date(),
         }, convWhere, convParams);
 
         if (direction === 'inbound') {
             let incrementedByRpc = false;
-            if (userId) {
-                const { supabase, isAvailable } = require('../database/supabaseClient');
-                if (isAvailable() && typeof supabase?.rpc === 'function') {
-                    try {
-                        const { error } = await supabase.rpc('increment_unread', {
-                            p_conversation_id: conversationId,
-                            p_user_id: userId,
-                        });
-                        if (error) {
-                            console.warn('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
-                        } else {
-                            incrementedByRpc = true;
+            const { supabase, isAvailable } = require('../database/supabaseClient');
+            if (isAvailable() && typeof supabase?.rpc === 'function') {
+                try {
+                    const { error } = await supabase.rpc('increment_unread', {
+                        p_conversation_id: conversationId,
+                        p_user_id: userId,
+                    });
+                    if (error) {
+                        if (!['PGRST202', '42883'].includes(error.code)) {
+                            console.error('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
                         }
-                    } catch (error) {
-                        console.warn('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
+                    } else {
+                        incrementedByRpc = true;
                     }
+                } catch (error) {
+                    console.error('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
                 }
             }
 
             if (!incrementedByRpc) {
-                const conv = await db.getById('conversations', conversationId, userId);
-                if (conv) {
-                    await db.update('conversations', {
-                        unread_count: (conv.unread_count || 0) + 1,
-                    }, convWhere, convParams);
+                try {
+                    const conv = await db.getById('conversations', conversationId, userId);
+                    if (conv) {
+                        await db.update('conversations', {
+                            unread_count: (conv.unread_count || 0) + 1,
+                        }, convWhere, convParams);
+                    }
+                } catch (error) {
+                    console.error('[conversations] unread_count fallback failed:', error);
                 }
             }
         }
         return true;
     }
 
-    async getMessages(conversationId, limit = 50, userId = null) {
-        const where = userId ? 'conversation_id = ? AND user_id = ?' : 'conversation_id = ?';
-        const params = userId ? [conversationId, userId] : [conversationId];
+    async getMessages(conversationId, limit = 50, userId) {
+        if (!userId) throw new Error('userId is required to read messages');
+        const where = 'conversation_id = ? AND user_id = ?';
+        const params = [conversationId, userId];
         const messages = await db.select('messages', '*', where, params, 'created_at', limit);
         return messages.reverse();
     }
 
-    async getHistory(conversationId, limit = 20, userId = null) {
+    async getHistory(conversationId, limit = 20, userId) {
+        if (!userId) throw new Error('userId is required to read conversation history');
         const msgs = await this.getMessages(conversationId, limit, userId);
         return msgs.map(m => ({
             role: m.direction === 'inbound' ? 'user' : 'assistant',
@@ -179,23 +185,25 @@ class ConversationService {
             phone: contact?.phone || '',
             company: contact?.company || '',
             city: contact?.city || '',
-            marketing_opt_in: contact?.marketing_opt_in || 1,
+            marketing_opt_in: contact?.marketing_opt_in ?? 1,
             jid: contact?.jid || null,
             is_lid: contact?.is_lid || 0,
         };
     }
 
-    async setAIEnabled(conversationId, enabled, userId = null) {
-        const where = userId ? 'id = ? AND user_id = ?' : 'id = ?';
-        const params = userId ? [conversationId, userId] : [conversationId];
+    async setAIEnabled(conversationId, enabled, userId) {
+        if (!userId) throw new Error('userId is required to update a conversation');
+        const where = 'id = ? AND user_id = ?';
+        const params = [conversationId, userId];
         await db.update('conversations', {
             ai_enabled: enabled ? 1 : 0,
         }, where, params);
     }
 
-    async setStatus(conversationId, status, userId = null) {
-        const where = userId ? 'id = ? AND user_id = ?' : 'id = ?';
-        const params = userId ? [conversationId, userId] : [conversationId];
+    async setStatus(conversationId, status, userId) {
+        if (!userId) throw new Error('userId is required to update a conversation');
+        const where = 'id = ? AND user_id = ?';
+        const params = [conversationId, userId];
         await db.update('conversations', {
             status,
         }, where, params);
@@ -207,15 +215,17 @@ class ConversationService {
         }
     }
 
-    async markRead(conversationId, userId = null) {
-        const where = userId ? 'id = ? AND user_id = ?' : 'id = ?';
-        const params = userId ? [conversationId, userId] : [conversationId];
+    async markRead(conversationId, userId) {
+        if (!userId) throw new Error('userId is required to update a conversation');
+        const where = 'id = ? AND user_id = ?';
+        const params = [conversationId, userId];
         await db.update('conversations', {
             unread_count: 0,
         }, where, params);
     }
 
     async delete(conversationId, userId) {
+        if (!userId) throw new Error('userId is required to delete a conversation');
         await db.del('messages', 'conversation_id = ? AND user_id = ?', [conversationId, userId]);
         await db.del('conversations', 'id = ? AND user_id = ?', [conversationId, userId]);
     }
@@ -226,14 +236,15 @@ class ConversationService {
         }
     }
 
-    async incrementReplyCount(campaignId, userId = null) {
+    async incrementReplyCount(campaignId, userId) {
+        if (!userId) throw new Error('userId is required to update a campaign');
         // Supabase doesn't support atomic increment directly
         // We need to get, increment, and update
         const campaign = await db.getById('campaigns', campaignId, userId);
         if (campaign) {
             await db.update('campaigns', {
                 replies: (campaign.replies || 0) + 1,
-            }, userId ? 'id = ? AND user_id = ?' : 'id = ?', userId ? [campaignId, userId] : [campaignId]);
+            }, 'id = ? AND user_id = ?', [campaignId, userId]);
         }
     }
 

@@ -6,6 +6,7 @@ const ALLOWED_ORIGINS = [
     'https://ai-whats-app-business-automation-suite-zig-ai-0909s-projects.vercel.app',
     'https://ai-whats-app-business-automation-su-theta.vercel.app',
     'http://localhost:5173',
+    ...(process.env.ALLOWED_ORIGINS || '').split(',').map(origin => origin.trim()).filter(Boolean),
 ];
 const VERCEL_PREVIEW_REGEX = new RegExp('^(https://ai-[a-z0-9-]+-whats-app-business-automation-suite-zig-ai-0909s-projects\\.vercel\\.app)$');
 

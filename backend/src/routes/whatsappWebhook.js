@@ -1,12 +1,8 @@
-// =============================================================
-// WhatsApp Business API webhook — public route (Meta calls it).
+﻿// =============================================================
+// WhatsApp Business API webhook â€” public route (Meta calls it).
 //
-// SECURITY: every POST is verified against Meta's X-Hub-Signature-256
-// HMAC-SHA256 signature before the payload is parsed. The key is the
-// per-user app secret (each user configures their own WABA); any user
-// with a configured app secret participates in verification. Rejecting
-// unsigned payloads prevents anyone from injecting fake "incoming
-// messages" (and thus AI-generated replies) into any tenant.
+// SECURITY: every POST is verified with the app secret of the user who owns
+// the phone_number_id. The environment app secret is used only as fallback.
 //
 // GET (subscription handshake) uses the per-user webhook verify token,
 // falling back to the env-level token so single-tenant env setups and
@@ -24,7 +20,7 @@ const incomingMessageService = require('../conversations/incomingMessageService'
  * (the signed payload is the raw JSON string; an inner "data" key with
  * a JSON string value is unwrapped before the second check).
  */
-function verifyMetaSignature(rawBody, signatureHeader, appSecrets) {
+function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
     if (!signatureHeader || typeof signatureHeader !== 'string') return false;
     const expected = 'sha256=';
     if (!signatureHeader.startsWith(expected)) return false;
@@ -33,7 +29,7 @@ function verifyMetaSignature(rawBody, signatureHeader, appSecrets) {
     const provided = signatureHeader.slice(expected.length).trim();
     if (!/^[0-9a-f]{64}$/i.test(provided)) return false;
     const hmac = (payload) =>
-        crypto.createHmac('sha256', appSecrets).update(payload).digest('hex');
+        crypto.createHmac('sha256', appSecret).update(payload).digest('hex');
 
     const rawValid = crypto.timingSafeEqual(
         Buffer.from(provided.toLowerCase(), 'hex'),
@@ -56,43 +52,6 @@ function verifyMetaSignature(rawBody, signatureHeader, appSecrets) {
     return false;
 }
 
-/**
- * Collect every app secret configured in the system: the env-level WABA
- * app secret plus any per-user app_settings row (key APP_SECRET, value
- * JSON string containing appSecret/app_secret). Returns unique non-empty
- * secrets so verification works for any configured tenant.
- */
-async function collectAppSecrets() {
-    const secrets = new Set();
-    const envSecret = process.env.WABA_APP_SECRET || process.env.META_APP_SECRET || '';
-    if (envSecret) secrets.add(envSecret);
-
-    try {
-        const db = require('../database/db');
-        if (db.isAvailable()) {
-            const rows = await db.select('app_settings', 'value', 'key = ?', ['APP_SECRET'], '', 100, 0);
-            const { decryptSettingIfSecret } = require('../utils/encryption');
-            for (const row of rows) {
-                // APP_SECRET is a secret-bearing key → decrypt (legacy
-                // plaintext passes through unchanged).
-                const value = decryptSettingIfSecret('APP_SECRET', typeof row?.value === 'string' ? row.value : '');
-                if (!value) continue;
-                try {
-                    const parsed = JSON.parse(value);
-                    for (const key of ['appSecret', 'app_secret', 'APP_SECRET']) {
-                        if (typeof parsed?.[key] === 'string' && parsed[key]) secrets.add(parsed[key]);
-                    }
-                } catch {
-                    if (value.length >= 16) secrets.add(value);
-                }
-            }
-        }
-    } catch (error) {
-        console.error('[webhook] failed to load app secrets for signature verification:', error.message);
-    }
-    return [...secrets];
-}
-
 // Meta webhook verification handshake (GET).
 router.get('/', async (req, res) => {
     try {
@@ -110,7 +69,7 @@ router.get('/', async (req, res) => {
                 const { decryptSettingIfSecret } = require('../utils/encryption');
                 storedTokens = rows
                     .map((row) => {
-                        // Stored tokens are secret-bearing → decrypt (legacy
+                        // Stored tokens are secret-bearing â†’ decrypt (legacy
                         // plaintext passes through unchanged).
                         const value = decryptSettingIfSecret(row?.key ?? '', typeof row?.value === 'string' ? row.value : '');
                         try { return JSON.parse(value)?.verifyToken || ''; } catch { return value; }
@@ -139,34 +98,33 @@ router.get('/', async (req, res) => {
     }
 });
 
-// Incoming WhatsApp events (POST) — signature-verified.
+// Incoming WhatsApp events (POST) â€” signature-verified.
 router.post('/', async (req, res) => {
     try {
         const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(JSON.stringify(req.body ?? {}));
         // req.rawBody is captured by the express.json verify callback in server.js.
         const signature = req.get('X-Hub-Signature-256');
-        const appSecrets = await collectAppSecrets();
-
-        if (!appSecrets.length) {
-            // Fail closed: without any configured app secret we cannot
-            // verify anything, so no payload is processed.
-            console.error('[webhook] no WABA app secret configured — rejecting unsigned webhook POST');
+        let parsed;
+        try {
+            parsed = JSON.parse(rawBody.toString('utf8'));
+        } catch {
+            return res.sendStatus(400);
+        }
+        const { message, phoneNumberId } = businessApiProvider.normalizeWebhook(parsed);
+        const userId = phoneNumberId ? await businessApiProvider.findUserIdByPhoneNumberId(phoneNumberId) : null;
+        const appSecret = (userId && await businessApiProvider.getAppSecret(userId))
+            || process.env.WABA_APP_SECRET
+            || process.env.META_APP_SECRET
+            || '';
+        if (!appSecret) {
+            console.error('[webhook] no app secret configured for owning user â€” rejecting POST');
             return res.sendStatus(403);
         }
-
-        const verified = appSecrets.some((secret) => verifyMetaSignature(rawBody, signature, secret));
-        if (!verified) {
-            console.warn('[webhook] invalid or missing X-Hub-Signature-256 — payload rejected');
+        if (!verifyMetaSignature(rawBody, signature, appSecret)) {
+            console.warn('[webhook] invalid or missing X-Hub-Signature-256 â€” payload rejected');
             return res.sendStatus(401);
         }
-
-        const parsed = JSON.parse(rawBody.toString('utf8'));
-        const { message, phoneNumberId } = businessApiProvider.normalizeWebhook(parsed);
-        if (!message) return res.sendStatus(200);
-
-        // Attribute the message to the user who configured this number.
-        const userId = businessApiProvider.findUserIdByPhoneNumberId(phoneNumberId);
-        if (!userId) return res.sendStatus(200);
+        if (!message || !userId) return res.sendStatus(200);
 
         const sendMessage = (phone, body, jid, media, buttons) =>
             businessApiProvider.sendMessage(userId, phone, body, media, buttons);

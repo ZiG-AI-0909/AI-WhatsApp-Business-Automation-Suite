@@ -1,7 +1,8 @@
 const db = require('../database/db');
 
 class KnowledgeBase {
-    getRelevantContext(query, maxChunks = 5, userId = null) {
+    getRelevantContext(query, maxChunks = 5, userId) {
+        if (!userId) throw new Error('userId is required for knowledge retrieval');
         try {
             const queryWords = query.toLowerCase()
                 .replace(/[^\w\s]/g, '')
@@ -24,10 +25,8 @@ class KnowledgeBase {
             // from this store (it answers from ai/builtInKnowledge.js),
             // so a user's own internal_only docs are likewise excluded
             // from every customer reply.
-            const docWhere = userId
-                ? 'user_id = ? AND status = ? AND internal_only = ?'
-                : 'status = ? AND internal_only = ?';
-            const docParams = userId ? [userId, 'active', false] : ['active', false];
+            const docWhere = 'user_id = ? AND status = ? AND internal_only = ?';
+            const docParams = [userId, 'active', false];
 
             // Fetch active documents first, then their chunks. Alias-prefixed
             // columns and "as" aliases are not valid PostgREST, and the

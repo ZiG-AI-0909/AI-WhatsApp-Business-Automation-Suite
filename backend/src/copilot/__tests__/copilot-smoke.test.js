@@ -29,7 +29,7 @@ const state = {
                 id: 1, user_id: USER_A, phone: '919812345678', name: 'Ramesh Patel',
                 company: 'Patel Hardware', city: 'Pune', email: 'ramesh@example.com',
                 tags: JSON.stringify(['dealer', 'hot lead']), notes: 'Prefers evening calls. Asked about bulk discounts last time.',
-                marketing_opt_in: 1, last_message_at: '2026-09-14T10:00:00Z',
+                marketing_opt_in: 0, last_message_at: '2026-09-14T10:00:00Z',
             },
             // User B has their own distinct contact.
             {

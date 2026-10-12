@@ -8,6 +8,11 @@
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
+const fs = require('fs');
+
+// Keep the legacy local media directory available for deployments or routes
+// that still use disk-backed uploads during the Storage transition.
+fs.mkdirSync(path.join(__dirname, '..', '..', '..', 'campaign-media'), { recursive: true });
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || '';
