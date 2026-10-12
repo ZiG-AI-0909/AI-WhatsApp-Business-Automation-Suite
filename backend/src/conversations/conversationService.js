@@ -49,12 +49,33 @@ class ConversationService {
         }, convWhere, convParams);
 
         if (direction === 'inbound') {
-            // Increment unread count
-            const conv = await db.getById('conversations', conversationId, userId);
-            if (conv) {
-                await db.update('conversations', {
-                    unread_count: conv.unread_count + 1,
-                }, convWhere, convParams);
+            let incrementedByRpc = false;
+            if (userId) {
+                const { supabase, isAvailable } = require('../database/supabaseClient');
+                if (isAvailable() && typeof supabase?.rpc === 'function') {
+                    try {
+                        const { error } = await supabase.rpc('increment_unread', {
+                            p_conversation_id: conversationId,
+                            p_user_id: userId,
+                        });
+                        if (error) {
+                            console.warn('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
+                        } else {
+                            incrementedByRpc = true;
+                        }
+                    } catch (error) {
+                        console.warn('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
+                    }
+                }
+            }
+
+            if (!incrementedByRpc) {
+                const conv = await db.getById('conversations', conversationId, userId);
+                if (conv) {
+                    await db.update('conversations', {
+                        unread_count: (conv.unread_count || 0) + 1,
+                    }, convWhere, convParams);
+                }
             }
         }
         return true;
