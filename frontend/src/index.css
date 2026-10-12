@@ -366,6 +366,22 @@ h2, h3 {
   white-space: normal;
 }
 
+.schedule-estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: normal;
+}
+
+.schedule-estimate strong {
+  color: var(--text-primary);
+}
+
+.schedule-estimate small {
+  color: var(--text-muted);
+  white-space: normal;
+}
+
 .tag {
   background: var(--success-bg);
   color: var(--success-text);

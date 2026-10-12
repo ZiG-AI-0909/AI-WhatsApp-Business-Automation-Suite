@@ -230,19 +230,44 @@ class MessageQueue {
 
     _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+    /**
+     * Resume any campaign left running/paused by a restart. Ownership comes
+     * from the row's own user_id — each resumed campaign sends only through
+     * its owner's session.
+     *
+     * Returns { ok: boolean, resumed?: string|null } so server.js can RETRY
+     * with backoff when the DB is unreachable at boot (never give up for
+     * the whole process lifetime).
+     *
+     * Idempotent: a second call while a worker is already loaded (or while
+     * the same campaign was already resumed) returns ok without starting a
+     * second _process() loop for the same owner.
+     */
     async resumeInterrupted(io) {
         this.setIO(io);
-        // Resume any campaign left running/paused by a restart. Ownership
-        // comes from the row's own user_id — each resumed campaign sends
-        // only through its owner's session.
-        const campaigns = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', 10, 0);
-        if (!campaigns || campaigns.length === 0) return;
+        // Idempotency: a worker is already loaded and running/paused for an
+        // owner — do NOT stack a second one.
+        if (this._running && this._campaignId) {
+            return { ok: true, resumed: this._campaignId, alreadyRunning: true };
+        }
+        let campaigns = [];
+        try {
+            campaigns = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', 10, 0);
+        } catch (error) {
+            // Transient DB outage: report failure so the caller can retry.
+            // HTTP and the scheduler boot regardless — only the resume is
+            // deferred.
+            console.error('[messageQueue] resumeInterrupted: could not read campaigns — will retry:', error.message);
+            return { ok: false, error: error.message };
+        }
+        if (!campaigns || campaigns.length === 0) return { ok: true, resumed: null };
         const activeCampaign = campaigns[0];
         this._campaignId = activeCampaign.id;
         this._ownerUserId = activeCampaign.user_id || null;
         if (!this._ownerUserId) {
             console.warn(`[messageQueue] campaign ${activeCampaign.id} has no user_id; skipping resume`);
-            return;
+            this._campaignId = null;
+            return { ok: true, resumed: null };
         }
         this._running = true;
         this._paused = activeCampaign.status === 'paused';
@@ -251,6 +276,7 @@ class MessageQueue {
         try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
         this._rateLimiter = new RateLimiter(settings);
         if (!this._paused) this._processPromise = this._process().catch(console.error);
+        return { ok: true, resumed: activeCampaign.id };
     }
 
     static isOptOut(message) { return OPT_OUT_PATTERNS.some(pattern => pattern.test(message)); }

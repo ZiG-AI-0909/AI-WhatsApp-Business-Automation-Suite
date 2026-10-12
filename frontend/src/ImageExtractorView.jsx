@@ -5,7 +5,7 @@ import Badge from './components/Badge';
 import EmptyState from './components/EmptyState.jsx'
 import ProductIdentifyView from './ProductIdentifyView.jsx'
 // Shared auth/request helpers (also used by the Identify Product mode).
-import { request, friendlyErrorMessage } from './imageExtractorApi.js'
+import { request, friendlyErrorMessage, API, authHeaders } from './imageExtractorApi.js'
 
 const listValue = (value) => Array.isArray(value) ? value.join(', ') : value || '-'
 const MAX_FILES = 100
