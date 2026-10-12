@@ -11,5 +11,4 @@ backups/
 justhr_leads.xlsx
 leads.json
 memory.json
-backend/test-fixtures/private/
 leads_*.xlsx

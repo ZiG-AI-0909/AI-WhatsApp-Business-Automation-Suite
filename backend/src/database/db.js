@@ -18,10 +18,6 @@ const TABLES = {
     campaign_schedules: 'campaign_schedules',
     image_leads: 'image_leads',
     app_settings: 'app_settings',
-    price_list: 'price_list',
-    quotations: 'quotations',
-    quotation_items: 'quotation_items',
-    quotation_counters: 'quotation_counters',
 };
 
 // ─── JSON fields that need parsing after fetch ───────────────
@@ -37,7 +33,6 @@ const JSON_FIELDS = {
     messages: [],
     templates: [],
     app_settings: [],
-    price_list: [], quotations: [], quotation_items: [], quotation_counters: [],
 };
 
 // ─── Helper functions ────────────────────────────────────────
