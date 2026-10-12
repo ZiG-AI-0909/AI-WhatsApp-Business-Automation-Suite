@@ -111,8 +111,6 @@ app.use('/api/schedules', requireAuth, require('./middleware/rateLimiterMiddlewa
 app.use('/api/image-extractor', requireAuth, require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
 app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
 app.use('/api/boq', requireAuth, require('./routes/boq').router);
-app.use('/api/price-list', requireAuth, require('./routes/priceList'));
-app.use('/api/quotations', requireAuth, require('./routes/quotations'));
 app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
 
 app.use('/api', requireAuth, (req, res) => {

@@ -7,7 +7,6 @@ import WelcomeAuthPage from './WelcomeAuthPage.jsx'
 import ImageExtractorView from './ImageExtractorView.jsx'
 import AskAiView from './AskAiView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
-import PriceListView from './PriceListView.jsx'
 import CopilotPanel from './CopilotPanel.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
@@ -30,7 +29,6 @@ const navItems = [
   'Knowledge Base',
   'Ask AI',
   'Document Intelligence',
-  'Price List',
   'Analytics',
   'Settings',
   'Image Extractor',
@@ -1155,7 +1153,6 @@ function App() {
     if (activeView === 'Knowledge Base') return <KnowledgeBaseView />
     if (activeView === 'Ask AI') return <AskAiView />
     if (activeView === 'Document Intelligence') return <DocumentIntelView />
-    if (activeView === 'Price List') return <PriceListView />
     if (activeView === 'Analytics') return <AnalyticsView onNavigate={setActiveView} />
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
