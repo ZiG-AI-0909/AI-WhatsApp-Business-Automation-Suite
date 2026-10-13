@@ -57,6 +57,7 @@ async function authHeader() {
 const REQUEST_TIMEOUT_MS = 30000
 const ENDPOINT_TIMEOUT_MS = {
   '/campaigns/validate-excel': 90000, // file upload, storage, and workbook validation
+  '/campaigns': 120000, // create and persist all contacts for larger multi-sheet workbooks
   '/boq/process': 180000, // server wall budget is 150s (BOQ_TOTAL_BUDGET_MS) — covers parsing + page rendering + parallel OCR + every AI chunk + margin
 }
 

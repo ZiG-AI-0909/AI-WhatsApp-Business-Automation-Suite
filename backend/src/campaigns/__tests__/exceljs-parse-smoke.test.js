@@ -79,6 +79,25 @@ async function buildWorkbook(rows) {
     return Buffer.from(buffer);
 }
 
+async function buildMultiSheetWorkbook() {
+    const workbook = new ExcelJS.Workbook();
+    const first = workbook.addWorksheet('First');
+    first.addRow(['Name', 'Phone', 'City']);
+    first.addRow(['Raj', '919812345678', 'Pune']);
+    first.addRow(['Bad row', '', 'Mumbai']);
+
+    const second = workbook.addWorksheet('Second');
+    second.addRow(['Owner', 'Second list']);
+    second.addRow(['DEALER NAME', 'PLACE', 'PHONE']);
+    second.addRow(['Amit', 'Bengaluru', '919812345679']);
+    second.addRow(['Duplicate', 'Pune', '919812345678']);
+
+    const notes = workbook.addWorksheet('Notes');
+    notes.addRow(['Instructions']);
+    notes.addRow(['Phone values are listed on the other sheets.']);
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
 async function test1_validateExcelBufferParsesUpload() {
     console.log('▶ Test 1: validateExcelBuffer parses a real xlsx upload (async)');
     const buffer = await buildWorkbook([
@@ -99,8 +118,24 @@ async function test1_validateExcelBufferParsesUpload() {
     console.log('✅ Test 1 passed\n');
 }
 
+async function test2_allContactSheetsAreCombined() {
+    console.log('▶ Test 2: combine contact sheets with headers below title rows');
+    const parsed = await excelParser.parseBuffer(await buildMultiSheetWorkbook(), { countryCode: '91' });
+    assert.equal(parsed.rows.length, 4, 'rows from both contact sheets are included');
+    assert.equal(parsed.validation.total, 4);
+    assert.equal(parsed.validation.valid, 2);
+    assert.equal(parsed.validation.invalid, 1);
+    assert.equal(parsed.validation.duplicates, 1, 'duplicates are detected across sheets');
+    assert.equal(parsed.validation.errors[0].sheet, 'First');
+    assert.equal(parsed.validation.errors[1].sheet, 'Second');
+    assert.deepEqual(parsed.ignoredSheets, ['Notes']);
+    assert.ok(parsed.allColumns.includes('dealer_name'));
+    assert.ok(parsed.allColumns.includes('city'));
+    console.log('✅ Test 2 passed\n');
+}
+
 async function test2_previewMessagesRendersFromParsedRows() {
-    console.log('▶ Test 2: previewMessages renders template vars from parsed rows');
+    console.log('▶ Test 3: previewMessages renders template vars from parsed rows');
     // previewMessages/create take a file path or storage URL (the route
     // uploads the file first), so exercise the readFile path via a temp file.
     const buffer = await buildWorkbook([
@@ -118,7 +153,7 @@ async function test2_previewMessagesRendersFromParsedRows() {
     } finally {
         fs.unlinkSync(tmp);
     }
-    console.log('✅ Test 2 passed\n');
+    console.log('✅ Test 3 passed\n');
 }
 
 async function test3_csvExportHelper() {
@@ -184,6 +219,7 @@ async function test5_xlsxPackageGone() {
 async function main() {
     try {
         await test1_validateExcelBufferParsesUpload();
+        await test2_allContactSheetsAreCombined();
         await test2_previewMessagesRendersFromParsedRows();
         await test3_csvExportHelper();
         await test4_excelExportProducesValidXlsx();

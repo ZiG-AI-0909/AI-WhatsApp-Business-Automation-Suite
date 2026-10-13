@@ -61,11 +61,13 @@ class CampaignService {
             ...result.validation,
             dynamicFields,
             phoneColumn: result.phoneColumn,
+            ignoredSheets: result.ignoredSheets,
             countryCode: resolvedCode,
             countryName: findCountry(resolvedCode)?.name || null,
             previewRows: validRows.slice(0, 3).map(r => {
                 const preview = { ...r };
                 delete preview._rowIndex;
+                delete preview._sheetName;
                 delete preview._valid;
                 return preview;
             }),
@@ -82,11 +84,13 @@ class CampaignService {
             ...result.validation,
             dynamicFields,
             phoneColumn: result.phoneColumn,
+            ignoredSheets: result.ignoredSheets,
             countryCode: resolvedCode,
             countryName: findCountry(resolvedCode)?.name || null,
             previewRows: validRows.slice(0, 3).map(r => {
                 const preview = { ...r };
                 delete preview._rowIndex;
+                delete preview._sheetName;
                 delete preview._valid;
                 return preview;
             }),
@@ -154,35 +158,48 @@ class CampaignService {
 
         const campaignId = campaign.id;
 
-        // Upsert contacts and create campaign_contacts entries
-        for (const row of validRows) {
-            const phone = row[result.phoneColumn] || row._phone;
-            const contact = await contactService.upsert(phone, {
+        const contactEntries = validRows.map(row => ({
+            phone: row[result.phoneColumn] || row._phone,
+            data: {
                 name: row.name || row.Name || '',
                 company: row.company || row.Company || '',
                 city: row.city || row.City || '',
-            }, userId);
+            },
+        }));
+        const contactsByPhone = await contactService.upsertMany(contactEntries, userId);
+        const membershipBatchSize = 100;
 
-            // Check opt-out
-            if (!contact.marketing_opt_in) {
-                await db.insert('campaign_contacts', {
+        // Insert campaign memberships in batches so large workbooks don't
+        // require one database round trip per contact.
+        for (let offset = 0; offset < validRows.length; offset += membershipBatchSize) {
+            const membershipRows = [];
+            for (const row of validRows.slice(offset, offset + membershipBatchSize)) {
+                const phone = row[result.phoneColumn] || row._phone;
+                const contact = contactsByPhone.get(contactService._cleanPhone(phone));
+                if (!contact) throw new Error(`Failed to resolve imported contact on row ${row._rowIndex}.`);
+
+                // Check opt-out
+                if (!contact.marketing_opt_in) {
+                    membershipRows.push({
+                        campaign_id: campaignId,
+                        contact_id: contact.id,
+                        rendered_message: null,
+                        status: 'opted_out',
+                        user_id: userId,
+                    });
+                    continue;
+                }
+
+                const rendered = fieldRenderer.render(templateMessage, row, { strict: !allowMissingFields });
+                membershipRows.push({
                     campaign_id: campaignId,
                     contact_id: contact.id,
-                    rendered_message: null,
-                    status: 'opted_out',
+                    rendered_message: rendered,
+                    status: 'pending',
                     user_id: userId,
                 });
-                continue;
             }
-
-            const rendered = fieldRenderer.render(templateMessage, row, { strict: !allowMissingFields });
-            await db.insert('campaign_contacts', {
-                campaign_id: campaignId,
-                contact_id: contact.id,
-                rendered_message: rendered,
-                status: 'pending',
-                user_id: userId,
-            });
+            await db.insertMany('campaign_contacts', membershipRows);
         }
 
         const created = await db.getById('campaigns', campaignId, userId);

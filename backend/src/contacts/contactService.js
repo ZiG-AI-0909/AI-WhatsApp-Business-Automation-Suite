@@ -3,6 +3,83 @@ const { supabase, isAvailable } = require('../database/supabaseClient');
 const { parseJsonField } = require('../utils/jsonField');
 
 class ContactService {
+    async upsertMany(entries, userId) {
+        if (!userId) throw new Error('userId is required for contact upsert');
+        const result = new Map();
+        const batchSize = 100;
+
+        for (let offset = 0; offset < entries.length; offset += batchSize) {
+            const batch = entries.slice(offset, offset + batchSize).map(({ phone, data = {} }) => ({
+                phone: this._cleanPhone(phone),
+                data,
+            }));
+            if (batch.some(({ phone }) => phone.length < 10 || phone.length > 15)) {
+                throw new Error('Invalid phone number in contact batch');
+            }
+
+            const existingRows = await db.select(
+                'contacts',
+                '*',
+                'user_id = ? AND phone IN (?)',
+                [userId, batch.map(({ phone }) => phone)],
+            );
+            const existingByPhone = new Map(existingRows.map(contact => [contact.phone, contact]));
+            const inserts = [];
+            const updates = [];
+
+            for (const { phone, data } of batch) {
+                const existing = existingByPhone.get(phone);
+                if (!existing) {
+                    inserts.push({
+                        phone,
+                        name: data.name || '',
+                        email: this._cleanEmail(data.email),
+                        company: data.company || '',
+                        city: data.city || '',
+                        tags: JSON.stringify(data.tags || []),
+                        notes: data.notes || '',
+                        marketing_opt_in: data.marketing_opt_in !== false ? 1 : 0,
+                        jid: data.jid || null,
+                        is_lid: data.is_lid ? 1 : 0,
+                        user_id: userId,
+                    });
+                    continue;
+                }
+
+                const changes = {};
+                if (typeof data.name === 'string' && data.name.trim()) changes.name = data.name;
+                if (data.email !== undefined) changes.email = this._cleanEmail(data.email);
+                if (data.company !== undefined) changes.company = data.company;
+                if (data.city !== undefined) changes.city = data.city;
+                if (data.tags !== undefined) changes.tags = JSON.stringify(data.tags);
+                if (data.notes !== undefined) changes.notes = data.notes;
+                if (data.marketing_opt_in !== undefined) changes.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
+                if (data.jid) changes.jid = data.jid;
+                if (data.is_lid !== undefined) changes.is_lid = data.is_lid ? 1 : 0;
+                updates.push({ phone, existing, changes });
+            }
+
+            if (inserts.length) {
+                const insertedRows = await db.insertMany('contacts', inserts);
+                for (const contact of insertedRows) result.set(contact.phone, this._parse(contact));
+            }
+
+            for (let i = 0; i < updates.length; i += 25) {
+                await Promise.all(updates.slice(i, i + 25).map(async ({ phone, existing, changes }) => {
+                    if (Object.keys(changes).length) {
+                        const updated = await db.update('contacts', changes, 'phone = ? AND user_id = ?', [phone, userId]);
+                        if (!updated[0]) throw new Error('Failed to update an imported contact');
+                        result.set(phone, this._parse(updated[0]));
+                    } else {
+                        result.set(phone, this._parse(existing));
+                    }
+                }));
+            }
+        }
+
+        return result;
+    }
+
     async upsert(phone, data = {}, userId) {
         if (!userId) throw new Error('userId is required for contact upsert');
         const clean = this._cleanPhone(phone);
