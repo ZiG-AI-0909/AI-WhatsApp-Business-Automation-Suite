@@ -7,7 +7,6 @@ const {
     excelStorageConfig,
     campaignMediaStorageConfig,
     uploadToStorage,
-    downloadFromStorage,
     BUCKETS,
 } = require('../middleware/upload');
 const { respondIfInvalidUpload } = require('../middleware/fileValidation');
@@ -93,9 +92,9 @@ router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
         // multipart request. When absent, the account's Settings default is used.
         const countryCode = req.body?.countryCode || null;
 
-        // Download the stored file and parse it to validate the contact columns.
-        const fileData = await downloadFromStorage(excelStorageConfig.bucket, stored.filename);
-        const result = await campaignService.validateExcelBuffer(fileData, { countryCode }, req.user.id);
+        // Parse the in-memory upload instead of downloading the just-uploaded
+        // file again; the stored path is retained for campaign creation.
+        const result = await campaignService.validateExcelBuffer(req.file.buffer, { countryCode }, req.user.id);
         res.json({
             filePath: stored.path,
             filename: stored.filename,

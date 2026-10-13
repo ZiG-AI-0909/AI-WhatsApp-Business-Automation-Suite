@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { io } from 'socket.io-client'
 import './App.css'
 import LandingPage from './LandingPage.jsx'
@@ -534,24 +534,41 @@ const WHATSAPP_BUSINESS_ERROR_RULES = [
 function ConnectionView() {
   const [status, setStatus] = useState({ provider: '', status: 'checking', qrAvailable: false })
   const [qr, setQr] = useState('')
+  const qrRef = useRef('')
+  const statusRef = useRef(status)
+  const pollingRef = useRef(false)
   const [credentials, setCredentials] = useState({ phoneNumberId: '', accessToken: '', verifyToken: '' })
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
 
   const loadStatus = async () => {
+    if (pollingRef.current) return
+    pollingRef.current = true
     try {
       const nextStatus = await apiFetch('/whatsapp/status')
       console.log('[wa-qr] poll /whatsapp/status →', nextStatus)
+      statusRef.current = nextStatus
       setStatus(nextStatus)
-      if (nextStatus.qrAvailable && !qr) {
-        console.log('[wa-qr] server reports qrAvailable — fetching /whatsapp/qr')
-        const qrResponse = await apiFetch('/whatsapp/qr')
-        console.log('[wa-qr] /whatsapp/qr returned', qrResponse.qrDataUrl ? 'a QR data URL' : 'NOTHING')
-        setQr(qrResponse.qrDataUrl)
-      } else if (!nextStatus.qrAvailable) {
+      if (nextStatus.status === 'connected' || !nextStatus.qrAvailable) {
+        qrRef.current = ''
         setQr('')
+      } else if (nextStatus.qrAvailable && !qrRef.current) {
+        console.log('[wa-qr] server reports qrAvailable — fetching /whatsapp/qr')
+        try {
+          const qrResponse = await apiFetch('/whatsapp/qr')
+          console.log('[wa-qr] /whatsapp/qr returned', qrResponse.qrDataUrl ? 'a QR data URL' : 'NOTHING')
+          if (statusRef.current.status === 'connected' || !statusRef.current.qrAvailable) return
+          qrRef.current = qrResponse.qrDataUrl || ''
+          setQr(qrRef.current)
+        } catch (error) {
+          if (error.status !== 404) throw error
+          qrRef.current = ''
+          setQr('')
+          setStatus((current) => ({ ...current, qrAvailable: false }))
+        }
       }
     } catch (error) { console.error('[wa-qr] status/qr poll failed:', error); setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'WhatsApp connection', log: false }) }) }
+    finally { pollingRef.current = false }
   }
 
   useEffect(() => {
@@ -575,11 +592,14 @@ function ConnectionView() {
   const loadQr = async () => {
     try {
       const response = await apiFetch('/whatsapp/qr')
-      setQr(response.qrDataUrl)
+      qrRef.current = response.qrDataUrl || ''
+      setQr(qrRef.current)
     } catch (error) {
       if (error.message === 'No QR code available') {
         try {
           await apiFetch('/whatsapp/reconnect', { method: 'POST' })
+          qrRef.current = ''
+          setQr('')
           setNotice({ type: 'success', text: 'Generating a fresh QR code. Please wait a few seconds.' })
           return
         } catch (reconnectError) {

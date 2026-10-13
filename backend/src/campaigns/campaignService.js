@@ -282,11 +282,13 @@ class CampaignService {
             params.push(status);
         }
 
-        const result = await db.paginate('campaign_contacts', where, params, 'id', 'asc', limit, (page - 1) * limit);
-        
-        // Fetch contact details for each row
-        const data = await Promise.all(result.data.map(async (cc) => {
-            const contact = await db.getById('contacts', cc.contact_id, userId);
+        const [total, rows] = await Promise.all([
+            db.count('campaign_contacts', where, params),
+            db.select('campaign_contacts', '*, contacts(phone, name, company, city)', where, params, 'id asc', limit, (page - 1) * limit),
+        ]);
+
+        const data = rows.map((cc) => {
+            const contact = cc.contacts;
             return {
                 ...cc,
                 phone: contact?.phone || '',
@@ -294,9 +296,9 @@ class CampaignService {
                 company: contact?.company || '',
                 city: contact?.city || '',
             };
-        }));
+        });
 
-        return { total: result.total, page, limit, data };
+        return { total, page, limit, data };
     }
 
     async stats(userId) {
