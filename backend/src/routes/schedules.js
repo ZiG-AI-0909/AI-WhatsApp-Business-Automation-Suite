@@ -53,6 +53,26 @@ router.post('/bulk-delete', async (req, res) => {
     }
 });
 
+// NOTE: registered BEFORE '/:id' so Express does not route
+// 'estimates' as an :id.
+router.get('/estimates', async (req, res) => {
+    try {
+        res.json((await schedulerService.estimates(req.user.id)).filter(Boolean));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.get('/:id/estimate', async (req, res) => {
+    try {
+        const estimate = await schedulerService.estimateRun(+req.params.id, req.user.id);
+        if (!estimate) return res.status(404).json({ error: 'Not found' });
+        res.json(estimate);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 router.get('/:id', async (req, res) => {
     try {
         const schedule = await schedulerService.get(+req.params.id, req.user.id);

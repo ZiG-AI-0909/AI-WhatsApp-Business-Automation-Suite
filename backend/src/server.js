@@ -146,7 +146,31 @@ async function startServer() {
 
         // Sessions are created lazily per user on demand — nothing global
         // to initialize at startup. Interrupted campaigns resume per owner.
-        await messageQueue.resumeInterrupted(io);
+        // Boot resilience: if the DB read fails (transient outage), retry
+        // with exponential backoff — 5s, doubling, capped at 60s, stopping
+        // after success. HTTP and the scheduler boot NORMALLY while retrying
+        // (listen() happens right after the first attempt is SCHEDULED, not
+        // after it succeeds).
+        const startResumeRetries = () => {
+            let delay = 5000;
+            const attempt = async () => {
+                try {
+                    const result = await messageQueue.resumeInterrupted(io);
+                    if (result?.ok) {
+                        if (result.resumed) console.log(`[boot] interrupted campaign ${result.resumed} resumed.`);
+                        return; // done (success or nothing to resume)
+                    }
+                    throw new Error(result?.error || 'resume failed');
+                } catch (error) {
+                    const wait = delay;
+                    delay = Math.min(delay * 2, 60000);
+                    console.error(`[boot] resume retry in ${Math.round(wait / 1000)}s: ${error.message}`);
+                    setTimeout(attempt, wait);
+                }
+            };
+            attempt(); // never awaited — retries continue in the background
+        };
+        startResumeRetries();
         schedulerService.startPolling(io);
         server.listen(PORT, () => {
             console.log(`🚀 Sudarshan Pipes AI Assistant API started on http://localhost:${PORT}`);

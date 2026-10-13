@@ -49,18 +49,37 @@ class ConversationService {
         }, convWhere, convParams);
 
         if (direction === 'inbound') {
-            // Increment unread count
-            const { supabase } = require('../database/supabaseClient');
-            let incremented = false;
-            if (userId && supabase?.rpc) {
-                const result = await supabase.rpc('increment_unread', { p_conversation_id: conversationId, p_user_id: userId });
-                if (!result.error) incremented = true;
-                else if (!['PGRST202', '42883'].includes(result.error.code)) throw result.error;
-                else console.warn('[conversationService] increment_unread RPC missing; using non-atomic fallback');
+            let incrementedByRpc = false;
+            const { supabase, isAvailable } = require('../database/supabaseClient');
+            if (isAvailable() && typeof supabase?.rpc === 'function') {
+                try {
+                    const { error } = await supabase.rpc('increment_unread', {
+                        p_conversation_id: conversationId,
+                        p_user_id: userId,
+                    });
+                    if (error) {
+                        if (!['PGRST202', '42883'].includes(error.code)) {
+                            console.error('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
+                        }
+                    } else {
+                        incrementedByRpc = true;
+                    }
+                } catch (error) {
+                    console.error('[conversations] increment_unread RPC failed; using read-then-write fallback:', error);
+                }
             }
-            if (!incremented) {
-                const conv = await db.getById('conversations', conversationId, userId);
-                if (conv) await db.update('conversations', { unread_count: (conv.unread_count || 0) + 1 }, convWhere, convParams);
+
+            if (!incrementedByRpc) {
+                try {
+                    const conv = await db.getById('conversations', conversationId, userId);
+                    if (conv) {
+                        await db.update('conversations', {
+                            unread_count: (conv.unread_count || 0) + 1,
+                        }, convWhere, convParams);
+                    }
+                } catch (error) {
+                    console.error('[conversations] unread_count fallback failed:', error);
+                }
             }
         }
         return true;

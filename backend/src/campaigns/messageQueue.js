@@ -255,22 +255,37 @@ class MessageQueue {
 
     _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+    /**
+     * Resume any campaign left running/paused by a restart. Ownership comes
+     * from the row's own user_id — each resumed campaign sends only through
+     * its owner's session.
+     *
+     * Returns { ok: boolean, resumed?: string|null } so server.js can RETRY
+     * with backoff when the DB is unreachable at boot (never give up for
+     * the whole process lifetime).
+     *
+     * Idempotent: a second call while a worker is already loaded (or while
+     * the same campaign was already resumed) returns ok without starting a
+     * second _process() loop for the same owner.
+     */
     async resumeInterrupted(io) {
         this.setIO(io);
-        // Resume any campaign left running/paused by a restart. The startup
-        // sweep has no request user context, so it discovers rows globally;
-        // each row is then isolated by its own user_id and one queue per owner.
+
         const pageSize = this._resumePageSize || 1000;
         const campaigns = [];
         let offset = 0;
-        while (true) {
-            const page = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', pageSize, offset);
-            if (!page?.length) break;
-            campaigns.push(...page);
-            offset += page.length;
-            if (page.length < pageSize) break;
+        try {
+            while (true) {
+                const page = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', pageSize, offset);
+                if (!page?.length) break;
+                campaigns.push(...page);
+                offset += page.length;
+                if (page.length < pageSize) break;
+            }
+        } catch (error) {
+            console.error('[messageQueue] resumeInterrupted: could not read campaigns — will retry:', error.message);
+            return { ok: false, error: error.message };
         }
-
         campaigns.sort((a, b) => Number(a.id) - Number(b.id));
         const byOwner = new Map();
         for (const row of campaigns) {
@@ -282,13 +297,34 @@ class MessageQueue {
             byOwner.get(row.user_id).push(row);
         }
 
+        let resumed = null;
+        let alreadyRunning = false;
         for (const [userId, ownerCampaigns] of byOwner) {
+            const existingWorker = this._worker(userId);
+            if (existingWorker?._running && existingWorker._campaignId) {
+                alreadyRunning = true;
+                for (const duplicate of ownerCampaigns) {
+                    if (String(duplicate.id) === String(existingWorker._campaignId)) continue;
+                    try {
+                        await this._update(existingWorker, 'campaigns', {
+                            status: 'stopped',
+                            completed_at: new Date(),
+                            updated_at: new Date(),
+                        }, 'id = ? AND user_id = ?', [duplicate.id, userId]);
+                    } catch (error) {
+                        console.error(`[messageQueue] failed to stop duplicate interrupted campaign ${duplicate.id}:`, error);
+                    }
+                }
+                continue;
+            }
+
             const activeCampaign = ownerCampaigns[0];
             const worker = Object.create(this);
             let settings = {}; try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
             Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
             this._queues.set(userId, worker);
             if (!worker._paused) this._startProcessor(worker);
+            if (resumed === null) resumed = activeCampaign.id;
 
             for (const extra of ownerCampaigns.slice(1)) {
                 try {
@@ -298,6 +334,9 @@ class MessageQueue {
                 }
             }
         }
+
+        if (resumed === null && alreadyRunning) return { ok: true, alreadyRunning: true };
+        return { ok: true, resumed, ...(alreadyRunning ? { alreadyRunning: true } : {}) };
     }
 
     static isOptOut(message) { return OPT_OUT_PATTERNS.some(pattern => pattern.test(message)); }

@@ -3,18 +3,86 @@
  * Does NOT simulate human typing to deceive WhatsApp.
  * Exists purely for reliable throughput and good customer experience.
  */
+
+// Shared with schedulerService.estimateRun() so estimates and the real
+// send loop evaluate business hours in the SAME timezone.
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
+
+function resolveTimezone(settings = {}) {
+    return settings.timezone || process.env.APP_TIMEZONE || DEFAULT_TIMEZONE;
+}
+
+/**
+ * Get { hour, minute, weekday } in an explicit IANA timezone using only
+ * built-in Intl — no new dependency. weekday follows getDay() 0=Sun…6=Sat.
+ */
+function zonedParts(date, timeZone) {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        weekday: 'short',
+    });
+    const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+    const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const hour = parseInt(parts.hour === '24' ? '0' : parts.hour, 10); // en-US can emit 24 for midnight
+    const minute = parseInt(parts.minute, 10);
+    const weekday = weekdays.indexOf(parts.weekday);
+    return { hour, minute, weekday };
+}
+
+/** Minute-of-day positions for the configured window. */
+function zonedWindowMinutes(settings, parts) {
+    const [startH, startM] = settings.businessHoursStart.split(':').map(Number);
+    const [endH, endM] = settings.businessHoursEnd.split(':').map(Number);
+    return {
+        startMin: startH * 60 + startM,
+        endMin: endH * 60 + endM,
+        nowMin: parts.hour * 60 + parts.minute,
+    };
+}
+
+/** Is `date` inside the business-hours window in the given timezone? */
+function zonedWithinBusinessHours(settings, date, timeZone) {
+    if (!settings.businessHoursEnabled) return true;
+    const parts = zonedParts(date, timeZone);
+    if (!settings.businessDays.includes(parts.weekday)) return false;
+    const { startMin, endMin, nowMin } = zonedWindowMinutes(settings, parts);
+    return nowMin >= startMin && nowMin < endMin;
+}
+
+/**
+ * Resolve a business-hours window plus send caps from a settings object —
+ * one source of truth for the send loop and the scheduler's estimator.
+ */
+function resolveSendSettings(settings = {}) {
+    return {
+        delayBetweenMessages: Number(settings.delayBetweenMessages ?? 17500),
+        businessHoursEnabled: settings.businessHoursEnabled ?? true,
+        businessHoursStart: String(settings.businessHoursStart || '09:30'),
+        businessHoursEnd: String(settings.businessHoursEnd || '18:30'),
+        businessDays: (settings.businessDays && settings.businessDays.length) ? settings.businessDays : [1, 2, 3, 4, 5, 6], // Mon-Sat
+        maxPerHour: Number(settings.maxPerHour ?? 50),
+        maxPerDay: Number(settings.maxPerDay ?? 175),
+    };
+}
+
+/*
+ * Jitter — wait() delays each send by delayBetweenMessages × a random
+ * multiplier uniformly distributed over [0.7, 1.4] (0.7 + Math.random()*0.7).
+ * Expected value of a uniform [a, b] range is (a + b) / 2 = 1.05, so an
+ * estimator multiplying by 1.05 tracks the AVERAGE pacing of the queue.
+ * Exported so estimators never hardcode a diverging number.
+ */
+const JITTER_MIN = 0.7;
+const JITTER_MAX = 1.4;
+const JITTER_EXPECTED = (JITTER_MIN + JITTER_MAX) / 2; // 1.05
+
 class RateLimiter {
     constructor(settings = {}) {
-        this.settings = {
-            delayBetweenMessages: settings.delayBetweenMessages ?? 17500,  // ms between sends
-            businessHoursEnabled: settings.businessHoursEnabled ?? true,
-            businessHoursStart: settings.businessHoursStart ?? '09:30',
-            businessHoursEnd: settings.businessHoursEnd ?? '18:30',
-            businessDays: settings.businessDays ?? [1, 2, 3, 4, 5, 6], // Mon-Sat
-            maxPerHour: settings.maxPerHour ?? 50,
-            maxPerDay: settings.maxPerDay ?? 175,
-            ...settings,
-        };
+        this.settings = resolveSendSettings(settings);
+        this.settings.timezone = resolveTimezone(settings);
         this._hourCount = 0;
         this._hourReset = Date.now();
         this._dayCount = 0;
@@ -22,7 +90,8 @@ class RateLimiter {
     }
 
     updateSettings(settings) {
-        Object.assign(this.settings, settings);
+        Object.assign(this.settings, resolveSendSettings(settings));
+        if (settings.timezone !== undefined) this.settings.timezone = resolveTimezone(settings);
     }
 
     /**
@@ -30,54 +99,54 @@ class RateLimiter {
      */
     async wait() {
         const delay = Number(this.settings.delayBetweenMessages) || 17500;
-        const jitteredDelay = delay * (0.7 + Math.random() * 0.7);
+        const jitteredDelay = delay * (JITTER_MIN + Math.random() * (JITTER_MAX - JITTER_MIN));
         await new Promise(r => setTimeout(r, jitteredDelay));
     }
 
     /**
-     * Check if we are currently within business hours.
+     * Check if we are currently within business hours — evaluated in the
+     * configured IANA timezone (settings.timezone → APP_TIMEZONE →
+     * Asia/Kolkata), never the server's local zone (UTC on Render).
      * @returns {boolean}
      */
     isWithinBusinessHours() {
-        if (!this.settings.businessHoursEnabled) return true;
-
-        const now = new Date();
-        const day = now.getDay(); // 0=Sun, 1=Mon...6=Sat
-        if (!this.settings.businessDays.includes(day)) return false;
-
-        const [startH, startM] = this.settings.businessHoursStart.split(':').map(Number);
-        const [endH, endM] = this.settings.businessHoursEnd.split(':').map(Number);
-        const startMin = startH * 60 + startM;
-        const endMin = endH * 60 + endM;
-        const nowMin = now.getHours() * 60 + now.getMinutes();
-
-        return nowMin >= startMin && nowMin < endMin;
+        return zonedWithinBusinessHours(this.settings, new Date(), resolveTimezone(this.settings));
     }
 
     /**
-     * Get milliseconds until business hours start tomorrow.
+     * Get milliseconds until business hours next open, evaluated in the
+     * CONFIGURED timezone. Steps forward in 5-minute chunks testing each
+     * candidate instant with the same zoned logic as
+     * isWithinBusinessHours(), so midnight rollovers and weekdays that
+     * differ between UTC and the target timezone are handled uniformly.
+     * Capped at a 7-day walk; a config with no opening in a full week
+     * falls back to 24h (unreachable with sane settings).
+     * @param {Date} [from] — evaluation instant; defaults to now.
      * @returns {number}
      */
-    msUntilBusinessHours() {
-        const now = new Date();
-        const [startH, startM] = this.settings.businessHoursStart.split(':').map(Number);
-
-        let next = new Date(now);
-        next.setHours(startH, startM, 0, 0);
-
-        // If today's start has passed, go to tomorrow
-        if (next <= now) {
-            next.setDate(next.getDate() + 1);
+    msUntilBusinessHours(from = new Date()) {
+        const now = from;
+        const tz = resolveTimezone(this.settings);
+        // Already inside the window right now → no wait.
+        if (zonedWithinBusinessHours(this.settings, now, tz)) return 0;
+        const maxSteps = 7 * 24 * 12; // a full week of 5-min steps
+        for (let i = 1; i <= maxSteps; i++) {
+            const candidate = new Date(now.getTime() + i * 5 * 60000);
+            if (zonedWithinBusinessHours(this.settings, candidate, tz)) {
+                // Walk back in 1-minute steps to the exact opening second
+                // of this window: the first instant inside it whose
+                // 1-minute predecessor is outside the window.
+                let openAt = candidate.getTime();
+                while (openAt - 60000 > now.getTime()) {
+                    const prev = openAt - 60000;
+                    if (zonedWithinBusinessHours(this.settings, new Date(prev), tz)) openAt = prev;
+                    else break;
+                }
+                return Math.max(0, openAt - now.getTime());
+            }
         }
-
-        // Advance to a business day
-        let attempts = 0;
-        while (!this.settings.businessDays.includes(next.getDay()) && attempts < 7) {
-            next.setDate(next.getDate() + 1);
-            attempts++;
-        }
-
-        return Math.max(0, next.getTime() - now.getTime());
+        // Fallback for a pathological config with no opening in a week.
+        return 24 * 3600000;
     }
 
     /**
@@ -114,3 +183,11 @@ class RateLimiter {
 }
 
 module.exports = RateLimiter;
+module.exports.DEFAULT_TIMEZONE = DEFAULT_TIMEZONE;
+module.exports.resolveTimezone = resolveTimezone;
+module.exports.zonedParts = zonedParts;
+module.exports.resolveSendSettings = resolveSendSettings;
+module.exports.zonedWithinBusinessHours = zonedWithinBusinessHours;
+module.exports.JITTER_EXPECTED = JITTER_EXPECTED;
+module.exports.JITTER_MIN = JITTER_MIN;
+module.exports.JITTER_MAX = JITTER_MAX;
