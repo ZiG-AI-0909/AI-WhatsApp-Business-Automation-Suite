@@ -4,6 +4,7 @@ const axios = require('axios');
 const fs = require('fs');
 const FormData = require('form-data');
 const WhatsAppProvider = require('./WhatsAppProvider');
+const { parseJsonField } = require('../utils/jsonField');
 
 /**
  * WhatsApp Business API provider — per-user edition.
@@ -69,10 +70,8 @@ class WhatsAppBusinessProvider extends WhatsAppProvider {
             if (!row.user_id) continue;
             const raw = decryptSettingIfSecret(row.key, row.value || '');
             let config = configs.get(row.user_id) || {};
-            try {
-                const parsed = typeof raw === 'string' && raw.trim().startsWith('{') ? JSON.parse(raw) : null;
-                if (parsed) config = { ...config, ...parsed };
-            } catch { /* ignore unrelated or malformed settings */ }
+            const parsed = parseJsonField(raw, null);
+            if (parsed) config = { ...config, ...parsed };
             if (row.key === 'WABA_PHONE_NUMBER_ID' || row.key === 'PHONE_NUMBER_ID') config.phoneNumberId = raw;
             if (row.key === 'WABA_ACCESS_TOKEN') config.accessToken = raw;
             if (row.key === 'WABA_WEBHOOK_VERIFY_TOKEN') config.verifyToken = raw;
@@ -96,11 +95,10 @@ class WhatsAppBusinessProvider extends WhatsAppProvider {
                 const rows = await db.select('app_settings', 'key, value', "user_id = ? AND key IN ('APP_SECRET','WABA_CONFIG','WHATSAPP_BUSINESS_API','BUSINESS_API_CONFIG')", [userId], '', 20, 0);
                 for (const row of rows || []) {
                     const value = decryptSettingIfSecret(row.key, row.value || '');
-                    try {
-                        const parsed = JSON.parse(value);
-                        const secret = parsed?.appSecret || parsed?.app_secret || parsed?.APP_SECRET;
-                        if (secret) return secret;
-                    } catch { if (row.key === 'APP_SECRET' && value) return value; }
+                    const parsed = parseJsonField(value, null);
+                    const secret = parsed?.appSecret || parsed?.app_secret || parsed?.APP_SECRET;
+                    if (secret) return secret;
+                    if (parsed === null && row.key === 'APP_SECRET' && value) return value;
                 }
             } catch (error) {
                 console.error('[businessApi] failed to load app secret:', error.message);

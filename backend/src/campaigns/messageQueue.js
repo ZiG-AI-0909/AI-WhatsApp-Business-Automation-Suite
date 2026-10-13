@@ -11,6 +11,7 @@ const db = require('../database/db');
 const contactService = require('../contacts/contactService');
 const RateLimiter = require('./rateLimiter');
 const { emitToUser } = require('../realtime');
+const { parseJsonField } = require('../utils/jsonField');
 
 const OPT_OUT_PATTERNS = [
     /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\s*me\b/i,
@@ -221,8 +222,7 @@ class MessageQueue {
                 // session. If it isn't connected, the send fails — there is
                 // deliberately no fallback to any other user's session.
                 const send = await this._getSender(userId, this._provider || 'web');
-                let buttons = [];
-                try { buttons = JSON.parse(contactItem.buttons || '[]'); } catch { buttons = []; }
+                const buttons = parseJsonField(contactItem.buttons, []);
                 const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
                 const result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
                 const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
@@ -320,7 +320,7 @@ class MessageQueue {
 
             const activeCampaign = ownerCampaigns[0];
             const worker = Object.create(this);
-            let settings = {}; try { settings = JSON.parse(activeCampaign.settings || '{}'); } catch {}
+            const settings = parseJsonField(activeCampaign.settings, {});
             Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
             this._queues.set(userId, worker);
             if (!worker._paused) this._startProcessor(worker);

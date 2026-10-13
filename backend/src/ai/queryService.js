@@ -19,6 +19,7 @@
 const db = require('../database/db');
 const { resolveAiConfig } = require('../utils/aiConfig');
 const { retrieveBuiltInSources } = require('./builtInKnowledge');
+const { parseJsonField } = require('../utils/jsonField');
 
 // ─── Conversational chat ──────────────────────────────────────
 // The chat endpoint keeps MULTI-TURN context: the client replays the
@@ -242,13 +243,8 @@ async function deleteHistory(id, userId) {
 }
 
 function parseJsonArray(value) {
-    if (Array.isArray(value)) return value;
-    try {
-        const parsed = JSON.parse(value || '[]');
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+    const parsed = parseJsonField(value, []);
+    return Array.isArray(parsed) ? parsed : [];
 }
 
 module.exports = {

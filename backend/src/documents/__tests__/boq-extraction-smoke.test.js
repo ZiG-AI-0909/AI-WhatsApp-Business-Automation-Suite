@@ -17,6 +17,7 @@
 // =============================================================
 const assert = require('assert');
 const ExcelJS = require('exceljs');
+const { parseJsonField } = require('../../utils/jsonField');
 
 // ── Minimal in-memory Supabase mock injected BEFORE modules load ──
 const USER_A = '11111111-1111-1111-1111-111111111111';
@@ -305,7 +306,7 @@ async function test6_tenantScopedSave() {
 
     let doc = state.rows.boq_documents.find((r) => r.id === 1);
     assert.strictEqual(doc.status, 'confirmed', 'owner save applied');
-    assert.ok(JSON.parse(doc.items)[0].size === '160mm', 'edited rows saved');
+    assert.ok(parseJsonField(doc.items, [])[0].size === '160mm', 'edited rows saved');
 
     // A different user updating the same id matches nothing.
     const before = JSON.stringify(state.rows.boq_documents);

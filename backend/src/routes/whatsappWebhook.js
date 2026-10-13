@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const businessApiProvider = require('../whatsapp/businessApiProvider');
 const incomingMessageService = require('../conversations/incomingMessageService');
+const { parseJsonField } = require('../utils/jsonField');
 
 /**
  * Verify Meta's X-Hub-Signature-256: "sha256=<hex HMAC of raw body>".
@@ -72,7 +73,9 @@ router.get('/', async (req, res) => {
                         // Stored tokens are secret-bearing â†’ decrypt (legacy
                         // plaintext passes through unchanged).
                         const value = decryptSettingIfSecret(row?.key ?? '', typeof row?.value === 'string' ? row.value : '');
-                        try { return JSON.parse(value)?.verifyToken || ''; } catch { return value; }
+                        const parsed = parseJsonField(value, null);
+                        if (parsed === null) return value;
+                        return parsed?.verifyToken || '';
                     })
                     .filter(Boolean);
             }

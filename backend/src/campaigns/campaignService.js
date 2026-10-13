@@ -5,11 +5,12 @@ const { downloadFromStorage, isRemotePath } = require('../middleware/upload');
 const fieldRenderer = require('./fieldRenderer');
 const messageQueue = require('./messageQueue');
 const { resolveCountryCode, findCountry } = require('../utils/countryCodes');
+const { parseJsonField } = require('../utils/jsonField');
 
 class CampaignService {
     _parseCampaign(campaign) {
         if (!campaign) return campaign;
-        try { campaign.buttons = JSON.parse(campaign.buttons || '[]'); } catch { campaign.buttons = []; }
+        campaign.buttons = parseJsonField(campaign.buttons, []);
         // Convert timestamps to ISO strings if they're Date objects
         if (campaign.created_at && campaign.created_at instanceof Date) {
             campaign.created_at = campaign.created_at.toISOString();
@@ -215,7 +216,7 @@ class CampaignService {
         await this._assertOwnerConnected(userId, campaign.provider || 'web');
 
         messageQueue.setIO(io);
-        const settings = JSON.parse(campaign.settings || '{}');
+        const settings = parseJsonField(campaign.settings, {});
         await messageQueue.start(campaignId, settings, userId);
     }
 

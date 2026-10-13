@@ -4,6 +4,7 @@ const axios = require('axios');
 const ExcelJS = require('exceljs');
 const db = require('../database/db');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
+const { parseJsonField } = require('../utils/jsonField');
 
 const router = express.Router();
 
@@ -27,7 +28,7 @@ async function ensureImageLeadsTable() {
 ensureImageLeadsTable();
 
 function parseJson(value, fallback = []) {
-  try { return JSON.parse(value || JSON.stringify(fallback)); } catch { return fallback; }
+  return parseJsonField(value, fallback);
 }
 
 function cleanField(value) {

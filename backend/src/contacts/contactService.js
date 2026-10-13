@@ -1,5 +1,6 @@
 const db = require('../database/db');
 const { supabase, isAvailable } = require('../database/supabaseClient');
+const { parseJsonField } = require('../utils/jsonField');
 
 class ContactService {
     async upsert(phone, data = {}, userId) {
@@ -164,7 +165,7 @@ class ContactService {
 
     _parse(contact) {
         if (!contact) return contact;
-        try { contact.tags = JSON.parse(contact.tags || '[]'); } catch { contact.tags = []; }
+        contact.tags = parseJsonField(contact.tags, []);
         return contact;
     }
 }

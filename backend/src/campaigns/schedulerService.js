@@ -7,6 +7,7 @@ const cronParser = require('cron-parser');
 const rateLimiterModule = require('./rateLimiter');
 const { resolveCountryCode } = require('../utils/countryCodes');
 const { isRemotePath } = require('../middleware/upload');
+const { parseJsonField } = require('../utils/jsonField');
 const { resolveSendSettings, resolveTimezone, zonedWithinBusinessHours, JITTER_EXPECTED } = rateLimiterModule;
 
 const { CronExpressionParser } = cronParser;
@@ -16,7 +17,7 @@ const { CronExpressionParser } = cronParser;
 const BUSY_WAIT_CAP_MS = 24 * 3600000;
 
 function parseJsonSafe(value, fallback) {
-    try { return JSON.parse(value ?? JSON.stringify(fallback)); } catch { return fallback; }
+    return parseJsonField(value, fallback);
 }
 
 class SchedulerService {
@@ -128,11 +129,8 @@ class SchedulerService {
 
     _parseSchedule(schedule) {
         if (!schedule) return schedule;
-        // Idempotent: strings are parsed, already-parsed objects kept.
-        // (PostgREST returns jsonb columns as objects; a naive double-parse
-        // would turn them into "[object Object]" → {}).]
-        try { schedule.buttons = typeof schedule.buttons === 'string' ? JSON.parse(schedule.buttons || '[]') : (schedule.buttons || []); } catch { schedule.buttons = []; }
-        try { schedule.settings = typeof schedule.settings === 'string' ? JSON.parse(schedule.settings || '{}') : (schedule.settings || {}); } catch { schedule.settings = {}; }
+        schedule.buttons = parseJsonField(schedule.buttons, []);
+        schedule.settings = parseJsonField(schedule.settings, {});
         if (schedule.created_at && schedule.created_at instanceof Date) {
             schedule.created_at = schedule.created_at.toISOString();
         }
@@ -245,7 +243,7 @@ class SchedulerService {
         const hash = this._estimateSourceHash(schedule);
         let cached = null;
         if (schedule.estimate_source_hash === hash && schedule.estimate_json) {
-            try { cached = JSON.parse(schedule.estimate_json); } catch { cached = null; }
+            cached = parseJsonField(schedule.estimate_json, null);
         }
 
         if (!cached || !Number.isFinite(cached.durationMs)) {

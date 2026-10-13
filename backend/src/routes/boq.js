@@ -7,6 +7,7 @@ const documentModel = require('../documents/documentModel');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
 const { aiExtractLimiter } = require('../middleware/rateLimiterMiddleware');
 const { resolveAiConfig } = require('../utils/aiConfig');
+const { parseJsonField } = require('../utils/jsonField');
 const { randomUUID } = require('crypto');
 
 const router = express.Router();
@@ -28,13 +29,8 @@ function extOf(filename) {
 }
 
 function parseJsonArray(value) {
-    if (Array.isArray(value)) return value;
-    try {
-        const parsed = JSON.parse(value || '[]');
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+    const parsed = parseJsonField(value, []);
+    return Array.isArray(parsed) ? parsed : [];
 }
 
 async function loadUserSettings(userId) {
@@ -1127,10 +1123,7 @@ router.get('/:id/export/pdf', async (req, res) => {
 });
 
 function serializeDoc(doc) {
-    let extractionMetadata = doc.extraction_metadata || {};
-    if (typeof extractionMetadata === 'string') {
-        try { extractionMetadata = JSON.parse(extractionMetadata); } catch { extractionMetadata = {}; }
-    }
+    const extractionMetadata = parseJsonField(doc.extraction_metadata, {});
     return {
         ...doc,
         items: parseJsonArray(doc.items),

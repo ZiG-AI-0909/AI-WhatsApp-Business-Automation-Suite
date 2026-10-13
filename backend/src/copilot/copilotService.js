@@ -15,6 +15,7 @@
 // key configured; the AI narration step is additive.
 // =============================================================
 const db = require('../database/db');
+const { parseJsonField } = require('../utils/jsonField');
 
 const PRODUCT_MENTIONS = [
     'hdpe', 'upvc', 'pvc', 'cpvc', 'pipe', 'pipes', 'fitting', 'fittings',
@@ -25,13 +26,8 @@ const PRODUCT_MENTIONS = [
 const SIZE_PATTERN = /\b\d{1,4}(?:\.\d+)?\s*(?:mm|inch|inches|in|dn\s?\d{2,3}|"\b)\b/gi;
 
 function parseTags(value) {
-    if (Array.isArray(value)) return value;
-    try {
-        const parsed = JSON.parse(value || '[]');
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+    const parsed = parseJsonField(value, []);
+    return Array.isArray(parsed) ? parsed : [];
 }
 
 /**

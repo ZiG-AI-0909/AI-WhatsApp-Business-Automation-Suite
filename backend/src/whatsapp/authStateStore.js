@@ -21,6 +21,7 @@
 // =============================================================
 const { supabase, isAvailable } = require('../database/supabaseClient');
 const { encrypt, decrypt } = require('../utils/encryption');
+const { parseJsonField } = require('../utils/jsonField');
 
 const TABLE = 'whatsapp_sessions';
 const DEBOUNCE_MS = Number(process.env.WHATSAPP_AUTH_STATE_DEBOUNCE_MS || 5000);
@@ -60,7 +61,7 @@ function serializeAuthState(state) {
 }
 
 function reviveAuthState(json) {
-    const parsed = typeof json === 'string' ? JSON.parse(json) : json;
+    const parsed = parseJsonField(json, json);
     return reviveValue(parsed);
 }
 

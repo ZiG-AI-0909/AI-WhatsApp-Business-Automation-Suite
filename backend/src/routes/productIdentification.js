@@ -3,6 +3,7 @@ const multer = require('multer');
 const axios = require('axios');
 const db = require('../database/db');
 const { respondIfInvalidUpload } = require('../middleware/fileValidation');
+const { parseJsonField } = require('../utils/jsonField');
 
 const router = express.Router();
 
@@ -14,13 +15,8 @@ const upload = multer({
 });
 
 function parseJsonArray(value) {
-    if (Array.isArray(value)) return value;
-    try {
-        const parsed = JSON.parse(value || '[]');
-        return Array.isArray(parsed) ? parsed : [];
-    } catch {
-        return [];
-    }
+    const parsed = parseJsonField(value, []);
+    return Array.isArray(parsed) ? parsed : [];
 }
 
 // Suggestion payload shape — every field is an AI suggestion for manual

@@ -4,6 +4,7 @@
 // NEVER expose this to the browser or frontend.
 // =============================================================
 const { createClient } = require('@supabase/supabase-js');
+const { parseJsonField } = require('../utils/jsonField');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || '';
@@ -66,11 +67,7 @@ function parseJsonFields(row, fields) {
     const result = { ...row };
     for (const field of fields) {
         if (result[field] !== null && result[field] !== undefined) {
-            try {
-                result[field] = JSON.parse(result[field]);
-            } catch {
-                // Leave as-is if parsing fails
-            }
+            result[field] = parseJsonField(result[field], result[field]);
         }
     }
     return result;
