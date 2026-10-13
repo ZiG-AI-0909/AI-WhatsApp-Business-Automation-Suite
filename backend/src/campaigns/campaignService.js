@@ -283,8 +283,8 @@ class CampaignService {
         }
 
         const [total, rows] = await Promise.all([
-            db.count('campaign_contacts', where, params),
-            db.select('campaign_contacts', '*, contacts(phone, name, company, city)', where, params, 'id asc', limit, (page - 1) * limit),
+            db.count('campaign_contacts', where, [...params]),
+            db.select('campaign_contacts', '*, contacts(phone, name, company, city)', where, [...params], 'id asc', limit, (page - 1) * limit),
         ]);
 
         const data = rows.map((cc) => {

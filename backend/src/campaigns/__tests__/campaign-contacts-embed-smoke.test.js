@@ -5,7 +5,10 @@ const campaignService = require('../campaignService');
 async function main() {
     const original = { count: db.count, select: db.select };
     let selectArgs;
-    db.count = async () => 1;
+    db.count = async (_table, _where, params) => {
+        params.splice(0, params.length);
+        return 1;
+    };
     db.select = async (...args) => {
         selectArgs = args;
         return [{
