@@ -178,7 +178,20 @@ class MessageQueue {
             if (!item || item.length === 0) {
                 const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
                 if (remaining > 0) { await this._sleep(1000); continue; }
-                await this._update(this, 'campaigns', { status: 'completed', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                const [sent, failed, optedOut, skipped] = await Promise.all(
+                    ['sent', 'failed', 'opted_out', 'skipped'].map(status =>
+                        db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, status])
+                    )
+                );
+                await this._update(this, 'campaigns', {
+                    status: 'completed',
+                    processed: sent + failed + optedOut + skipped,
+                    sent,
+                    failed,
+                    opt_outs: optedOut,
+                    completed_at: new Date(),
+                    updated_at: new Date(),
+                }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._emit('campaign:completed', { campaignId });
                 this._running = false;
                 this._queues.delete(userId);
