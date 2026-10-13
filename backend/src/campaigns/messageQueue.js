@@ -39,6 +39,12 @@ function describeSendError(error) {
     return details.join(': ').slice(0, 1000);
 }
 
+function shouldRetrySendError(error) {
+    const status = error?.response?.status || error?.output?.statusCode;
+    if (status === 400) return false;
+    return !/WhatsApp number is not registered/i.test(error?.message || '');
+}
+
 class MessageQueue {
     constructor() {
         this._queues = new Map();
@@ -259,10 +265,11 @@ class MessageQueue {
                 this._rateLimiter?.recordSent();
             } catch (error) {
                 const lastError = describeSendError(error);
-                console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} provider=${this._provider || 'web'}: ${lastError}`);
+                const retryable = shouldRetrySendError(error);
                 const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
                 const attempts = (parseInt(contactItem.attempts) || 0) + 1;
-                if (attempts <= maxAttempts) {
+                console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
+                if (retryable && attempts <= maxAttempts) {
                     const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
                     await this._update(this, 'campaign_contacts', { status: 'pending', last_error: lastError, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 } else {
@@ -373,3 +380,4 @@ class MessageQueue {
 
 module.exports = new MessageQueue();
 module.exports.OPT_OUT_PATTERNS = OPT_OUT_PATTERNS;
+module.exports.shouldRetrySendError = shouldRetrySendError;
