@@ -60,6 +60,12 @@ const ENDPOINT_TIMEOUT_MS = {
   '/boq/process': 180000, // server wall budget is 150s (BOQ_TOTAL_BUDGET_MS) — covers parsing + page rendering + parallel OCR + every AI chunk + margin
 }
 
+function timeoutForPath(path) {
+  if (ENDPOINT_TIMEOUT_MS[path]) return ENDPOINT_TIMEOUT_MS[path]
+  if (/^\/campaigns\/\d+\/(?:start|resume|pause|stop)$/.test(path)) return 90000
+  return REQUEST_TIMEOUT_MS
+}
+
 function timeoutSignal(ms) {
   return (typeof AbortSignal !== 'undefined' && AbortSignal.timeout)
     ? AbortSignal.timeout(ms)
@@ -86,7 +92,7 @@ export async function apiFetch(path, options = {}) {
   // Attach the Supabase session JWT so the backend requireAuth middleware can verify it.
   const authHeaders = await authHeader()
 
-  const budget = ENDPOINT_TIMEOUT_MS[path] || REQUEST_TIMEOUT_MS
+  const budget = timeoutForPath(path)
   const request = requestSignal(options.signal, budget)
   let response
   try {
