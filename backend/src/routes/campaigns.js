@@ -175,6 +175,16 @@ router.post('/:id/start', async (req, res) => {
     }
 });
 
+// POST /api/campaigns/:id/retry-failed
+router.post('/:id/retry-failed', async (req, res) => {
+    try {
+        const result = await campaignService.retryFailed(+req.params.id, req.app.get('io'), req.user.id);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
 // POST /api/campaigns/:id/pause
 router.post('/:id/pause', async (req, res) => {
     try {

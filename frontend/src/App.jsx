@@ -412,6 +412,22 @@ function CampaignsView({ onNavigate }) {
     }
   }
 
+  const retryFailedContacts = async () => {
+    if (!selectedCampaign) return
+    setBusy(true)
+    try {
+      const result = await apiFetch(`/campaigns/${selectedCampaign.id}/retry-failed`, { method: 'POST' })
+      const refreshed = await apiFetch(`/campaigns/${selectedCampaign.id}`)
+      setSelectedCampaign(refreshed)
+      await loadCampaigns()
+      setMessage({ type: 'success', text: `Retrying ${result.requeued} failed contact(s).` })
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const toggleCampaign = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   const toggleAllCampaigns = () => setSelectedIds(selectedIds.length === campaignList.length ? [] : campaignList.map((campaign) => campaign.id))
   const bulkDelete = async () => {
@@ -512,7 +528,7 @@ function CampaignsView({ onNavigate }) {
       </div>
 
       <section className="panel queue-panel">
-        <div className="panel-header"><div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>{selectedCampaign && <div className="button-row"><button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)}>Start</button><button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button><button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button><button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button></div>}</div>
+        <div className="panel-header"><div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>{selectedCampaign && <div className="button-row"><button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)}>Start</button><button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || ['running', 'paused'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button><button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button><button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button><button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button></div>}</div>
         {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead><tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td><td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small></td><td data-label="Provider">{campaign.provider || 'web'}</td><td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status}</span></td><td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td></tr>)}</tbody></table>{!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }] } />}</div>
         {selectedCampaign && <div className="campaign-detail"><div className="panel-header"><div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div><strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong></div>{waitingHoursMessage && <div className="notice warning" style={{ margin: '1rem 0' }}>{waitingHoursMessage}</div>}<p className="detail-template">{selectedCampaign.template_message}</p><div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div></div>}
       </section>

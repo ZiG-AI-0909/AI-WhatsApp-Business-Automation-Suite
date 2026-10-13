@@ -220,6 +220,41 @@ class CampaignService {
         await messageQueue.start(campaignId, settings, userId);
     }
 
+    async retryFailed(campaignId, io, userId) {
+        const campaign = await this.get(campaignId, userId);
+        if (!campaign) throw new Error('Campaign not found');
+        if (['running', 'paused'].includes(campaign.status) || messageQueue.getCurrentCampaignId(userId) !== null) {
+            throw new Error('Stop the current campaign before retrying failed contacts.');
+        }
+        await this._assertOwnerConnected(userId, campaign.provider || 'web');
+
+        const failedCount = await db.count(
+            'campaign_contacts',
+            'campaign_id = ? AND user_id = ? AND status = ?',
+            [campaignId, userId, 'failed'],
+        );
+        if (!failedCount) throw new Error('This campaign has no failed contacts to retry.');
+
+        const requeued = await db.update(
+            'campaign_contacts',
+            { status: 'pending', attempts: 0, last_error: null, retry_at: null },
+            'campaign_id = ? AND user_id = ? AND status = ?',
+            [campaignId, userId, 'failed'],
+        );
+        if (!requeued.length) throw new Error('No failed contacts were available to retry.');
+
+        await db.update('campaigns', {
+            status: 'stopped',
+            processed: Math.max(0, (parseInt(campaign.processed) || 0) - requeued.length),
+            failed: Math.max(0, (parseInt(campaign.failed) || 0) - requeued.length),
+            completed_at: null,
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [campaignId, userId]);
+
+        await this.start(campaignId, io, userId);
+        return { requeued: requeued.length };
+    }
+
     pause(campaignId, userId) {
         if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
             throw new Error('This campaign is not currently running.');

@@ -62,7 +62,7 @@ const ENDPOINT_TIMEOUT_MS = {
 
 function timeoutForPath(path) {
   if (ENDPOINT_TIMEOUT_MS[path]) return ENDPOINT_TIMEOUT_MS[path]
-  if (/^\/campaigns\/\d+\/(?:start|resume|pause|stop)$/.test(path)) return 90000
+  if (/^\/campaigns\/\d+\/(?:start|resume|pause|stop|retry-failed)$/.test(path)) return 90000
   return REQUEST_TIMEOUT_MS
 }
 
