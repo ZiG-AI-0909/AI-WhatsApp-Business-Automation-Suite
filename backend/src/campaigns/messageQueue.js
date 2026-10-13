@@ -20,6 +20,25 @@ const OPT_OUT_PATTERNS = [
     /\bmat\s*bhejo\b/i, /\bnahi\s*chahiye\b/i,
 ];
 
+function describeSendError(error) {
+    const responseData = error?.response?.data;
+    const providerError = responseData?.error;
+    const message = [
+        providerError?.message,
+        responseData?.message,
+        error?.output?.payload?.message,
+        error?.message,
+    ].find(value => typeof value === 'string' && value.trim());
+    const status = error?.response?.status || error?.output?.statusCode;
+    const code = providerError?.code || responseData?.error_code || error?.output?.payload?.code;
+    const details = [
+        status ? `HTTP ${status}` : null,
+        message || 'Unknown WhatsApp send error',
+        code ? `code ${code}` : null,
+    ].filter(Boolean);
+    return details.join(': ').slice(0, 1000);
+}
+
 class MessageQueue {
     constructor() {
         this._queues = new Map();
@@ -244,13 +263,15 @@ class MessageQueue {
                 await this._update(this, 'campaigns', { processed: (parseInt(sentRow?.processed) || 0) + 1, sent: (parseInt(sentRow?.sent) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._rateLimiter?.recordSent();
             } catch (error) {
+                const lastError = describeSendError(error);
+                console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} provider=${this._provider || 'web'}: ${lastError}`);
                 const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
                 const attempts = (parseInt(contactItem.attempts) || 0) + 1;
                 if (attempts <= maxAttempts) {
                     const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
-                    await this._update(this, 'campaign_contacts', { status: 'pending', last_error: error.message, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    await this._update(this, 'campaign_contacts', { status: 'pending', last_error: lastError, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 } else {
-                    await this._update(this, 'campaign_contacts', { status: 'failed', last_error: error.message, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    await this._update(this, 'campaign_contacts', { status: 'failed', last_error: lastError, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                     const failedRow = await db.getById('campaigns', campaignId, userId);
                     await this._update(this, 'campaigns', { processed: (parseInt(failedRow?.processed) || 0) + 1, failed: (parseInt(failedRow?.failed) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 }
