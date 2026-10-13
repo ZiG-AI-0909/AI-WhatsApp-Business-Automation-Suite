@@ -111,7 +111,6 @@ function CampaignsView({ onNavigate }) {
   const [allowMissingFields, setAllowMissingFields] = useState(false)
   const [message, setMessage] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
-  const [waitingHoursMessage, setWaitingHoursMessage] = useState('')
 
   const loadCampaigns = async () => {
     try {
@@ -202,24 +201,6 @@ function CampaignsView({ onNavigate }) {
     socket.on('campaign:completed', campaignStatusChange)
     socket.on('campaign:error', campaignStatusChange)
 
-    // Handle campaign:waiting_hours — surface inline message for demo visibility
-    const campaignWaitingHours = (event) => {
-      setSelectedCampaign((current) => {
-        if (current?.id === event.campaignId) {
-          setWaitingHoursMessage('Waiting for business hours to resume sending')
-        }
-        return current
-      })
-    }
-    socket.on('campaign:waiting_hours', campaignWaitingHours)
-
-    // Clear waiting message when campaign starts sending again
-    const clearWaitingOnStatusChange = () => {
-      setWaitingHoursMessage('')
-    }
-    socket.on('campaign:started', clearWaitingOnStatusChange)
-    socket.on('campaign:resumed', clearWaitingOnStatusChange)
-
     return () => {
       socket.off('schedule:failed', scheduleFailed)
       socket.off('schedule:waiting_connection', scheduleWaiting)
@@ -230,9 +211,6 @@ function CampaignsView({ onNavigate }) {
       socket.off('campaign:stopped', campaignStatusChange)
       socket.off('campaign:completed', campaignStatusChange)
       socket.off('campaign:error', campaignStatusChange)
-      socket.off('campaign:waiting_hours', campaignWaitingHours)
-      socket.off('campaign:started', clearWaitingOnStatusChange)
-      socket.off('campaign:resumed', clearWaitingOnStatusChange)
       socket.disconnect()
       window.clearInterval(interval)
     }
@@ -530,7 +508,7 @@ function CampaignsView({ onNavigate }) {
       <section className="panel queue-panel">
         <div className="panel-header"><div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>{selectedCampaign && <div className="button-row"><button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)}>Start</button><button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || ['running', 'paused'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button><button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button><button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button><button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button></div>}</div>
         {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead><tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td><td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small></td><td data-label="Provider">{campaign.provider || 'web'}</td><td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status}</span></td><td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td></tr>)}</tbody></table>{!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }] } />}</div>
-        {selectedCampaign && <div className="campaign-detail"><div className="panel-header"><div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div><strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong></div>{waitingHoursMessage && <div className="notice warning" style={{ margin: '1rem 0' }}>{waitingHoursMessage}</div>}<p className="detail-template">{selectedCampaign.template_message}</p><div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div></div>}
+        {selectedCampaign && <div className="campaign-detail"><div className="panel-header"><div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div><strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong></div><p className="detail-template">{selectedCampaign.template_message}</p><div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div></div>}
       </section>
       <section className="panel queue-panel"><div className="panel-header"><div><h2>Scheduled campaigns</h2><span className="file-note">{schedules.length} schedules</span></div></div>{selectedScheduleIds.length > 0 && <div className="button-row"><span>{selectedScheduleIds.length} selected</span><button className="danger-btn" onClick={bulkDeleteSchedules}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all schedules" checked={schedules.length > 0 && selectedScheduleIds.length === schedules.length} onChange={toggleAllSchedules} /></th><th>Name</th><th>Type</th><th>Next run</th><th>Est. one campaign run</th><th>Status</th><th>Last run</th><th>Actions</th></tr></thead><tbody>{schedules.map((schedule) => <tr key={schedule.id} title={schedule.last_error || undefined}><td data-label="Select"><input type="checkbox" aria-label={`Select ${schedule.name}`} checked={selectedScheduleIds.includes(schedule.id)} onChange={() => toggleSchedule(schedule.id)} /></td><td data-label="Name"><strong>{schedule.name}</strong>{schedule.last_error && <small className="schedule-error">{schedule.last_error}</small>}</td><td data-label="Type">{schedule.schedule_type}</td><td data-label="Next run">{formatDate(schedule.next_run_at)}</td><td data-label="Est. one campaign run">{scheduleEstimateCell(schedule)}</td><td data-label="Status"><span className={statusClass(schedule.status)}>{schedule.status}</span></td><td data-label="Last run">{formatDate(schedule.last_run_at)}</td><td data-label="Actions"><div className="button-row">{schedule.status === 'failed' && <button className="secondary-btn" onClick={() => retrySchedule(schedule.id)}>Retry now</button>}{['active', 'pending'].includes(schedule.status) && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'pause')}>Pause</button>}{schedule.status === 'paused' && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'resume')}>Resume</button>}{!['cancelled', 'completed', 'failed'].includes(schedule.status) && <button className="danger-btn" onClick={() => scheduleAction(schedule.id, 'cancel', 'POST')}>Cancel</button>}<button className="danger-btn" onClick={() => deleteSchedule(schedule.id)}>Delete</button></div></td></tr>)}</tbody></table>{!schedules.length && <EmptyState icon="🗓️" title="No scheduled campaigns yet" description="When you create a campaign with “Schedule once” or “Recurring” timing, it will show up here." />}</div></section>
     </div>

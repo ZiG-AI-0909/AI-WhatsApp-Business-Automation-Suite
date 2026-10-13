@@ -181,7 +181,21 @@ async function test2_expectedJitterInEstimator() {
 }
 
 // ================================================================
-async function test3_estimateCache() {
+async function test3_businessHoursDoNotDelayCampaigns() {
+    const durationMs = schedulerService._computeDurationMs({
+        delayBetweenMessages: 10000,
+        maxPerHour: 0,
+        maxPerDay: 0,
+        businessHoursEnabled: true,
+        businessHoursStart: '09:30',
+        businessHoursEnd: '18:30',
+    }, 100);
+    assert.strictEqual(durationMs, 100 * 10000 * 1.05,
+        'campaign duration must not expand to fit business-hour windows');
+}
+
+// ================================================================
+async function test4_estimateCache() {
     // 3.1 second call does NOT re-parse (countCalls stays 1)
     seedSchedule();
     countCalls = 0;
@@ -215,7 +229,8 @@ async function test3_estimateCache() {
 (async () => {
     await run('T1: business hours respect the configured IANA timezone (TZ=UTC process)', test1_timezoneAwareBusinessHours);
     await run('T2: estimator uses rateLimiter JITTER_EXPECTED (1.05), not a hardcoded 0.85', test2_expectedJitterInEstimator);
-    await run('T3: estimate cache reuse, invalidation on settings change, tenant isolation', test3_estimateCache);
+    await run('T3: campaigns are not delayed by business hours', test3_businessHoursDoNotDelayCampaigns);
+    await run('T4: estimate cache reuse, invalidation on settings change, tenant isolation', test4_estimateCache);
 
     if (failures) {
         console.error(`\n${failures} test(s) FAILED`);

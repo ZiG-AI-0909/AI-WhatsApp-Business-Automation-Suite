@@ -8,7 +8,7 @@ const rateLimiterModule = require('./rateLimiter');
 const { resolveCountryCode } = require('../utils/countryCodes');
 const { isRemotePath } = require('../middleware/upload');
 const { parseJsonField } = require('../utils/jsonField');
-const { resolveSendSettings, resolveTimezone, zonedWithinBusinessHours, JITTER_EXPECTED } = rateLimiterModule;
+const { resolveSendSettings, JITTER_EXPECTED } = rateLimiterModule;
 
 const { CronExpressionParser } = cronParser;
 
@@ -184,19 +184,6 @@ class SchedulerService {
             ms += days * 24 * 3600000; // extra wall-clock days for the capped sends
         }
 
-        // Business hours: sends outside the window pause until the next
-        // opening. Model as full workday blocks (no overnight sends).
-        if (s.businessHoursEnabled) {
-            const start = s.businessHoursStart.split(':').map(Number);
-            const end = s.businessHoursEnd.split(':').map(Number);
-            const windowMs = (end[0] * 60 + end[1] - (start[0] * 60 + start[1])) * 60000;
-            // Fit sending time inside business-hour windows; the leftover
-            // spills to further days, each offset by one real (24h) day.
-            if (windowMs > 0 && ms > windowMs) {
-                const blocks = Math.ceil(ms / windowMs);
-                ms = blocks * windowMs + (blocks - 1) * (24 * 3600000 - windowMs);
-            }
-        }
         return Math.round(ms);
     }
 

@@ -172,11 +172,6 @@ class MessageQueue {
     async _process() {
         while (this._running) {
             if (this._paused) { await this._sleep(500); continue; }
-            if (this._rateLimiter && !this._rateLimiter.isWithinBusinessHours()) {
-                this._emit('campaign:waiting_hours', { campaignId: this._campaignId });
-                await this._sleep(Math.min(this._rateLimiter.msUntilBusinessHours(), 60000));
-                continue;
-            }
             const limitCheck = this._rateLimiter?.checkLimits() ?? { allowed: true };
             if (!limitCheck.allowed) { await this._sleep(60000); continue; }
 
