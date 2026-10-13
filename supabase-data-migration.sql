@@ -18,6 +18,7 @@ create table if not exists public.contacts (
     id                bigserial primary key,
     phone             text unique not null,
     name              text default '',
+    email             text default '',
     company           text default '',
     city              text default '',
     marketing_opt_in  bigint default 1,
@@ -29,6 +30,11 @@ create table if not exists public.contacts (
     created_at        timestamptz default now(),
     updated_at        timestamptz default now()
 );
+
+alter table public.contacts
+    add column if not exists email text default '';
+
+notify pgrst, 'reload schema';
 
 comment on table public.contacts is 'Contact phone numbers and metadata';
 
