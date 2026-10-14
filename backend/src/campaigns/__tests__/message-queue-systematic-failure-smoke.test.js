@@ -194,6 +194,79 @@ async function testNotRegisteredDoesNotTripBreaker() {
     assert.equal(updates.filter(update => update.table === 'campaign_contacts' && update.data.status === 'failed').length, 5);
 }
 
+async function testProviderRestrictionPausesImmediately() {
+    const updates = [];
+    const events = [];
+    const worker = createFailureWorker(updates, events);
+    const paused = await worker._handleSendFailure(
+        Object.assign(new Error('Too many requests'), {
+            response: { status: 429, data: { error: { code: 130429, message: 'Rate limit hit' } } },
+        }),
+        { id: 12, media_path: null },
+        0,
+        true,
+        42,
+        USER_ID
+    );
+
+    assert.equal(paused, true);
+    assert.equal(worker._paused, true);
+    assert.equal(updates.find(update => update.table === 'campaigns').data.pause_reason, 'provider_restriction');
+    assert.equal(events[0].event, 'campaign:paused');
+}
+
+async function testMissingOrOptedOutContactIsNeverSent() {
+    const originalSelect = db.select;
+    const originalCount = db.count;
+    const contactService = require('../../contacts/contactService');
+    const originalFindByPhone = contactService.findByPhone;
+
+    try {
+        for (const contact of [null, { marketing_opt_in: 0 }]) {
+            let pendingRead = false;
+            let senderLookups = 0;
+            const updates = [];
+            db.select = async () => {
+                if (pendingRead) return [];
+                pendingRead = true;
+                return [{
+                    id: 10,
+                    campaign_id: 42,
+                    contact_id: 99,
+                    rendered_message: 'Hello',
+                    status: 'pending',
+                    attempts: 0,
+                    contacts: { phone: '15551234567' },
+                    campaigns: {},
+                }];
+            };
+            db.count = async () => 0;
+            contactService.findByPhone = async () => contact;
+            const worker = Object.create(queue);
+            Object.assign(worker, {
+                _campaignId: 42,
+                _ownerUserId: USER_ID,
+                _running: true,
+                _paused: false,
+                _rateLimiter: null,
+                _emit: () => {},
+                _emitProgress: () => {},
+                _update: async (_worker, table, data) => updates.push({ table, data }),
+                _recountCampaign: async () => {},
+                _getSender: async () => { senderLookups++; return async () => {}; },
+            });
+
+            await worker._process();
+            assert.equal(senderLookups, 0, 'no sender is resolved for a missing or opted-out contact');
+            assert.ok(updates.some(update => update.table === 'campaign_contacts' && update.data.status === 'opted_out'));
+        }
+    } finally {
+        db.select = originalSelect;
+        db.count = originalCount;
+        contactService.findByPhone = originalFindByPhone;
+    }
+}
+
 function testSendErrorDetailsAreSanitized() {
     const description = queue.describeSendError({
         message: 'Request failed for https://graph.facebook.com/v23.0/123/media?access_token=secret',
@@ -262,6 +335,8 @@ async function main() {
         await testMediaBufferIsDownloadedOnceAndReused();
         await testRepeatedErrorsPauseAndRestoreContacts();
         await testNotRegisteredDoesNotTripBreaker();
+        await testProviderRestrictionPausesImmediately();
+        await testMissingOrOptedOutContactIsNeverSent();
         testSendErrorDetailsAreSanitized();
         await testBaileysUsesImageAndDocumentBuffers();
         testCampaignMediaNamesAndSupabaseUrls();

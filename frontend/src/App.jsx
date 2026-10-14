@@ -1088,7 +1088,7 @@ function ContactsView({ onNavigate }) {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState(null)
-  const [form, setForm] = useState({ name: '', email: '', company: '', city: '', notes: '', tags: '', marketing_opt_in: true })
+  const [form, setForm] = useState({ name: '', email: '', company: '', city: '', notes: '', tags: '', marketing_opt_in: false })
   const [deleteId, setDeleteId] = useState(null)
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
@@ -1096,7 +1096,7 @@ function ContactsView({ onNavigate }) {
   // was previously impossible: the backend only created contacts via campaign
   // Excel uploads or incoming WhatsApp messages.
   const [showAddForm, setShowAddForm] = useState(false)
-  const [addForm, setAddForm] = useState({ phone: '', name: '', company: '', marketing_opt_in: true })
+  const [addForm, setAddForm] = useState({ phone: '', name: '', company: '', marketing_opt_in: false })
   // Account-level default dial code (Settings → Default country code) shown
   // as a hint next to the phone field; the backend applies it on save.
   const [accountDefaultCode, setAccountDefaultCode] = useState('91')
@@ -1137,7 +1137,7 @@ function ContactsView({ onNavigate }) {
         body: JSON.stringify({ ...addForm, phone: addForm.phone.trim() }),
       })
       setNotice({ type: 'success', text: 'Contact added.' })
-      setAddForm({ phone: '', name: '', company: '', marketing_opt_in: true })
+      setAddForm({ phone: '', name: '', company: '', marketing_opt_in: false })
       setShowAddForm(false)
       await load()
     } catch (error) {

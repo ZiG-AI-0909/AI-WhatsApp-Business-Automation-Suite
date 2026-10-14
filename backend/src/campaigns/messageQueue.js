@@ -90,6 +90,23 @@ function isConnectionError(error) {
     return !status && /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|socket (?:closed|ended)|connection (?:closed|lost|reset)/i.test(message);
 }
 
+function isProviderRestrictionError(error) {
+    const responseData = error?.response?.data;
+    const providerError = responseData?.error;
+    const code = providerError?.code || responseData?.error_code || error?.output?.payload?.code;
+    const status = error?.response?.status || error?.output?.statusCode;
+    const message = [
+        providerError?.message,
+        typeof providerError === 'string' ? providerError : null,
+        responseData?.message,
+        error?.output?.payload?.message,
+        error?.message,
+    ].filter(Boolean).join(' ');
+    return Number(status) === 429
+        || ['130429', '131048', '131056', '368'].includes(String(code))
+        || /temporarily\s+(?:been\s+)?(?:blocked|restricted|banned)|account.{0,40}(?:blocked|restricted)|(?:spam|rate)\s+limit/i.test(message);
+}
+
 function isNotRegisteredError(error) {
     const responseError = error?.response?.data?.error;
     return /WhatsApp number is not registered/i.test([
@@ -360,7 +377,7 @@ class MessageQueue {
                 buttons: rawItem.campaigns?.buttons || '[]',
             };
             const contact = await contactService.findByPhone(contactItem.phone, userId);
-            if (contact && !contact.marketing_opt_in) {
+            if (!contact || !contact.marketing_opt_in) {
                 await this._update(this, 'campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 await this._recountCampaign(campaignId, userId);
                 this._emitProgress(campaignId);
@@ -426,6 +443,10 @@ class MessageQueue {
         const mediaFailure = isMediaUploadError(error, hasMedia);
         const notRegistered = isNotRegisteredError(error);
         console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : mediaFailure ? 'media' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
+        if (isProviderRestrictionError(error)) {
+            await this._pauseCampaignForSendFailure(lastError, 'provider_restriction', contactItem, attempts, campaignId, userId);
+            return true;
+        }
         if (connectionError || mediaFailure) {
             const reason = connectionError ? 'whatsapp_disconnected' : 'media_upload_failed';
             await this._pauseCampaignForSendFailure(lastError, reason, contactItem, attempts, campaignId, userId);

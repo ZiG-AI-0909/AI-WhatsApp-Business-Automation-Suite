@@ -21,7 +21,7 @@ create table if not exists public.contacts (
     email             text default '',
     company           text default '',
     city              text default '',
-    marketing_opt_in  bigint default 1,
+    marketing_opt_in  bigint default 0,
     tags              text default '[]',
     notes             text default '',
     is_lid            bigint default 0,
@@ -33,6 +33,9 @@ create table if not exists public.contacts (
 
 alter table public.contacts
     add column if not exists email text default '';
+
+alter table public.contacts
+    alter column marketing_opt_in set default 0;
 
 notify pgrst, 'reload schema';
 

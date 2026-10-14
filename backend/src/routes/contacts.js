@@ -25,7 +25,7 @@ router.post('/', async (req, res) => {
         const created = await contactService.upsert(normalizedPhone, {
             name: req.body?.name || '',
             company: req.body?.company || '',
-            marketing_opt_in: req.body?.marketing_opt_in !== false,
+            marketing_opt_in: req.body?.marketing_opt_in === true,
         }, req.user.id);
         res.status(201).json(created);
     } catch (err) {

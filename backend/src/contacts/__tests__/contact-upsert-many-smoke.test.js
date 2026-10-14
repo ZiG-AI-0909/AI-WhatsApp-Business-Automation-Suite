@@ -46,6 +46,7 @@ async function main() {
         assert.equal(insertedBatches.length, 2);
         assert.deepEqual(insertedBatches.map(batch => batch.rows.length), [99, 1]);
         assert.ok(insertedBatches.every(batch => batch.table === 'contacts'));
+        assert.ok(insertedBatches.flatMap(batch => batch.rows).every(contact => contact.marketing_opt_in === 0), 'new contacts require explicit opt-in');
         assert.equal(updates.length, 1);
         assert.deepEqual(updates[0], {
             table: 'contacts',
