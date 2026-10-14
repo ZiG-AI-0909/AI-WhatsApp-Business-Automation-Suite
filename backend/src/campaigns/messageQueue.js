@@ -45,6 +45,15 @@ function shouldRetrySendError(error) {
     return !/WhatsApp number is not registered/i.test(error?.message || '');
 }
 
+function isConnectionError(error) {
+    const message = String(error?.message || '');
+    if (/WhatsApp (?:session|Business API) is not connected|Reconnect WhatsApp|ensureConnected failed/i.test(message)) {
+        return true;
+    }
+    const status = error?.response?.status || error?.output?.statusCode;
+    return !status && /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|socket (?:closed|ended)|connection (?:closed|lost|reset)/i.test(message);
+}
+
 class MessageQueue {
     constructor() {
         this._queues = new Map();
@@ -76,6 +85,8 @@ class MessageQueue {
             await this._update(worker, 'campaigns', {
                 status: 'running',
                 started_at: campaign.started_at || new Date(),
+                pause_reason: null,
+                last_error: null,
                 updated_at: new Date(),
             }, 'id = ? AND user_id = ?', [campaignId, userId]);
             worker._emit('campaign:started', { campaignId, name: campaign.name });
@@ -249,12 +260,13 @@ class MessageQueue {
                 continue;
             }
 
-            await this._update(this, 'campaign_contacts', { status: 'processing', attempts: (parseInt(contactItem.attempts) || 0) + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+            const attempts = parseInt(contactItem.attempts) || 0;
             try {
                 // SECURITY: resolve the send function to THIS user's own
                 // session. If it isn't connected, the send fails — there is
                 // deliberately no fallback to any other user's session.
                 const send = await this._getSender(userId, this._provider || 'web');
+                await this._update(this, 'campaign_contacts', { status: 'processing', attempts: attempts + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
                 const buttons = parseJsonField(contactItem.buttons, []);
                 const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
                 const result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
@@ -267,9 +279,23 @@ class MessageQueue {
                 const lastError = describeSendError(error);
                 const retryable = shouldRetrySendError(error);
                 const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
-                const attempts = (parseInt(contactItem.attempts) || 0) + 1;
-                console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
-                if (retryable && attempts <= maxAttempts) {
+                const connectionError = isConnectionError(error);
+                console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
+                if (connectionError) {
+                    await this._update(this, 'campaign_contacts', { status: 'pending', attempts, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+                    await this._update(this, 'campaigns', {
+                        status: 'paused',
+                        pause_reason: 'whatsapp_disconnected',
+                        last_error: lastError.slice(0, 500),
+                        updated_at: new Date(),
+                    }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                    this._running = false;
+                    this._paused = true;
+                    this._queues.delete(userId);
+                    this._emit('campaign:paused', { campaignId, reason: 'whatsapp_disconnected', error: lastError });
+                    return;
+                }
+                if (retryable && attempts + 1 <= maxAttempts) {
                     const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
                     await this._update(this, 'campaign_contacts', { status: 'pending', last_error: lastError, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
                 } else {
@@ -290,6 +316,43 @@ class MessageQueue {
     }
 
     _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+    async resumeDisconnectedCampaigns(userId, candidates = null) {
+        if (!userId) throw new Error('userId is required to resume disconnected campaigns.');
+        let campaigns = candidates;
+        if (!campaigns) {
+            const result = await db.paginate(
+                'campaigns',
+                'user_id = ? AND status = ? AND pause_reason = ?',
+                [userId, 'paused', 'whatsapp_disconnected'],
+                'id',
+                'asc',
+                1000,
+                0,
+            );
+            campaigns = result.data;
+        }
+        const campaign = campaigns.find(row => row.status === 'paused' && row.pause_reason === 'whatsapp_disconnected');
+        if (!campaign) return null;
+
+        try {
+            if ((campaign.provider || 'web') === 'business') {
+                const businessApiProvider = require('../whatsapp/businessApiProvider');
+                if (businessApiProvider.getStatus(userId) !== 'connected') return null;
+            } else {
+                const sessionManager = require('../whatsapp/sessionManager');
+                if (sessionManager.getStatus(userId) !== 'connected') {
+                    const connected = await sessionManager.ensureConnected(userId, Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000));
+                    if (!connected || sessionManager.getStatus(userId) !== 'connected') return null;
+                }
+            }
+            await this.start(campaign.id, parseJsonField(campaign.settings, {}), userId);
+            return campaign.id;
+        } catch (error) {
+            console.error(`[messageQueue] Could not auto-resume disconnected campaign=${campaign.id} user=${userId}:`, error.message);
+            return null;
+        }
+    }
 
     /**
      * Resume any campaign left running/paused by a restart. Ownership comes
@@ -336,6 +399,15 @@ class MessageQueue {
         let resumed = null;
         let alreadyRunning = false;
         for (const [userId, ownerCampaigns] of byOwner) {
+            const connectionPaused = ownerCampaigns.filter(row => row.status === 'paused' && row.pause_reason === 'whatsapp_disconnected');
+            if (connectionPaused.length) {
+                const resumedId = await this.resumeDisconnectedCampaigns(userId, connectionPaused);
+                if (resumedId !== null) {
+                    resumed = resumed ?? resumedId;
+                    continue;
+                }
+                ownerCampaigns.splice(0, ownerCampaigns.length, ...ownerCampaigns.filter(row => !connectionPaused.includes(row)));
+            }
             const existingWorker = this._worker(userId);
             if (existingWorker?._running && existingWorker._campaignId) {
                 alreadyRunning = true;
@@ -381,3 +453,4 @@ class MessageQueue {
 module.exports = new MessageQueue();
 module.exports.OPT_OUT_PATTERNS = OPT_OUT_PATTERNS;
 module.exports.shouldRetrySendError = shouldRetrySendError;
+module.exports.isConnectionError = isConnectionError;

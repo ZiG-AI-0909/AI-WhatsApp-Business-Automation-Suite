@@ -344,6 +344,8 @@ class SessionManager {
             session.lastActivityAt = Date.now();
             this._pushStatus(userId, 'connected');
             this._armIdleTimer(userId);
+            require('../campaigns/messageQueue').resumeDisconnectedCampaigns(userId)
+                .catch(error => console.error(`[wa:${userId}] failed to resume disconnected campaign:`, error));
             return;
         }
 

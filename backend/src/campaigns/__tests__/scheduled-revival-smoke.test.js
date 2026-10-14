@@ -97,8 +97,9 @@ function table(name) {
         },
         insert(row) {
             const created = Array.isArray(row) ? row : [row];
+            const inserted = [];
             for (const r of created) {
-                state.rows[name].push({
+                const insertedRow = {
                     ...r,
                     id: r.id || `id-${state.rows[name].length + 1}`,
                     created_at: r.created_at || new Date().toISOString(),
@@ -107,10 +108,15 @@ function table(name) {
                     // without them (db._parseCampaign expects strings).
                     ...(name === 'campaigns' && r.status === undefined ? { status: 'draft', processed: 0, sent: 0, failed: 0, replies: 0, opt_outs: 0, total_contacts: 0 } : {}),
                     ...(name === 'campaign_contacts' && r.status === undefined ? { status: 'pending', attempts: 0 } : {}),
-                });
+                };
+                state.rows[name].push(insertedRow);
+                inserted.push(insertedRow);
             }
-            const last = state.rows[name][state.rows[name].length - 1];
-            return { select: () => ({ single: async () => ({ data: last, error: null }) }) };
+            const builder = {
+                single: async () => ({ data: inserted[0] || null, error: null }),
+                then(resolve) { return resolve({ data: inserted, error: null }); },
+            };
+            return { select: () => builder };
         },
         delete() {
             const filters = [];
@@ -252,7 +258,7 @@ function resetSchedules() {
             template_message: 'hello {{name}}',
             file_path: '/tmp/contacts.xlsx',
             buttons: '[]',
-            settings: '{}',
+            settings: JSON.stringify({ businessHoursEnabled: false, maxPerHour: 0, maxPerDay: 0, delayBetweenMessages: 0 }),
             allow_missing_fields: 0,
             schedule_type: 'once',
             status: 'pending',

@@ -136,6 +136,7 @@ if (require('fs').existsSync(FRONTEND_DIST)) {
 attachRealtimeAuth(io);
 
 messageQueue.setIO(io);
+require('./whatsapp/sessionManager').setIO(io);
 
 async function startServer() {
     try {
