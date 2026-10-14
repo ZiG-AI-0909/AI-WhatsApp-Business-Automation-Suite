@@ -27,13 +27,30 @@ The backend deploys from `render.yaml` as a Node web service
 - Optional: `APP_TIMEZONE` (IANA name, default `Asia/Kolkata`) — drives
   business-hours checks and schedule estimates
 
-### Database migrations
+### Required SQL migrations
 
-Run the `supabase-*.sql` migrations in Supabase before first deploy. The
-campaign reliability migration (`supabase-campaign-reliability-migration.sql`)
-adds pause/error tracking and the atomic counter recount function. The
-schedule-estimate cache requires `supabase-schedule-estimate-migration.sql`.
-These migrations are idempotent and safe to re-run.
+Run the SQL files below in the Supabase SQL Editor in this order. The
+application/schema migrations are idempotent where marked in their SQL.
+Feature migrations that depend on the multi-tenant schema must follow steps
+1–3. Run the campaign reliability migration before deploying the campaign
+queue changes; the backend checks for it at startup and once per minute.
+
+1. `supabase-migration.sql` — auth/profile foundation.
+2. `supabase-data-migration.sql` — application tables.
+3. `supabase-multitenant-migration.sql` — tenant ownership and isolation.
+4. `supabase-whatsapp-sessions-migration.sql` — per-user WhatsApp sessions.
+5. `supabase-ask-ai-migration.sql` — Ask AI history.
+6. `supabase-knowledge-internal-only-migration.sql` — requires step 5.
+7. `supabase-boq-migration.sql` — document/BOQ storage.
+8. `supabase-product-identification-migration.sql` — product identification.
+9. `supabase-email-migration.sql` — requires the data and multi-tenant migrations.
+10. `supabase-analytics-dashboard-migration.sql` — analytics aggregation.
+11. `supabase-unread-increment-migration.sql` — atomic unread counter RPC.
+12. `supabase-schedule-estimate-migration.sql` — schedule estimate cache.
+13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability changes.**
+
+Run the startup guard's migration if it logs:
+`Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`.
 
 ### API smoke check
 

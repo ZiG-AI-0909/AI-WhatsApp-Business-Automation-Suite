@@ -6,6 +6,12 @@ const fieldRenderer = require('./fieldRenderer');
 const messageQueue = require('./messageQueue');
 const { resolveCountryCode, findCountry } = require('../utils/countryCodes');
 const { parseJsonField } = require('../utils/jsonField');
+const { CAMPAIGN_MIGRATION_PENDING_MESSAGE, isMissingMigrationError } = require('../database/campaignReliabilityMigrationGuard');
+
+function translateCampaignMigrationError(error) {
+    if (!isMissingMigrationError(error)) return error;
+    return new Error(CAMPAIGN_MIGRATION_PENDING_MESSAGE);
+}
 
 class CampaignService {
     _parseCampaign(campaign) {
@@ -237,73 +243,81 @@ class CampaignService {
     }
 
     async start(campaignId, io, userId) {
-        const campaign = await this.get(campaignId, userId);
-        if (!campaign) throw new Error('Campaign not found');
-        if (!['draft', 'stopped', 'paused'].includes(campaign.status)) {
-            throw new Error(`Cannot start campaign in status: ${campaign.status}`);
-        }
-        await this._assertOwnerConnected(userId, campaign.provider || 'web');
+        try {
+            const campaign = await this.get(campaignId, userId);
+            if (!campaign) throw new Error('Campaign not found');
+            if (!['draft', 'stopped', 'paused'].includes(campaign.status)) {
+                throw new Error(`Cannot start campaign in status: ${campaign.status}`);
+            }
+            await this._assertOwnerConnected(userId, campaign.provider || 'web');
 
-        messageQueue.setIO(io);
-        const settings = parseJsonField(campaign.settings, {});
-        await messageQueue.start(campaignId, settings, userId);
+            messageQueue.setIO(io);
+            const settings = parseJsonField(campaign.settings, {});
+            await messageQueue.start(campaignId, settings, userId);
+        } catch (error) {
+            throw translateCampaignMigrationError(error);
+        }
     }
 
     async retryFailed(campaignId, io, userId) {
-        const campaign = await this.get(campaignId, userId);
-        if (!campaign) throw new Error('Campaign not found');
-        if (['running', 'paused'].includes(campaign.status) || messageQueue.getCurrentCampaignId(userId) !== null) {
-            throw new Error('Stop the current campaign before retrying failed contacts.');
+        try {
+            const campaign = await this.get(campaignId, userId);
+            if (!campaign) throw new Error('Campaign not found');
+            if (['running', 'paused'].includes(campaign.status) || messageQueue.getCurrentCampaignId(userId) !== null) {
+                throw new Error('Stop the current campaign before retrying failed contacts.');
+            }
+            if (!['failed', 'completed_with_errors', 'completed', 'stopped'].includes(campaign.status)) {
+                throw new Error(`Cannot retry failed contacts in status: ${campaign.status}`);
+            }
+            await this._assertOwnerConnected(userId, campaign.provider || 'web');
+
+            const failedIds = [];
+            const batchSize = 500;
+            for (let offset = 0; ; offset += batchSize) {
+                const page = await db.select(
+                    'campaign_contacts',
+                    'id',
+                    'campaign_id = ? AND user_id = ? AND status = ?',
+                    [campaignId, userId, 'failed'],
+                    'id',
+                    batchSize,
+                    offset,
+                );
+                if (!page.length) break;
+                failedIds.push(...page.map(row => row.id));
+                if (page.length < batchSize) break;
+            }
+            if (!failedIds.length) throw new Error('This campaign has no failed contacts to retry.');
+
+            let requeuedCount = 0;
+            for (let offset = 0; offset < failedIds.length; offset += batchSize) {
+                const ids = failedIds.slice(offset, offset + batchSize);
+                const requeued = await db.update(
+                    'campaign_contacts',
+                    { status: 'pending', attempts: 0, last_error: null, retry_at: null },
+                    'id IN (?) AND campaign_id = ? AND user_id = ? AND status = ?',
+                    [ids, campaignId, userId, 'failed'],
+                );
+                requeuedCount += requeued.length;
+            }
+            if (!requeuedCount) throw new Error('No failed contacts were available to retry.');
+
+            const counters = await db.recountCampaignCounters(campaignId, userId);
+
+            await db.update('campaigns', {
+                status: 'stopped',
+                ...counters,
+                pause_reason: null,
+                last_error: null,
+                completed_at: null,
+                updated_at: new Date(),
+            }, 'id = ? AND user_id = ?', [campaignId, userId]);
+
+            await this.start(campaignId, io, userId);
+            return { requeued: requeuedCount };
+        } catch (error) {
+            throw translateCampaignMigrationError(error);
         }
-        if (!['failed', 'completed_with_errors', 'completed', 'stopped'].includes(campaign.status)) {
-            throw new Error(`Cannot retry failed contacts in status: ${campaign.status}`);
-        }
-        await this._assertOwnerConnected(userId, campaign.provider || 'web');
-
-        const failedIds = [];
-        const batchSize = 500;
-        for (let offset = 0; ; offset += batchSize) {
-            const page = await db.select(
-                'campaign_contacts',
-                'id',
-                'campaign_id = ? AND user_id = ? AND status = ?',
-                [campaignId, userId, 'failed'],
-                'id',
-                batchSize,
-                offset,
-            );
-            if (!page.length) break;
-            failedIds.push(...page.map(row => row.id));
-            if (page.length < batchSize) break;
-        }
-        if (!failedIds.length) throw new Error('This campaign has no failed contacts to retry.');
-
-        let requeuedCount = 0;
-        for (let offset = 0; offset < failedIds.length; offset += batchSize) {
-            const ids = failedIds.slice(offset, offset + batchSize);
-            const requeued = await db.update(
-                'campaign_contacts',
-                { status: 'pending', attempts: 0, last_error: null, retry_at: null },
-                'id IN (?) AND campaign_id = ? AND user_id = ? AND status = ?',
-                [ids, campaignId, userId, 'failed'],
-            );
-            requeuedCount += requeued.length;
-        }
-        if (!requeuedCount) throw new Error('No failed contacts were available to retry.');
-
-        const counters = await db.recountCampaignCounters(campaignId, userId);
-
-        await db.update('campaigns', {
-            status: 'stopped',
-            ...counters,
-            pause_reason: null,
-            last_error: null,
-            completed_at: null,
-            updated_at: new Date(),
-        }, 'id = ? AND user_id = ?', [campaignId, userId]);
-
-        await this.start(campaignId, io, userId);
-        return { requeued: requeuedCount };
     }
 
     pause(campaignId, userId) {
