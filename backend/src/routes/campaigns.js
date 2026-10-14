@@ -56,6 +56,48 @@ router.get('/queue-status', (req, res) => {
     res.json(campaignService.getQueueStatus(req.user.id));
 });
 
+router.get('/queue-estimates', async (req, res) => {
+    try {
+        res.json(await campaignService.estimateQueue(req.user.id));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.post('/queue/reorder', async (req, res) => {
+    try {
+        const campaigns = await campaignService.reorderQueue(req.body?.ids, req.user.id);
+        res.json({ success: true, campaigns });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+router.post('/:id/duplicate', async (req, res) => {
+    try {
+        const result = await campaignService.duplicate(+req.params.id, req.user.id, req.body || {});
+        res.status(201).json(result);
+    } catch (err) {
+        res.status(err.statusCode || 400).json({ error: err.message });
+    }
+});
+
+router.post('/:id/queue', async (req, res) => {
+    try {
+        res.json(await campaignService.queue(+req.params.id, req.user.id));
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+router.post('/:id/unqueue', async (req, res) => {
+    try {
+        res.json(await campaignService.unqueue(+req.params.id, req.user.id));
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
 // POST /api/campaigns/bulk-delete
 router.post('/bulk-delete', async (req, res) => {
     if (!validIds(req.body?.ids)) return res.status(400).json({ error: 'ids must be a non-empty array of integers' });
@@ -74,6 +116,14 @@ router.get('/:id', async (req, res) => {
         res.json(c);
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+router.patch('/:id', async (req, res) => {
+    try {
+        res.json(await campaignService.updateDraft(+req.params.id, req.user.id, req.body || {}));
+    } catch (err) {
+        res.status(err.statusCode || 400).json({ error: err.message });
     }
 });
 
@@ -190,7 +240,7 @@ router.post('/preview', async (req, res) => {
 
 // POST /api/campaigns
 router.post('/', async (req, res) => {
-    const { name, templateMessage, filePath, settings, allowMissingFields, mediaPath, mediaBucket, mediaObjectPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode } = req.body;
+    const { name, templateMessage, filePath, settings, allowMissingFields, mediaPath, mediaBucket, mediaObjectPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode, excludeMessaged, excludeCampaignIds } = req.body;
     if (!name?.trim() || !templateMessage?.trim() || !filePath) {
         return res.status(400).json({ error: 'name, templateMessage, and filePath required' });
     }
@@ -199,7 +249,7 @@ router.post('/', async (req, res) => {
         const resolvedFilePath = filePath;
         const resolvedMediaPath = mediaPath || null;
 
-        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaBucket, mediaObjectPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode });
+        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaBucket, mediaObjectPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode, excludeMessaged: !!excludeMessaged, excludeCampaignIds });
         res.status(201).json(campaign);
     } catch (err) {
         res.status(400).json({ error: err.message });

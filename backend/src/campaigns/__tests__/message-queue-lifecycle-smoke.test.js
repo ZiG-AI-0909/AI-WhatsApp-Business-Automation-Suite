@@ -9,6 +9,7 @@ const USER_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 async function main() {
     const original = {
         getById: db.getById, update: db.update, select: db.select, count: db.count,
+        claimCampaignToRun: db.claimCampaignToRun,
         findByPhone: contactService.findByPhone, process: queue._process, sender: queue._getSender,
         io: queue._io,
     };
@@ -21,6 +22,7 @@ async function main() {
         [3, { id: 3, user_id: USER_B, name: 'other', status: 'draft', provider: 'web', settings: '{}' }],
     ]);
     let updates = 0;
+    let claims = 0;
     let getByIdDeferred = null;
     let selectInterrupted = false;
     let selectPending = false;
@@ -34,6 +36,14 @@ async function main() {
         if (updates === 1) throw new Error('planned start update failure');
         if (table === 'campaigns' && data.status === 'failed') return [];
         return [];
+    };
+    db.claimCampaignToRun = async (userId, id, expectedStatus) => {
+        claims += 1;
+        if (claims === 1) throw new Error('planned start update failure');
+        const campaign = campaigns.get(Number(id));
+        if (!campaign || campaign.user_id !== userId) return [];
+        campaign.status = 'running';
+        return [campaign];
     };
     db.select = async (table) => {
         if (table === 'campaigns' && selectInterrupted) {
@@ -127,7 +137,7 @@ async function main() {
         queue._process = original.process;
         queue._getSender = original.sender;
         queue._io = original.io;
-        Object.assign(db, { getById: original.getById, update: original.update, select: original.select, count: original.count });
+        Object.assign(db, { getById: original.getById, update: original.update, select: original.select, count: original.count, claimCampaignToRun: original.claimCampaignToRun });
         contactService.findByPhone = original.findByPhone;
     }
 }

@@ -47,7 +47,7 @@ queue changes; the backend checks for it at startup and once per minute.
 10. `supabase-analytics-dashboard-migration.sql` — analytics aggregation.
 11. `supabase-unread-increment-migration.sql` — atomic unread counter RPC.
 12. `supabase-schedule-estimate-migration.sql` — schedule estimate cache.
-13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability changes; includes campaign media bucket/object metadata.**
+13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability, queue, and duplicate-draft changes; includes campaign media metadata, queue columns/index, source campaign id, recipient-row data, and atomic per-user queue RPCs.**
 
 Run the startup guard's migration if it logs:
 `Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`.
@@ -58,6 +58,19 @@ visibility. The service-role backend downloads attachments before a campaign
 starts; images are limited to 5 MB (JPEG, PNG, WEBP) and PDF documents to 16 MB.
 After applying updated campaign reliability SQL, use **Send test to my number**
 to verify an attachment before starting a large campaign.
+If this migration was already run, rerun the updated idempotent SQL file to add
+`queue_position`, `queued_at`, `source_campaign_id`, `campaign_contacts.contact_data`,
+and the queue RPC functions before deploying campaign queueing and duplicate
+drafts.
+
+### Campaign queue and draft copies
+
+Use **Add to queue** to persist per-user campaign order; eligible completed
+campaigns hand off to the next item automatically. Queue ordering and running
+claims are serialized by migration RPCs. The Campaigns view also lets you
+duplicate a finished campaign into an editable draft, including its attachment
+reference; the shared media object is retained until no campaign references it.
+Apply the migration before using these controls.
 
 ### API smoke check
 

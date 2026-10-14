@@ -46,6 +46,7 @@ async function main() {
         const ids = Array.from({ length: FAILED_TOTAL }, (_, id) => ({ id: id + 1 }));
         return ids.slice(offset, offset + limit);
     };
+    db.count = async table => table === 'campaign_contacts' ? FAILED_TOTAL : 0;
     db.update = async (table, data, where, params) => {
         updates.push({ table, data, where, params });
         if (table === 'campaign_contacts') return params[0].map(id => ({ id }));

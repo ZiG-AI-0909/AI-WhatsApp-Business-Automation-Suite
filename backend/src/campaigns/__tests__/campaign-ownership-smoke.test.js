@@ -10,14 +10,15 @@ const USER_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const campaigns = new Map([[101, { id: 101, user_id: USER_A, name: 'A campaign', status: 'draft', provider: 'web', settings: '{}' }]]);
 
 async function main() {
-    const originals = { getById: db.getById, update: db.update, select: db.select, count: db.count };
+    const originals = { getById: db.getById, update: db.update, select: db.select, count: db.count, claimCampaignToRun: db.claimCampaignToRun };
     let finishContactSelect;
     db.getById = async (table, id, userId) => table === 'campaigns' && campaigns.get(Number(id))?.user_id === userId ? { ...campaigns.get(Number(id)) } : null;
     db.update = async () => [];
+    db.claimCampaignToRun = async (_userId, id) => [{ id }];
     db.select = async (table) => table === 'campaign_contacts'
         ? new Promise(resolve => { finishContactSelect = resolve; })
         : [];
-    db.count = async () => 0;
+    db.count = async table => table === 'campaign_contacts' ? 1 : 0;
     campaignService._assertOwnerConnected = async () => {};
     await campaignService.start(101, null, USER_A);
     await new Promise(resolve => setImmediate(resolve));

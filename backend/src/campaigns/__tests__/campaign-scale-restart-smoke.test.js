@@ -17,6 +17,7 @@ async function main() {
         update: db.update,
         count: db.count,
         recountCampaignCounters: db.recountCampaignCounters,
+        claimCampaignToRun: db.claimCampaignToRun,
         parse: excelParser.parse,
         getValidRows: excelParser.getValidRows,
         upsertMany: contactService.upsertMany,
@@ -55,6 +56,12 @@ async function main() {
     db.getById = async (table, id, userId) => {
         assert.equal(userId, USER_ID);
         return table === 'campaigns' ? campaigns.find(row => row.id === id) || null : null;
+    };
+    db.claimCampaignToRun = async (userId, id, expectedStatus) => {
+        const campaign = campaigns.find(row => row.id === id && row.user_id === userId && row.status === expectedStatus);
+        if (!campaign) return [];
+        campaign.status = 'running';
+        return [campaign];
     };
     db.select = async (table, _columns, where, params, _order, limit = 1000, offset = 0) => {
         if (table === 'campaigns') {
@@ -167,6 +174,7 @@ async function main() {
             update: original.update,
             count: original.count,
             recountCampaignCounters: original.recountCampaignCounters,
+            claimCampaignToRun: original.claimCampaignToRun,
         });
         Object.assign(excelParser, { parse: original.parse, getValidRows: original.getValidRows });
         contactService.upsertMany = original.upsertMany;

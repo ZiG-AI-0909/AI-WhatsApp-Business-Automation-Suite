@@ -19,10 +19,12 @@ async function testMigrationGuardDetectsMissingSchemaAndRecovers() {
     };
     const client = {
         from(table) {
-            assert.equal(table, 'campaigns');
+            assert.ok(['campaigns', 'campaign_contacts'].includes(table));
             return {
                 select(columns) {
-                    assert.equal(columns, 'pause_reason,last_error,media_bucket,media_object_path');
+                    assert.equal(columns, table === 'campaigns'
+                        ? 'pause_reason,last_error,media_bucket,media_object_path,queue_position,queued_at,source_campaign_id'
+                        : 'contact_data');
                     return {
                         limit(limit) {
                             assert.equal(limit, 0);
@@ -35,11 +37,19 @@ async function testMigrationGuardDetectsMissingSchemaAndRecovers() {
             };
         },
         async rpc(name, args) {
-            assert.equal(name, 'recount_campaign_counters');
-            assert.deepEqual(args, {
-                p_campaign_id: 0,
-                p_user_id: '00000000-0000-0000-0000-000000000000',
-            });
+            if (name === 'recount_campaign_counters') {
+                assert.deepEqual(args, {
+                    p_campaign_id: 0,
+                    p_user_id: '00000000-0000-0000-0000-000000000000',
+                });
+            } else {
+                assert.equal(name, 'claim_campaign_to_run');
+                assert.deepEqual(args, {
+                    p_user_id: '00000000-0000-0000-0000-000000000000',
+                    p_campaign_id: null,
+                    p_expected_status: null,
+                });
+            }
             return rpcAvailable
                 ? { data: [], error: null }
                 : { data: null, error: { code: 'PGRST202', message: 'Could not find the function in the schema cache' } };

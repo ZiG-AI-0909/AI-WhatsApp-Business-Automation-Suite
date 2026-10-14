@@ -5,14 +5,20 @@ const queue = require('../messageQueue');
 const USER_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 async function main() {
-    const original = { getById: db.getById, update: db.update, process: queue._process };
+    const original = { getById: db.getById, update: db.update, claimCampaignToRun: db.claimCampaignToRun, process: queue._process };
+    let claimed = false;
     let releaseRead;
     const readGate = new Promise(resolve => { releaseRead = resolve; });
     db.getById = async (table, id, userId) => {
         await readGate;
         return table === 'campaigns' && userId === USER_A
-            ? { id: Number(id), user_id: USER_A, name: 'campaign', provider: 'web', settings: '{}' }
+            ? { id: Number(id), user_id: USER_A, name: 'campaign', provider: 'web', settings: '{}', status: 'draft' }
             : null;
+    };
+    db.claimCampaignToRun = async (userId, id) => {
+        if (claimed) return [];
+        claimed = true;
+        return [{ id: Number(id), user_id: userId }];
     };
     db.update = async () => [];
     queue._process = async () => {};
@@ -36,7 +42,7 @@ async function main() {
             queue._ownerUserId = null;
         }
         queue._process = original.process;
-        Object.assign(db, { getById: original.getById, update: original.update });
+        Object.assign(db, { getById: original.getById, update: original.update, claimCampaignToRun: original.claimCampaignToRun });
     }
 }
 

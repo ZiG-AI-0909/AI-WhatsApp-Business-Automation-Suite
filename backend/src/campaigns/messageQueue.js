@@ -153,19 +153,19 @@ class MessageQueue {
             _mediaBuffer: null,
             _mediaPath: null,
         });
-        this._queues.set(userId, worker);
         try {
             const campaign = await db.getById('campaigns', campaignId, userId);
             if (!campaign) throw new Error('Campaign not found');
+            if (!['draft', 'stopped', 'paused', 'queued'].includes(campaign.status)) {
+                throw new Error(`Cannot start campaign in status: ${campaign.status}`);
+            }
             worker._provider = campaign.provider || 'web';
             await worker._loadCampaignMedia(campaign);
-            await this._update(worker, 'campaigns', {
-                status: 'running',
-                started_at: campaign.started_at || new Date(),
-                pause_reason: null,
-                last_error: null,
-                updated_at: new Date(),
-            }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            const claimed = await db.claimCampaignToRun(userId, campaignId, campaign.status);
+            if (!claimed.length) {
+                throw new Error('Another campaign is already running, or this campaign is no longer available to start.');
+            }
+            this._queues.set(userId, worker);
             worker._emit('campaign:started', { campaignId, name: campaign.name });
             this._startProcessor(worker);
         } catch (error) {
@@ -331,6 +331,9 @@ class MessageQueue {
                 this._emit(status === 'failed' ? 'campaign:error' : 'campaign:completed', { campaignId, status });
                 this._running = false;
                 this._queues.delete(userId);
+                if (status === 'completed' || status === 'completed_with_errors') {
+                    await this._startNextQueuedCampaign?.(userId);
+                }
                 break;
             }
 
@@ -565,6 +568,128 @@ class MessageQueue {
         }
     }
 
+    async _ownerIsConnected(userId, provider) {
+        if (provider === 'business') {
+            return require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected';
+        }
+        const sessionManager = require('../whatsapp/sessionManager');
+        if (sessionManager.getStatus(userId) === 'connected') return true;
+        return !!await sessionManager.ensureConnected(
+            userId,
+            Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000)
+        );
+    }
+
+    async _pauseQueuedCampaign(campaign, reason, error) {
+        const worker = Object.create(this);
+        worker._campaignId = campaign.id;
+        worker._ownerUserId = campaign.user_id;
+        worker._io = this._io;
+        const message = String(error?.message || error || 'Campaign could not be started.').slice(0, 500);
+        const updated = await this._update(worker, 'campaigns', {
+            status: 'paused',
+            pause_reason: reason,
+            last_error: message,
+            queue_position: null,
+            queued_at: null,
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ? AND status = ?', [campaign.id, campaign.user_id, 'queued']);
+        if (updated?.length) {
+            await this._normalizeQueuedPositions(campaign.user_id);
+            worker._emit('campaign:paused', { campaignId: campaign.id, reason, error: message });
+        }
+    }
+
+    async _normalizeQueuedPositions(userId) {
+        const ids = [];
+        const pageSize = 500;
+        for (let offset = 0; ; offset += pageSize) {
+            const page = await db.select(
+                'campaigns',
+                'id',
+                'user_id = ? AND status = ?',
+                [userId, 'queued'],
+                'queue_position asc',
+                pageSize,
+                offset,
+            );
+            ids.push(...page.map(row => row.id));
+            if (page.length < pageSize) break;
+        }
+        if (ids.length) await db.reorderCampaignQueue(userId, ids);
+    }
+
+    async _startNextQueuedCampaign(userId, retry = 0) {
+        if (!userId || this._worker(userId)?._running) return null;
+        const [campaign] = await db.select(
+            'campaigns',
+            '*',
+            'user_id = ? AND status = ?',
+            [userId, 'queued'],
+            'queue_position asc',
+            1,
+            0,
+        );
+        if (!campaign) return null;
+
+        try {
+            if (!await this._ownerIsConnected(userId, campaign.provider || 'web')) {
+                throw Object.assign(new Error('WhatsApp is not connected. Reconnect to continue this queued campaign.'), {
+                    pauseReason: 'whatsapp_disconnected',
+                });
+            }
+            await this.start(campaign.id, parseJsonField(campaign.settings, {}), userId);
+            return campaign.id;
+        } catch (error) {
+            const current = await db.getById('campaigns', campaign.id, userId);
+            const anotherRunning = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'running']);
+            if (current?.status !== 'queued' || anotherRunning > 0) return null;
+            const [head] = await db.select(
+                'campaigns',
+                'id',
+                'user_id = ? AND status = ?',
+                [userId, 'queued'],
+                'queue_position asc',
+                1,
+                0,
+            );
+            if (head && String(head.id) !== String(campaign.id)) {
+                return retry < 1 ? this._startNextQueuedCampaign(userId, retry + 1) : null;
+            }
+            const reason = error.pauseReason
+                || (campaign.media_path ? 'media_load_failed' : 'campaign_start_failed');
+            console.error(`[messageQueue] Queued campaign could not start campaign=${campaign.id} user=${userId} reason=${reason}: ${error.message}`);
+            await this._pauseQueuedCampaign(campaign, reason, error);
+            return null;
+        }
+    }
+
+    async queueCampaign(campaignId, userId) {
+        const [campaign] = await db.enqueueCampaign(campaignId, userId);
+        if (!campaign) throw new Error('Campaign is not available to queue.');
+        const running = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'running']);
+        if (!running) await this._startNextQueuedCampaign(userId);
+        return this._getCampaignForOwner(campaignId, userId);
+    }
+
+    async _getCampaignForOwner(campaignId, userId) {
+        return db.getById('campaigns', campaignId, userId);
+    }
+
+    async unqueueCampaign(campaignId, userId) {
+        const [campaign] = await db.unqueueCampaign(campaignId, userId);
+        if (!campaign) throw new Error('Campaign is not queued.');
+        return campaign;
+    }
+
+    async reorderQueue(userId, orderedIds) {
+        return db.reorderCampaignQueue(userId, orderedIds);
+    }
+
+    normalizeQueuePositions(userId) {
+        return this._normalizeQueuedPositions(userId);
+    }
+
     /**
      * Resume any campaign left running/paused by a restart. Ownership comes
      * from the row's own user_id — each resumed campaign sends only through
@@ -586,7 +711,7 @@ class MessageQueue {
         let offset = 0;
         try {
             while (true) {
-                const page = await db.select('campaigns', '*', "status IN ('running', 'paused')", [], 'id', pageSize, offset);
+                const page = await db.select('campaigns', '*', "status IN ('running', 'paused', 'queued')", [], 'id', pageSize, offset);
                 if (!page?.length) break;
                 campaigns.push(...page);
                 offset += page.length;
@@ -615,7 +740,7 @@ class MessageQueue {
                 const resumedId = await this.resumeDisconnectedCampaigns(userId, connectionPaused);
                 if (resumedId !== null) {
                     resumed = resumed ?? resumedId;
-                    for (const duplicate of ownerCampaigns.filter(row => String(row.id) !== String(resumedId))) {
+                    for (const duplicate of ownerCampaigns.filter(row => ['running', 'paused'].includes(row.status) && String(row.id) !== String(resumedId))) {
                         await this._update(this, 'campaigns', {
                             status: 'stopped',
                             completed_at: new Date(),
@@ -629,7 +754,7 @@ class MessageQueue {
             const existingWorker = this._worker(userId);
             if (existingWorker?._running && existingWorker._campaignId) {
                 alreadyRunning = true;
-                for (const duplicate of ownerCampaigns) {
+                for (const duplicate of ownerCampaigns.filter(row => ['running', 'paused'].includes(row.status))) {
                     if (String(duplicate.id) === String(existingWorker._campaignId)) continue;
                     try {
                         await this._update(existingWorker, 'campaigns', {
@@ -644,7 +769,14 @@ class MessageQueue {
                 continue;
             }
 
-            const activeCampaign = ownerCampaigns[0];
+            const activeCampaign = ownerCampaigns
+                .filter(row => ['running', 'paused'].includes(row.status))
+                .sort((a, b) => (a.status === 'running' ? -1 : 0) - (b.status === 'running' ? -1 : 0) || Number(a.id) - Number(b.id))[0];
+            if (!activeCampaign) {
+                const queuedId = await this._startNextQueuedCampaign(userId);
+                if (queuedId !== null) resumed = resumed ?? queuedId;
+                continue;
+            }
             const worker = Object.create(this);
             const settings = parseJsonField(activeCampaign.settings, {});
             Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
@@ -676,7 +808,7 @@ class MessageQueue {
             if (!worker._paused) this._startProcessor(worker);
             if (resumed === null) resumed = activeCampaign.id;
 
-            for (const extra of ownerCampaigns.slice(1)) {
+            for (const extra of ownerCampaigns.filter(row => ['running', 'paused'].includes(row.status) && String(row.id) !== String(activeCampaign.id))) {
                 try {
                     await this._update(worker, 'campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [extra.id, userId]);
                 } catch (error) {

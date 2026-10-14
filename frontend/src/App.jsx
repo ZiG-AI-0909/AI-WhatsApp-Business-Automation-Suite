@@ -45,6 +45,29 @@ function SourceMarker({ source }) {
   return <span className={`source-marker ${source}`}>{source === 'verified' ? '✓ Verified scan' : '◌ Review scanned contact'}</span>
 }
 
+const editCampaignDraft = (campaign, event) => {
+  event?.stopPropagation()
+  const parse = (value, fallback) => {
+    if (typeof value !== 'string') return value || fallback
+    try { return JSON.parse(value) } catch { return fallback }
+  }
+  setSelectedCampaign(campaign)
+  setDraftEditCampaignId(campaign.id)
+  setDraftEdit({
+    name: campaign.name,
+    template_message: campaign.template_message || '',
+    settings: parse(campaign.settings, {}),
+    buttons: parse(campaign.buttons, []),
+    media_path: campaign.media_path || '',
+    media_bucket: campaign.media_bucket || '',
+    media_object_path: campaign.media_object_path || '',
+    media_type: campaign.media_type || '',
+    media_filename: campaign.media_filename || '',
+    media_mimetype: campaign.media_mimetype || '',
+  })
+  setDraftExcelPath('')
+}
+
 function LeadPriorityDashboard() {
   const [filter, setFilter] = useState('all')
   const [composer, setComposer] = useState(null)
@@ -78,11 +101,21 @@ const defaultTemplate = `Hello {{name}} 👋\n\nThis is Sudarshan Pipes.\nWe wan
 function CampaignsView({ onNavigate }) {
   const [campaignList, setCampaignList] = useState([])
   const [campaignEstimate, setCampaignEstimate] = useState(null)
+  const [queueEstimates, setQueueEstimates] = useState({})
   const [schedules, setSchedules] = useState([])
   const [scheduleEstimates, setScheduleEstimates] = useState({})
   const [selectedScheduleIds, setSelectedScheduleIds] = useState([])
   const [selectedIds, setSelectedIds] = useState([])
   const [selectedCampaign, setSelectedCampaign] = useState(null)
+  const [duplicateDialog, setDuplicateDialog] = useState(null)
+  const [duplicateName, setDuplicateName] = useState('')
+  const [duplicateContacts, setDuplicateContacts] = useState('all')
+  const [draftEdit, setDraftEdit] = useState(null)
+  const [draftEditCampaignId, setDraftEditCampaignId] = useState(null)
+  const [draftExcelPath, setDraftExcelPath] = useState('')
+  const [draftRecipientsMode, setDraftRecipientsMode] = useState('replace')
+  const [excludeMessaged, setExcludeMessaged] = useState(false)
+  const [excludeCampaignIds, setExcludeCampaignIds] = useState([])
   const [file, setFile] = useState(null)
   const [mediaFile, setMediaFile] = useState(null)
   const [mediaPath, setMediaPath] = useState('')
@@ -116,10 +149,123 @@ function CampaignsView({ onNavigate }) {
   const [message, setMessage] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
 
+  const openDuplicateDialog = (campaign, event) => {
+    event?.stopPropagation()
+    setDuplicateDialog(campaign)
+    setDuplicateName(`${campaign.name} (copy)`)
+    setDuplicateContacts('all')
+  }
+
+  const duplicateCampaign = async () => {
+    if (!duplicateDialog) return
+    setBusy(true)
+    try {
+      const result = await apiFetch(`/campaigns/${duplicateDialog.id}/duplicate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: duplicateName, contacts: duplicateContacts, excludeMessaged, excludeCampaignIds }),
+      })
+      setSelectedCampaign(result.campaign)
+      setDraftEditCampaignId(result.campaign.id)
+      setDraftEdit({
+        name: result.campaign.name,
+        template_message: result.campaign.template_message || '',
+        settings: typeof result.campaign.settings === 'string' ? JSON.parse(result.campaign.settings || '{}') : (result.campaign.settings || {}),
+        buttons: typeof result.campaign.buttons === 'string' ? JSON.parse(result.campaign.buttons || '[]') : (result.campaign.buttons || []),
+        media_path: result.campaign.media_path || '',
+        media_bucket: result.campaign.media_bucket || '',
+        media_object_path: result.campaign.media_object_path || '',
+        media_type: result.campaign.media_type || '',
+        media_filename: result.campaign.media_filename || '',
+        media_mimetype: result.campaign.media_mimetype || '',
+      })
+      setDraftExcelPath('')
+      setDraftRecipientsMode('replace')
+      setDuplicateDialog(null)
+      setMessage({ type: 'success', text: `Draft created. ${result.skippedOptedOut} opted-out contacts skipped${result.excludedMessaged ? `; ${result.excludedMessaged} previously messaged contacts excluded` : ''}.` })
+      await loadCampaigns()
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Duplicate campaign' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveCampaignDraft = async (action = 'save') => {
+    if (!selectedCampaign || !draftEdit) return
+    setBusy(true)
+    try {
+      const updated = await apiFetch(`/campaigns/${selectedCampaign.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...draftEdit, filePath: draftExcelPath || undefined, recipientsMode: draftRecipientsMode, excludeMessaged, excludeCampaignIds }),
+      })
+      setSelectedCampaign(updated)
+      setDraftEdit({
+        ...draftEdit,
+        settings: typeof updated.settings === 'string' ? JSON.parse(updated.settings || '{}') : updated.settings,
+        buttons: typeof updated.buttons === 'string' ? JSON.parse(updated.buttons || '[]') : updated.buttons,
+      })
+      setDraftExcelPath('')
+      setDraftRecipientsMode('replace')
+      await loadCampaigns()
+      if (action === 'start') {
+        await apiFetch(`/campaigns/${updated.id}/start`, { method: 'POST' })
+        setDraftEdit(null)
+      } else if (action === 'queue') {
+        await apiFetch(`/campaigns/${updated.id}/queue`, { method: 'POST' })
+        setDraftEdit(null)
+      }
+      await loadCampaigns()
+      const excludedNote = Number(updated.excluded_messaged_count) > 0 ? ` ${updated.excluded_messaged_count} previously messaged contacts excluded.` : ''
+      setMessage({ type: 'success', text: (action === 'start' ? 'Draft saved and started.' : action === 'queue' ? 'Draft saved and added to the queue.' : 'Draft saved.') + excludedNote })
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign draft' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const uploadDraftExcel = async (event) => {
+    const excelFile = event.target.files?.[0]
+    if (!excelFile) return
+    const formData = new FormData()
+    formData.append('file', excelFile)
+    formData.append('countryCode', uploadCountryCode || '91')
+    setBusy(true)
+    try {
+      const result = await apiFetch('/campaigns/validate-excel', { method: 'POST', body: formData })
+      setDraftExcelPath(result.filePath)
+      setMessage({ type: 'success', text: `${result.valid} valid recipients ready to replace the draft list.` })
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign recipients' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const uploadDraftMedia = async (event) => {
+    const media = event.target.files?.[0]
+    if (!media || !draftEdit) return
+    const formData = new FormData()
+    formData.append('file', media)
+    setBusy(true)
+    try {
+      const result = await apiFetch('/campaigns/media', { method: 'POST', body: formData })
+      setDraftEdit(current => ({ ...current, media_path: result.mediaPath, media_bucket: result.mediaBucket, media_object_path: result.mediaObjectPath, media_type: result.mediaType, media_filename: result.filename, media_mimetype: result.mimetype }))
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign media' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const loadCampaigns = async () => {
     try {
-      const data = await apiFetch('/campaigns?limit=50')
-      setCampaignList(data.data || [])
+      const data = await apiFetch('/campaigns?limit=1000')
+      const campaigns = data.data || []
+      setCampaignList(campaigns)
+      setQueueEstimates(await apiFetch('/campaigns/queue-estimates'))
       if (selectedCampaign) {
         const current = (data.data || []).find((item) => item.id === selectedCampaign.id)
         if (current) setSelectedCampaign(current)
@@ -369,8 +515,10 @@ function CampaignsView({ onNavigate }) {
         retryCount: 2,
         retryDelay: 30000,
         circuitBreakerThreshold: Number(circuitBreakerThreshold),
+        excludeMessaged,
+        excludeCampaignIds,
       }
-      if (scheduleType !== 'now') {
+      if (['once', 'recurring'].includes(scheduleType)) {
         if (scheduleType === 'once' && (!runAt || new Date(runAt) <= new Date())) throw new Error('Choose a future date and time.')
         const recurrenceCron = scheduleType === 'recurring' ? (recurrenceMode === 'custom' ? customCron.trim() : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()) : undefined
         await apiFetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaBucket: mediaBucket || undefined, mediaObjectPath: mediaObjectPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, scheduleType, runAt: scheduleType === 'once' ? new Date(runAt).toISOString() : undefined, recurrenceCron, countryCode: uploadCountryCode || undefined }) })
@@ -380,10 +528,16 @@ function CampaignsView({ onNavigate }) {
         const campaign = await apiFetch('/campaigns', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaBucket: mediaBucket || undefined, mediaObjectPath: mediaObjectPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, countryCode: uploadCountryCode || undefined }),
+          body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaBucket: mediaBucket || undefined, mediaObjectPath: mediaObjectPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, countryCode: uploadCountryCode || undefined, excludeMessaged, excludeCampaignIds }),
         })
+        if (scheduleType === 'queue') {
+          await apiFetch(`/campaigns/${campaign.id}/queue`, { method: 'POST' })
+        } else {
+          await apiFetch(`/campaigns/${campaign.id}/start`, { method: 'POST' })
+        }
         setSelectedCampaign(campaign)
-        setMessage({ type: 'success', text: `Campaign created with ${campaign.total_contacts} queued contacts.` })
+        const excludedNote = Number(campaign.excluded_messaged_count) > 0 ? ` ${campaign.excluded_messaged_count} previously messaged contacts excluded.` : ''
+        setMessage({ type: 'success', text: (scheduleType === 'queue' ? `Campaign added to the queue with ${campaign.total_contacts} contacts.` : `Campaign started with ${campaign.total_contacts} contacts.`) + excludedNote })
         await loadCampaigns()
       }
       setName('')
@@ -474,6 +628,45 @@ function CampaignsView({ onNavigate }) {
   const bulkDeleteSchedules = async () => { if (!selectedScheduleIds.length || !window.confirm(`Delete ${selectedScheduleIds.length} selected schedule(s)?`)) return; try { await apiFetch('/schedules/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedScheduleIds }) }); setSelectedScheduleIds([]); await loadSchedules() } catch (error) { setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) }) } }
 
   const statusClass = (status) => `campaign-status ${status === 'completed_with_errors' ? 'completed-with-errors' : String(status || '').toLowerCase()}`
+  const queuedCampaigns = campaignList.filter((campaign) => campaign.status === 'queued').sort((a, b) => (a.queue_position || 0) - (b.queue_position || 0))
+  const queueStartEstimate = (campaign) => {
+    const targetIndex = queuedCampaigns.findIndex((item) => item.id === campaign.id)
+    if (targetIndex < 0 || !queueEstimates[campaign.id]) return null
+    const running = campaignList.find((item) => item.status === 'running')
+    const runningEstimate = running ? queueEstimates[running.id] : null
+    const firstQueuedStart = queueEstimates[queuedCampaigns[0]?.id]?.startAt
+    const base = runningEstimate?.endAt ? new Date(runningEstimate.endAt) : firstQueuedStart ? new Date(firstQueuedStart) : new Date()
+    const precedingDuration = queuedCampaigns.slice(0, targetIndex)
+      .reduce((total, item) => total + (Number(queueEstimates[item.id]?.durationMs) || 0), 0)
+    return new Date(base.getTime() + precedingDuration)
+  }
+  const moveQueuedCampaign = async (campaign, direction, event) => {
+    event.stopPropagation()
+    const index = queuedCampaigns.findIndex((item) => item.id === campaign.id)
+    const nextIndex = index + direction
+    if (nextIndex < 0 || nextIndex >= queuedCampaigns.length) return
+    const reordered = [...queuedCampaigns]
+    ;[reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]]
+    try {
+      await apiFetch('/campaigns/queue/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: reordered.map((item) => item.id) }),
+      })
+      await loadCampaigns()
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign queue' }) })
+    }
+  }
+  const removeQueuedCampaign = async (campaign, event) => {
+    event.stopPropagation()
+    try {
+      await apiFetch(`/campaigns/${campaign.id}/unqueue`, { method: 'POST' })
+      await loadCampaigns()
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign queue' }) })
+    }
+  }
   const selectedProviderConnected = selectedCampaign?.provider === 'business'
     ? whatsappStatus.businessStatus === 'connected'
     : whatsappStatus.status === 'connected'
@@ -510,6 +703,16 @@ function CampaignsView({ onNavigate }) {
       </div>
 
       {message.text && <div className={`notice ${message.type}`}>{message.text}</div>}
+      {duplicateDialog && <div className="compose-backdrop" role="dialog" aria-modal="true" aria-label="Duplicate campaign">
+        <section className="compose-panel">
+          <div className="panel-header"><div><p className="eyebrow">Create editable draft</p><h2>Duplicate {duplicateDialog.name}</h2></div><button type="button" className="secondary-btn" onClick={() => setDuplicateDialog(null)}>Close</button></div>
+          <label className="form-label">Draft name<input value={duplicateName} onChange={(event) => setDuplicateName(event.target.value)} /></label>
+          <label className="form-label">Recipients<select value={duplicateContacts} onChange={(event) => setDuplicateContacts(event.target.value)}><option value="all">All original recipients</option><option value="unsent">Only unsent (pending, skipped, failed)</option><option value="failed">Only failed</option><option value="none">None — upload a new list in the editor</option></select></label>
+          <label className="check-label"><input type="checkbox" checked={excludeMessaged} onChange={(event) => setExcludeMessaged(event.target.checked)} /> Exclude any contact already messaged in an earlier campaign</label>
+          {excludeMessaged && <label className="form-label">Limit exclusion to selected campaigns (leave empty for all earlier campaigns)<select multiple size="3" value={excludeCampaignIds.map(String)} onChange={(event) => setExcludeCampaignIds(Array.from(event.target.selectedOptions, option => Number(option.value)))}>{campaignList.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+          <div className="button-row"><button type="button" className="primary-btn" disabled={busy} onClick={duplicateCampaign}>Create draft</button><button type="button" className="secondary-btn" onClick={() => setDuplicateDialog(null)}>Cancel</button></div>
+        </section>
+      </div>}
 
       <div className="campaign-layout">
         <section className="panel campaign-builder">
@@ -518,7 +721,7 @@ function CampaignsView({ onNavigate }) {
             {whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
             <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
             <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
-            <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Now</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
+            <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Start now</option><option value="queue">Add to queue</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
             <label className="form-label">Pause after identical send errors<input type="number" min="1" step="1" value={circuitBreakerThreshold} onChange={(event) => setCircuitBreakerThreshold(event.target.value)} required /><small>Default: 5. “Number is not registered” remains a contact-level error.</small></label>
             {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
             {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
@@ -551,12 +754,15 @@ function CampaignsView({ onNavigate }) {
               <span>Phone column: {upload.phoneColumn}</span>
               {upload.rejectedRowCount > 0 && <button type="button" className="secondary-btn" onClick={downloadRejectedRows}>Download rejected CSV ({upload.rejectedRowCount})</button>}
             </div>}
+            <label className="check-label"><input type="checkbox" checked={excludeMessaged} onChange={(event) => setExcludeMessaged(event.target.checked)} /> Exclude contacts already messaged in any earlier campaign</label>
+            {excludeMessaged && <label className="form-label">Limit exclusion to selected campaigns (leave empty for all earlier campaigns)<select multiple size="3" value={excludeCampaignIds.map(String)} onChange={(event) => setExcludeCampaignIds(Array.from(event.target.selectedOptions, option => Number(option.value)))}>{campaignList.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
             {upload && <div className="notice info upload-formatting-notice">{upload.formattingNotice || `${upload.valid} contacts found. Numbers will be formatted as +${upload.countryCode || uploadCountryCode || '91'} XXXXXXXXXX unless they already include a country code.`} Change the country selector above to re-format against a different code.</div>}
             {upload?.ignoredSheets?.length > 0 && <div className="notice warning">Skipped sheets without a phone-number header: {upload.ignoredSheets.join(', ')}.</div>}
             {Object.entries(missingByField).filter(([, count]) => count > 0).map(([field, count]) => <div className="missing-warning" key={field}>Warning: {count} contacts have no value for {`{{${field}}}`}. Creating this campaign requires explicit approval.</div>)}
             {Object.values(missingByField).some((count) => count > 0) && <label className="check-label"><input type="checkbox" checked={allowMissingFields} onChange={(event) => setAllowMissingFields(event.target.checked)} /> Allow unresolved fields to remain in messages</label>}
             {whatsappStatus.businessStatus !== 'connected' && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
-            <div className="button-row"><button type="button" className="secondary-btn" onClick={previewMessages} disabled={!upload || busy}>Preview messages</button><button className="primary-btn" disabled={!upload || !name.trim() || busy}>Create persistent queue</button></div>
+            {scheduleType === 'now' && whatsappStatus.status !== 'connected' && whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">Connect WhatsApp before starting now. You can still add this campaign to the queue or schedule it.</div>}
+            <div className="button-row"><button type="button" className="secondary-btn" onClick={previewMessages} disabled={!upload || busy}>Preview messages</button><button className="primary-btn" disabled={!upload || !name.trim() || busy || (scheduleType === 'now' && whatsappStatus.status !== 'connected' && whatsappStatus.businessStatus !== 'connected')}>{scheduleType === 'now' ? 'Create and start' : scheduleType === 'queue' ? 'Add to queue' : 'Create schedule'}</button></div>
           </form>
         </section>
 
@@ -586,13 +792,15 @@ function CampaignsView({ onNavigate }) {
         {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}
         <div className="campaign-table-wrap">
           <table>
-            <thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead>
+            <thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th><th>Queue</th><th>Actions</th></tr></thead>
             <tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}>
               <td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td>
-              <td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small>{campaign.pause_reason && <small className="campaign-error">Paused: {campaign.pause_reason.replaceAll('_', ' ')}</small>}{campaign.last_error && <small className="campaign-error">{campaign.last_error}</small>}</td>
+              <td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small>{campaign.pause_reason && <small className="campaign-error">Paused: {campaign.pause_reason.replaceAll('_', ' ')}</small>}{campaign.last_error && <small className="campaign-error">{campaign.last_error}</small>}{campaign.pause_reason === 'whatsapp_disconnected' && <small>WhatsApp disconnected — reconnect to continue</small>}</td>
               <td data-label="Provider">{campaign.provider || 'web'}</td>
               <td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status.replaceAll('_', ' ')}</span></td>
               <td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td>
+              <td data-label="Queue">{campaign.status === 'queued' ? <div onClick={(event) => event.stopPropagation()}><strong>#{campaign.queue_position}</strong>{queueStartEstimate(campaign) && <small>Est. start {queueStartEstimate(campaign).toLocaleString()}</small>}<div className="button-row"><button className="secondary-btn" aria-label="Move up" disabled={campaign.queue_position <= 1} onClick={(event) => moveQueuedCampaign(campaign, -1, event)}>↑</button><button className="secondary-btn" aria-label="Move down" disabled={campaign.queue_position >= queuedCampaigns.length} onClick={(event) => moveQueuedCampaign(campaign, 1, event)}>↓</button><button className="secondary-btn" onClick={(event) => removeQueuedCampaign(campaign, event)}>Remove</button></div></div> : '—'}</td>
+              <td data-label="Actions" onClick={(event) => event.stopPropagation()}>{campaign.status === 'draft' && <button className="secondary-btn" onClick={(event) => editCampaignDraft(campaign, event)}>Edit</button>}{['completed', 'completed_with_errors', 'failed', 'stopped'].includes(campaign.status) && <button className="secondary-btn" onClick={(event) => openDuplicateDialog(campaign, event)}>Duplicate</button>}</td>
             </tr>)}</tbody>
           </table>
           {!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }]} />}
@@ -607,7 +815,33 @@ function CampaignsView({ onNavigate }) {
               {campaignEstimate && !campaignEstimate.endAt && <small>Paused — reconnect/resume to estimate finish</small>}
             </div>
           </div>
-          <p className="detail-template">{selectedCampaign.template_message}</p>
+          {draftEdit && selectedCampaign.status === 'draft' && draftEditCampaignId === selectedCampaign.id ? <div className="field-panel draft-editor">
+            <h3>Edit draft</h3>
+            <label className="form-label">Campaign name<input value={draftEdit.name} onChange={(event) => setDraftEdit({ ...draftEdit, name: event.target.value })} /></label>
+            <label className="form-label">Message template<textarea value={draftEdit.template_message} onChange={(event) => setDraftEdit({ ...draftEdit, template_message: event.target.value })} /></label>
+            <div className="inline-fields">
+              <label className="form-label">Delay between messages (ms)<input type="number" min="17500" value={draftEdit.settings.delayBetweenMessages ?? 17500} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, delayBetweenMessages: Number(event.target.value) } })} /></label>
+              <label className="form-label">Max per hour<input type="number" min="1" value={draftEdit.settings.maxPerHour ?? 50} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, maxPerHour: Number(event.target.value) } })} /></label>
+              <label className="form-label">Max per day<input type="number" min="1" value={draftEdit.settings.maxPerDay ?? 175} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, maxPerDay: Number(event.target.value) } })} /></label>
+            </div>
+            <div className="field-panel inline-fields">
+              <div className="panel-header"><h4>Recipients</h4><label className="secondary-btn upload-btn">Upload Excel<input type="file" accept=".xlsx" onChange={uploadDraftExcel} disabled={busy} /></label></div>
+              <select value={draftRecipientsMode} onChange={(event) => setDraftRecipientsMode(event.target.value)}><option value="replace">Replace current recipients</option><option value="add">Add to current recipients</option></select>
+              {draftExcelPath && <small>Validated replacement list is ready to save.</small>}
+              <label className="check-label"><input type="checkbox" checked={excludeMessaged} onChange={(event) => setExcludeMessaged(event.target.checked)} /> Exclude contacts already messaged in earlier campaigns</label>
+              {excludeMessaged && <label className="form-label">Limit exclusion to selected campaigns (leave empty for all earlier campaigns)<select multiple size="3" value={excludeCampaignIds.map(String)} onChange={(event) => setExcludeCampaignIds(Array.from(event.target.selectedOptions, option => Number(option.value)))}>{campaignList.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+              {!Number(selectedCampaign.total_contacts) && !draftExcelPath && <small>Upload a recipient list before starting or queueing this empty draft.</small>}
+            </div>
+            <div className="field-panel inline-fields">
+              <div className="panel-header"><h4>Attachment</h4><label className="secondary-btn upload-btn">Replace attachment<input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf" onChange={uploadDraftMedia} disabled={busy} /></label></div>
+              {draftEdit.media_filename && <div className="button-row"><span>{draftEdit.media_filename}</span><button type="button" className="danger-btn" onClick={() => setDraftEdit({ ...draftEdit, media_path: '', media_bucket: '', media_object_path: '', media_type: '', media_filename: '', media_mimetype: '' })}>Remove attachment</button></div>}
+            </div>
+            <div className="field-panel inline-fields">
+              <div className="panel-header"><h4>Business API buttons</h4>{draftEdit.buttons.length < 3 && <button type="button" className="secondary-btn" onClick={() => setDraftEdit({ ...draftEdit, buttons: [...draftEdit.buttons, { type: 'quick_reply', text: '', url: '' }] })}>Add button</button>}</div>
+              {draftEdit.buttons.map((button, index) => <div className="button-config" key={index}><select value={button.type} onChange={(event) => setDraftEdit({ ...draftEdit, buttons: draftEdit.buttons.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value } : item) })}><option value="quick_reply">Quick Reply</option><option value="url">URL</option></select><input value={button.text} onChange={(event) => setDraftEdit({ ...draftEdit, buttons: draftEdit.buttons.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item) })} placeholder="Button text" />{button.type === 'url' && <input value={button.url} onChange={(event) => setDraftEdit({ ...draftEdit, buttons: draftEdit.buttons.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item) })} placeholder="https://example.com" />}<button type="button" className="danger-btn" onClick={() => setDraftEdit({ ...draftEdit, buttons: draftEdit.buttons.filter((_, itemIndex) => index !== itemIndex) })}>Remove</button></div>)}
+            </div>
+            <div className="button-row"><button className="primary-btn" disabled={busy} onClick={() => saveCampaignDraft('save')}>Save draft</button><button className="secondary-btn" disabled={busy || !selectedProviderConnected || (!Number(selectedCampaign.total_contacts) && !draftExcelPath)} title={!selectedProviderConnected ? 'Connect WhatsApp before starting.' : undefined} onClick={() => saveCampaignDraft('start')}>Save and Start</button><button className="secondary-btn" disabled={busy || (!Number(selectedCampaign.total_contacts) && !draftExcelPath)} onClick={() => saveCampaignDraft('queue')}>Save and Add to queue</button></div>
+          </div> : <p className="detail-template">{selectedCampaign.template_message}</p>}
           <div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div>
         </div>}
       </section>

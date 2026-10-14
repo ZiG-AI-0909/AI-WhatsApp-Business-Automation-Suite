@@ -162,7 +162,42 @@ require.cache[clientPath] = {
     filename: clientPath,
     loaded: true,
     exports: {
-        supabase: { from: (name) => table(name) },
+        supabase: {
+            from: (name) => table(name),
+            async rpc(name, args) {
+                if (name === 'claim_campaign_to_run') {
+                    const rows = state.rows.campaigns || [];
+                    const userRows = rows.filter(row => row.user_id === args.p_user_id);
+                    if (userRows.some(row => row.status === 'running')) return { data: [], error: null };
+                    const campaign = args.p_campaign_id == null
+                        ? userRows.filter(row => row.status === 'queued').sort((a, b) => a.queue_position - b.queue_position)[0]
+                        : userRows.find(row => String(row.id) === String(args.p_campaign_id)
+                            && row.status === args.p_expected_status
+                            && ['draft', 'stopped', 'paused', 'queued'].includes(row.status));
+                    if (!campaign) return { data: [], error: null };
+                    Object.assign(campaign, { status: 'running', queue_position: null, queued_at: null, pause_reason: null, last_error: null });
+                    return { data: [campaign], error: null };
+                }
+                if (name === 'recount_campaign_counters') {
+                    const rows = state.rows.campaign_contacts || [];
+                    const counters = { sent: 0, failed: 0, opt_outs: 0, skipped: 0 };
+                    for (const row of rows) {
+                        if (String(row.campaign_id) !== String(args.p_campaign_id) || row.user_id !== args.p_user_id) continue;
+                        if (row.status === 'sent') counters.sent++;
+                        else if (row.status === 'failed') counters.failed++;
+                        else if (row.status === 'opted_out') counters.opt_outs++;
+                        else if (row.status === 'skipped') counters.skipped++;
+                    }
+                    counters.processed = counters.sent + counters.failed + counters.opt_outs + counters.skipped;
+                    const campaign = (state.rows.campaigns || []).find(row => String(row.id) === String(args.p_campaign_id)
+                        && row.user_id === args.p_user_id);
+                    if (!campaign) return { data: [], error: null };
+                    Object.assign(campaign, counters);
+                    return { data: [counters], error: null };
+                }
+                return { data: null, error: { message: `unexpected RPC ${name}` } };
+            },
+        },
         isAvailable: () => true,
         transaction: async (ops) => { for (const op of ops) await op(); },
         normalizeRow: (r) => r,

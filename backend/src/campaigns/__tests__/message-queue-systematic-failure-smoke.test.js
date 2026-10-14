@@ -34,6 +34,7 @@ async function testMediaMustLoadBeforeStart() {
     let contactReads = 0;
     db.getById = async () => ({
         id: 42,
+        status: 'draft',
         name: 'media campaign',
         provider: 'business',
         media_path: 'https://storage.example.test/storage/v1/object/public/campaign-media/missing.png',

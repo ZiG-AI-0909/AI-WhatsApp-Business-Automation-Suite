@@ -489,6 +489,7 @@ class SchedulerService {
                         if (campaign && !['draft', 'stopped', 'paused'].includes(campaign.status)) campaign = null; // unusable
                     }
                     if (!campaign) {
+                        const scheduleSettings = parseJsonSafe(schedule.settings, {});
                         campaign = await campaignService.create(schedule.user_id, {
                             name: `${schedule.name} - ${new Date().toISOString()}`,
                             templateMessage: schedule.template_message,
@@ -500,11 +501,13 @@ class SchedulerService {
                             mediaFilename: schedule.media_filename,
                             mediaMimetype: schedule.media_mimetype,
                             buttons: parseJsonSafe(schedule.buttons, []),
-                            settings: parseJsonSafe(schedule.settings, {}),
+                            settings: scheduleSettings,
+                            excludeMessaged: !!scheduleSettings.excludeMessaged,
+                            excludeCampaignIds: scheduleSettings.excludeCampaignIds || null,
                             allowMissingFields: !!schedule.allow_missing_fields,
                             // The schedule's stored code wins over the account default
                             // so the fired campaign matches the numbers it validated.
-                            countryCode: parseJsonSafe(schedule.settings, {}).countryCode || null,
+                            countryCode: scheduleSettings.countryCode || null,
                         });
                     }
                     try {

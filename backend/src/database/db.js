@@ -24,7 +24,7 @@ const TABLES = {
 const JSON_FIELDS = {
     contacts: ['tags'],
     campaigns: ['settings', 'buttons'],
-    campaign_contacts: [],
+    campaign_contacts: ['contact_data'],
     campaign_schedules: ['buttons', 'settings'],
     image_leads: ['phone_numbers', 'emails', 'social_links'],
     knowledge_documents: [],
@@ -419,6 +419,35 @@ async function count(table, where = '', params = []) {
     return count;
 }
 
+async function campaignQueueRpc(name, params) {
+    if (!isAvailable()) {
+        throw new Error('Supabase client is not configured. Set SUPABASE_URL and SUPABASE_SECRET_KEY.');
+    }
+    const { data, error } = await supabase.rpc(name, params);
+    if (error) throw error;
+    return parseRows('campaigns', data || []);
+}
+
+function enqueueCampaign(campaignId, userId) {
+    return campaignQueueRpc('enqueue_campaign', { p_campaign_id: campaignId, p_user_id: userId });
+}
+
+function unqueueCampaign(campaignId, userId) {
+    return campaignQueueRpc('unqueue_campaign', { p_campaign_id: campaignId, p_user_id: userId });
+}
+
+function reorderCampaignQueue(userId, orderedIds) {
+    return campaignQueueRpc('reorder_campaign_queue', { p_user_id: userId, p_ordered_ids: orderedIds });
+}
+
+function claimCampaignToRun(userId, campaignId = null, expectedStatus = null) {
+    return campaignQueueRpc('claim_campaign_to_run', {
+        p_user_id: userId,
+        p_campaign_id: campaignId,
+        p_expected_status: expectedStatus,
+    });
+}
+
 async function recountCampaignCounters(campaignId, userId) {
     if (!userId) throw new Error('[db] userId is required to recount campaign counters.');
     if (isAvailable() && typeof supabase.rpc === 'function') {
@@ -435,6 +464,7 @@ async function recountCampaignCounters(campaignId, userId) {
             if (!Number.isFinite(value)) {
                 throw new Error(`[db] Invalid ${key} counter returned while recounting campaign ${campaignId}.`);
             }
+
             counters[key] = value;
         }
         return counters;
@@ -675,6 +705,10 @@ module.exports = {
     getOne,
     count,
     recountCampaignCounters,
+    enqueueCampaign,
+    unqueueCampaign,
+    reorderCampaignQueue,
+    claimCampaignToRun,
     paginate,
     raw,
 

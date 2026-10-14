@@ -122,10 +122,22 @@ async function ensureCampaignMediaBucket() {
     }
 }
 
+async function deleteCampaignMedia(campaign) {
+    if (!isAvailable() || !supabase || !campaign?.media_object_path) return false;
+    const { bucket, objectPath } = resolveCampaignMediaLocation(campaign);
+    if (bucket !== CAMPAIGN_MEDIA_BUCKET || !objectPath || objectPath.split('/').some(segment => segment === '.' || segment === '..')) {
+        throw new Error('Campaign attachments must reference an object in the campaign-media bucket.');
+    }
+    const { error } = await supabase.storage.from(bucket).remove([objectPath]);
+    if (error) throw new Error(`Could not delete campaign attachment (${bucket}/${objectPath}): ${error.message}`);
+    return true;
+}
+
 module.exports = {
     CAMPAIGN_MEDIA_BUCKET,
     CAMPAIGN_MEDIA_MIME_TYPES,
     resolveCampaignMediaLocation,
     downloadCampaignMedia,
+    deleteCampaignMedia,
     ensureCampaignMediaBucket,
 };

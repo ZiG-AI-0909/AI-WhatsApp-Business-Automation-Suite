@@ -6,15 +6,22 @@ const USER_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const USER_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
 async function main() {
-    const originals = { getById: db.getById, update: db.update, select: db.select, count: db.count, pageSize: messageQueue._resumePageSize };
+    const originals = { getById: db.getById, update: db.update, select: db.select, count: db.count, claimCampaignToRun: db.claimCampaignToRun, pageSize: messageQueue._resumePageSize };
     const stopped = [];
     const pendingContacts = [];
     const startCampaigns = new Map([
-        [10, { id: 10, user_id: USER_A, name: 'A1', provider: 'web', settings: '{}' }],
-        [11, { id: 11, user_id: USER_A, name: 'A2', provider: 'web', settings: '{}' }],
-        [20, { id: 20, user_id: USER_B, name: 'B1', provider: 'web', settings: '{}' }],
+        [10, { id: 10, user_id: USER_A, name: 'A1', provider: 'web', settings: '{}', status: 'draft' }],
+        [11, { id: 11, user_id: USER_A, name: 'A2', provider: 'web', settings: '{}', status: 'draft' }],
+        [20, { id: 20, user_id: USER_B, name: 'B1', provider: 'web', settings: '{}', status: 'draft' }],
     ]);
     db.getById = async (table, id, userId) => table === 'campaigns' && startCampaigns.get(Number(id))?.user_id === userId ? startCampaigns.get(Number(id)) : null;
+    db.claimCampaignToRun = async (userId, id, expectedStatus) => {
+        if ([...startCampaigns.values()].some(row => row.user_id === userId && row.status === 'running')) return [];
+        const campaign = startCampaigns.get(Number(id));
+        if (!campaign || campaign.user_id !== userId || campaign.status !== expectedStatus) return [];
+        campaign.status = 'running';
+        return [campaign];
+    };
     db.update = async (table, data, where, params) => {
         if (table === 'campaigns' && data.status === 'stopped') stopped.push(params[0]);
         return [];

@@ -40,15 +40,27 @@ function createCampaignReliabilityMigrationGuard({
 
                 const { error: columnsError } = await client
                     .from('campaigns')
-                    .select('pause_reason,last_error,media_bucket,media_object_path')
+                    .select('pause_reason,last_error,media_bucket,media_object_path,queue_position,queued_at,source_campaign_id')
                     .limit(0);
                 if (columnsError) throw columnsError;
+                const { error: contactDataError } = await client
+                    .from('campaign_contacts')
+                    .select('contact_data')
+                    .limit(0);
+                if (contactDataError) throw contactDataError;
 
                 const { error: rpcError } = await client.rpc('recount_campaign_counters', {
                     p_campaign_id: 0,
                     p_user_id: '00000000-0000-0000-0000-000000000000',
                 });
                 if (rpcError) throw rpcError;
+
+                const { error: queueRpcError } = await client.rpc('claim_campaign_to_run', {
+                    p_user_id: '00000000-0000-0000-0000-000000000000',
+                    p_campaign_id: null,
+                    p_expected_status: null,
+                });
+                if (queueRpcError) throw queueRpcError;
 
                 if (migrationWasMissing) {
                     logger.info('[migration-guard] Campaign reliability migration is now available.');
