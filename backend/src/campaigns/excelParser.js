@@ -15,8 +15,16 @@ class ExcelParser {
     }
 
     _isPhoneColumn(name) {
-        return ['phone', 'mobile', 'phone_number', 'mobile_number', 'whatsapp', 'number', 'contact']
-            .includes(this._normalizeColumn(name));
+        const column = this._normalizeColumn(name);
+        return ['phone', 'mobile', 'phone_number', 'mobile_number', 'whatsapp', 'number', 'contact'].includes(column)
+            || /^(?:[a-z]+_)*(?:phone|mobile|whatsapp|number)(?:_?\d+)?$/.test(column);
+    }
+
+    _canonicalColumn(name) {
+        const column = this._normalizeColumn(name);
+        if (['dealer_name', 'business_name'].includes(column)) return 'name';
+        if (['place', 'town', 'location'].includes(column)) return 'city';
+        return column;
     }
 
     /**
@@ -67,15 +75,22 @@ class ExcelParser {
 
             const { rowNumber: headerRowNumber, values: headerValues } = sheetRows[headerRowIndex];
             const headers = headerValues.map(value => value === null || value === undefined ? '' : String(value).trim());
-            const sheetPhoneHeader = headers.find(name => name && this._isPhoneColumn(name));
-            const sheetPhoneColumn = this._normalizeColumn(sheetPhoneHeader);
+            const phoneIndexes = headers
+                .map((header, index) => header && this._isPhoneColumn(header) ? index : -1)
+                .filter(index => index >= 0);
+            const sheetPhoneColumn = this._normalizeColumn(headers[phoneIndexes[0]]);
             if (!phoneColNorm) phoneColNorm = sheetPhoneColumn;
 
-            for (const header of headers) {
+            for (const [index, header] of headers.entries()) {
                 if (!header) continue;
                 const normalized = this._normalizeColumn(header);
-                const column = this._isPhoneColumn(header) ? phoneColNorm : normalized;
-                if (!allColumns.includes(column)) allColumns.push(column);
+                if (this._isPhoneColumn(header) && index === phoneIndexes[0]) {
+                    if (!allColumns.includes(phoneColNorm)) allColumns.push(phoneColNorm);
+                    continue;
+                }
+                for (const column of new Set([normalized, this._canonicalColumn(header)])) {
+                    if (!allColumns.includes(column)) allColumns.push(column);
+                }
             }
 
             for (const { rowNumber, values } of sheetRows) {
@@ -83,11 +98,28 @@ class ExcelParser {
                 const obj = {};
                 headers.forEach((header, index) => {
                     if (!header) return;
-                    const column = this._isPhoneColumn(header) ? phoneColNorm : this._normalizeColumn(header);
-                    obj[column] = stringifyCell(values[index]).trim();
+                    const originalColumn = this._normalizeColumn(header);
+                    const value = stringifyCell(values[index]).trim();
+                    const column = this._isPhoneColumn(header) && index === phoneIndexes[0]
+                        ? phoneColNorm
+                        : originalColumn;
+                    obj[column] = value;
+                    if (!this._isPhoneColumn(header)) {
+                        const canonical = this._canonicalColumn(header);
+                        if (!obj[canonical] || value) obj[canonical] = value;
+                    }
                 });
                 if (Object.values(obj).some(value => value !== '')) {
-                    rawRows.push({ ...obj, _rowIndex: rowNumber, _sheetName: worksheet.name });
+                    const candidates = [];
+                    for (const index of phoneIndexes) {
+                        candidates.push(...this._splitPhoneCandidates(stringifyCell(values[index])));
+                    }
+                    const firstPhoneIndex = phoneIndexes[0];
+                    if (firstPhoneIndex !== undefined && !headers[firstPhoneIndex + 1]
+                        && values[firstPhoneIndex + 1] !== null && values[firstPhoneIndex + 1] !== undefined) {
+                        candidates.push(...this._splitPhoneCandidates(stringifyCell(values[firstPhoneIndex + 1])));
+                    }
+                    rawRows.push({ ...obj, _phoneCandidates: candidates, _rowIndex: rowNumber, _sheetName: worksheet.name });
                 }
             }
         }
@@ -99,25 +131,20 @@ class ExcelParser {
         const columns = allColumns.filter(column => column !== phoneColNorm);
 
         // Build normalized rows from the union of columns across all sheets.
-        const normalizedRows = rawRows.map((row) => {
+        const normalizedRows = [];
+        for (const row of rawRows) {
             const normalized = {};
-            for (const column of allColumns) {
-                normalized[column] = String(row[column] || '').trim();
-            }
+            for (const column of allColumns) normalized[column] = String(row[column] || '').trim();
             normalized._rowIndex = row._rowIndex;
             normalized._sheetName = row._sheetName;
-            return normalized;
-        });
-
-        // Apply the selected/account country code to every phone value BEFORE
-        // validation, so length checks and dedupe keys use the final stored form.
-        if (requestedCode) {
-            for (const row of normalizedRows) {
-                row[phoneColNorm] = ensureCountryCode(row[phoneColNorm], requestedCode);
+            const candidates = row._phoneCandidates.length ? row._phoneCandidates : [''];
+            for (const candidate of candidates) {
+                const phone = requestedCode ? ensureCountryCode(candidate, requestedCode) : this._cleanPhone(candidate);
+                normalizedRows.push({ ...normalized, [phoneColNorm]: phone, _sourcePhone: candidate });
             }
         }
 
-        const validation = this._validate(normalizedRows, phoneColNorm);
+        const validation = this._validate(normalizedRows, phoneColNorm, requestedCode);
 
         return {
             phoneColumn: phoneColNorm,
@@ -130,25 +157,76 @@ class ExcelParser {
         };
     }
 
-    _validate(rows, phoneCol) {
-        const seen = new Set();
-        let valid = 0, invalid = 0, duplicates = 0, missingPhone = 0;
-        const errors = [];
-
-        rows.forEach((row, i) => {
-            const phone = this._cleanPhone(row[phoneCol] || '');
-
-            if (!phone || phone.length < 10 || phone.length > 15) {
-                invalid++;
-                missingPhone++;
-                errors.push({ row: row._rowIndex, sheet: row._sheetName, issue: 'Invalid or missing phone number' });
-                row._valid = false;
-                return;
+    _splitPhoneCandidates(value) {
+        const candidates = [];
+        const segments = String(value ?? '').split(/[,\u002f;\r\n]+/).map(segment => segment.trim()).filter(Boolean);
+        for (const segment of segments) {
+            const words = segment.split(/\s+/).filter(Boolean);
+            if (words.length === 1) {
+                candidates.push(segment);
+                continue;
             }
 
-            if (seen.has(phone)) {
-                duplicates++;
-                errors.push({ row: row._rowIndex, sheet: row._sheetName, issue: `Duplicate phone: ${phone}` });
+            const firstDigits = this._cleanPhone(words[0]);
+            if (['91', '0091'].includes(firstDigits)) {
+                let subscriber = '';
+                let nextWord = 1;
+                while (nextWord < words.length && subscriber.length < 10) {
+                    subscriber += this._cleanPhone(words[nextWord]);
+                    nextWord++;
+                }
+                if (subscriber.length === 10) {
+                    candidates.push(`91${subscriber}`);
+                    candidates.push(...this._splitPhoneCandidates(words.slice(nextWord).join(' ')));
+                    continue;
+                }
+            }
+
+            const firstSubscriberDigits = this._cleanPhone(words[1]);
+            const wordLengths = words.map(word => this._cleanPhone(word).length);
+            if (segment.startsWith('+') && wordLengths.slice(1).some(length => length >= 9)) {
+                candidates.push(`+${firstDigits}${firstSubscriberDigits}`, ...words.slice(2));
+                continue;
+            }
+            if (segment.startsWith('+')) {
+                candidates.push(segment);
+                continue;
+            }
+            if (wordLengths.some(length => length >= 9)) candidates.push(...words);
+            else candidates.push(segment);
+        }
+        return candidates;
+    }
+
+    _validate(rows, phoneCol, countryCode = null) {
+        const seen = new Set();
+        const countsByReason = { blank: 0, 'too short': 0, 'too long': 0, duplicate: 0, 'not a mobile number': 0, valid: 0 };
+        let invalid = 0, duplicates = 0, missingPhone = 0;
+        const errors = [];
+        const rejectedRows = [];
+
+        rows.forEach((row) => {
+            const phone = this._cleanPhone(row[phoneCol] || '');
+            let reason = null;
+            if (!phone) reason = 'blank';
+            else if (countryCode === '91' && phone.length < 12) reason = 'too short';
+            else if (phone.length < 10) reason = 'too short';
+            else if (countryCode === '91' && phone.length > 12) reason = 'too long';
+            else if (phone.length > 15) reason = 'too long';
+            else if (countryCode === '91' && !/^91[6-9]\d{9}$/.test(phone)) reason = 'not a mobile number';
+            else if (seen.has(phone)) reason = 'duplicate';
+
+            if (reason) {
+                countsByReason[reason]++;
+                if (reason === 'duplicate') duplicates++;
+                else {
+                    invalid++;
+                    if (reason === 'blank') missingPhone++;
+                }
+                const issue = reason === 'duplicate' ? `Duplicate phone: ${phone}` : reason;
+                const rejected = { ...row, _reason: reason };
+                rejectedRows.push(rejected);
+                errors.push({ row: row._rowIndex, sheet: row._sheetName, reason, issue });
                 row._valid = false;
                 return;
             }
@@ -157,16 +235,18 @@ class ExcelParser {
             row._phone = phone;
             row[phoneCol] = phone;
             row._valid = true;
-            valid++;
+            countsByReason.valid++;
         });
 
         return {
             total: rows.length,
-            valid,
+            valid: countsByReason.valid,
             invalid,
             duplicates,
             missingPhone,
-            errors: errors.slice(0, 50), // Cap error list
+            countsByReason,
+            errors: errors.slice(0, 50),
+            rejectedRows,
         };
     }
 
@@ -193,6 +273,22 @@ class ExcelParser {
      */
     getDynamicFields(parsedResult) {
         return parsedResult.allColumns.filter(c => c !== parsedResult.phoneColumn);
+    }
+
+    getRejectedCsv(parsedResult) {
+        const rejected = parsedResult.validation.rejectedRows || [];
+        const columns = [...parsedResult.allColumns, 'sheet', 'row', 'reason'];
+        const escape = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+        const lines = [columns.map(escape).join(',')];
+        for (const row of rejected) {
+            lines.push([
+                ...parsedResult.allColumns.map(column => column === parsedResult.phoneColumn ? row._sourcePhone : row[column]),
+                row._sheetName,
+                row._rowIndex,
+                row._reason,
+            ].map(escape).join(','));
+        }
+        return lines.join('\r\n');
     }
 }
 

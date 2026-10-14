@@ -57,17 +57,23 @@ class CampaignService {
         const result = await excelParser.parse(filePath, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
         const dynamicFields = excelParser.getDynamicFields(result);
+        const validation = { ...result.validation };
+        delete validation.rejectedRows;
+        validation.rejectedRowCount = result.validation.rejectedRows.length;
         return {
-            ...result.validation,
+            ...validation,
             dynamicFields,
             phoneColumn: result.phoneColumn,
             ignoredSheets: result.ignoredSheets,
             countryCode: resolvedCode,
             countryName: findCountry(resolvedCode)?.name || null,
+            rejectedCsv: excelParser.getRejectedCsv(result),
+            rejectedCsvFilename: 'campaign-rejected-rows.csv',
             previewRows: validRows.slice(0, 3).map(r => {
                 const preview = { ...r };
                 delete preview._rowIndex;
                 delete preview._sheetName;
+                delete preview._sourcePhone;
                 delete preview._valid;
                 return preview;
             }),
@@ -80,17 +86,23 @@ class CampaignService {
         const result = await excelParser.parseBuffer(fileBuffer, { countryCode: resolvedCode });
         const validRows = excelParser.getValidRows(result);
         const dynamicFields = excelParser.getDynamicFields(result);
+        const validation = { ...result.validation };
+        delete validation.rejectedRows;
+        validation.rejectedRowCount = result.validation.rejectedRows.length;
         return {
-            ...result.validation,
+            ...validation,
             dynamicFields,
             phoneColumn: result.phoneColumn,
             ignoredSheets: result.ignoredSheets,
             countryCode: resolvedCode,
             countryName: findCountry(resolvedCode)?.name || null,
+            rejectedCsv: excelParser.getRejectedCsv(result),
+            rejectedCsvFilename: 'campaign-rejected-rows.csv',
             previewRows: validRows.slice(0, 3).map(r => {
                 const preview = { ...r };
                 delete preview._rowIndex;
                 delete preview._sheetName;
+                delete preview._sourcePhone;
                 delete preview._valid;
                 return preview;
             }),

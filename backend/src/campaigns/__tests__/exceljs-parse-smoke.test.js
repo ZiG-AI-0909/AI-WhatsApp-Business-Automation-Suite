@@ -42,6 +42,7 @@ function table(name) {
                 order() { return builder; },
                 limit() { return builder; },
                 range() { return builder; },
+                maybeSingle: async () => ({ data: null, error: null }),
                 async then(resolve) { return resolve({ data: state.rows[name] || [], error: null }); },
             };
             return builder;
@@ -66,6 +67,8 @@ require.cache[clientPath] = {
 const campaignService = require('../../campaigns/campaignService');
 const excelParser = require('../../campaigns/excelParser');
 const fieldRenderer = require('../../campaigns/fieldRenderer');
+const db = require('../../database/db');
+const contactService = require('../../contacts/contactService');
 
 // Build a real xlsx workbook in memory with exceljs itself (round-trip:
 // exceljs writes, exceljs reads — also guards against API misuse).
@@ -95,6 +98,35 @@ async function buildMultiSheetWorkbook() {
     const notes = workbook.addWorksheet('Notes');
     notes.addRow(['Instructions']);
     notes.addRow(['Phone values are listed on the other sheets.']);
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+async function buildTrimmedDealerWorkbook() {
+    const workbook = new ExcelJS.Workbook();
+    for (const name of ['Bengaluru', 'Belgaum', 'Hubli', 'Mysore']) {
+        const sheet = workbook.addWorksheet(name);
+        if (name === 'Bengaluru') {
+            sheet.addRow([`${name} dealer list`]);
+            sheet.addRow(['Business Name', 'Location', 'Phone']);
+            sheet.addRow(['Alias Dealer', 'Bengaluru', '9876540000']);
+        } else {
+            sheet.addRow([`${name} dealer list`]);
+        }
+    }
+    const mangalore = workbook.addWorksheet('Mangalore');
+    mangalore.addRow(['Dealers list - Mangalore']);
+    mangalore.addRow(['Dealer Name', 'Place', 'Mobile', 'Second Number']);
+    mangalore.addRows([
+        ['Short Dealer', 'Udupi', '987654321', ''],
+        ['Multi Dealer', 'Mangalore', '9876543210, 9812345678', ''],
+        ['Blank Dealer', 'Karwar', '', ''],
+        ['Duplicate Dealer', 'Udupi', '9876543210', ''],
+        ['Prefixed Dealer', 'Mysore', '+91 98765 43211', ''],
+        ['Adjacent Dealer', 'Belgaum', '9876543212', '9876543213'],
+        ['Long Dealer', 'Mangalore', '9198765432101', ''],
+        ['Landline Dealer', 'Udupi', '911234567890', ''],
+        ['Space-separated Dealer', 'Hassan', '9876543214 9812345679', ''],
+    ]);
     return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
@@ -132,6 +164,81 @@ async function test2_allContactSheetsAreCombined() {
     assert.ok(parsed.allColumns.includes('dealer_name'));
     assert.ok(parsed.allColumns.includes('city'));
     console.log('✅ Test 2 passed\n');
+}
+
+async function test3_trimmedDealerWorkbookValidationAndCreate() {
+    console.log('▶ Test 3: trimmed five-sheet dealer workbook phone cleaning, aliases, and rejected CSV');
+    const buffer = await buildTrimmedDealerWorkbook();
+    const validation = await campaignService.validateExcelBuffer(buffer, { countryCode: '91' }, 'dealer-smoke-user');
+    assert.strictEqual(validation.total, 13, 'each individual number candidate is validated');
+    assert.strictEqual(validation.valid, 8, 'both numbers from cells and adjacent number columns are retained');
+    assert.strictEqual(validation.invalid, 4, 'blank, short, long, and non-mobile phones are invalid');
+    assert.strictEqual(validation.duplicates, 1, 'duplicate numbers are rejected');
+    assert.strictEqual(validation.rejectedRowCount, 5, 'all rejected source candidates can be downloaded');
+    assert.deepStrictEqual(validation.countsByReason, {
+        blank: 1,
+        'too short': 1,
+        'too long': 1,
+        duplicate: 1,
+        'not a mobile number': 1,
+        valid: 8,
+    });
+    assert.ok(validation.dynamicFields.includes('dealer_name') && validation.dynamicFields.includes('name'));
+    assert.ok(validation.dynamicFields.includes('place') && validation.dynamicFields.includes('city'));
+    assert.ok(validation.dynamicFields.includes('business_name') && validation.dynamicFields.includes('location'));
+    assert.match(validation.rejectedCsv, /Short Dealer/);
+    assert.match(validation.rejectedCsv, /Blank Dealer/);
+    assert.match(validation.rejectedCsv, /Duplicate Dealer/);
+    assert.match(validation.rejectedCsv, /too short/);
+    assert.match(validation.rejectedCsv, /too long/);
+    assert.match(validation.rejectedCsv, /not a mobile number/);
+    assert.match(validation.rejectedCsv, /duplicate/);
+
+    const tmp = path.join(os.tmpdir(), `dealer-import-${Date.now()}.xlsx`);
+    fs.writeFileSync(tmp, buffer);
+    const originals = {
+        insert: db.insert,
+        getById: db.getById,
+        insertMany: db.insertMany,
+        upsertMany: contactService.upsertMany,
+    };
+    let insertedContacts = [];
+    try {
+        db.insert = async (table, data) => {
+            assert.strictEqual(table, 'campaigns');
+            return { ...data, id: 9201 };
+        };
+        db.insertMany = async (table, rows) => {
+            assert.strictEqual(table, 'campaign_contacts');
+            return rows;
+        };
+        db.getById = async () => ({ id: 9201, user_id: 'dealer-smoke-user', buttons: '[]' });
+        contactService.upsertMany = async (entries) => {
+            insertedContacts = entries;
+            return new Map(entries.map((entry, index) => [
+                contactService._cleanPhone(entry.phone),
+                { id: index + 1, marketing_opt_in: true },
+            ]));
+        };
+        await campaignService.create('dealer-smoke-user', {
+            name: 'Dealer smoke',
+            templateMessage: 'Hello {{name}} in {{city}}',
+            filePath: tmp,
+            countryCode: '91',
+        });
+        assert.strictEqual(insertedContacts.length, 8, 'only deduped valid numbers become contacts');
+        const multiNumberContact = insertedContacts.find(entry => entry.phone === '919876543210');
+        assert.deepStrictEqual(multiNumberContact.data, { name: 'Multi Dealer', company: '', city: 'Mangalore' });
+        const aliasContact = insertedContacts.find(entry => entry.phone === '919876543211');
+        assert.deepStrictEqual(aliasContact.data, { name: 'Prefixed Dealer', company: '', city: 'Mysore' });
+        const businessAliasContact = insertedContacts.find(entry => entry.phone === '919876540000');
+        assert.deepStrictEqual(businessAliasContact.data, { name: 'Alias Dealer', company: '', city: 'Bengaluru' });
+    } finally {
+        fs.unlinkSync(tmp);
+        Object.assign(db, originals);
+        contactService.upsertMany = originals.upsertMany;
+    }
+    console.log('✅ Test 3 passed\n');
 }
 
 async function test2_previewMessagesRendersFromParsedRows() {
@@ -174,7 +281,7 @@ async function test3_csvExportHelper() {
     };
     await handler(req, res);
     assert.ok(csv, 'CSV produced');
-    assert.match(String(contentType), /text\/csv/, 'CSV content type set');
+    assert.match(String(contentType), /text\/csv/, `CSV content type set (response: ${csv})`);
     assert.ok(csv.includes('Business Name'), 'header row present');
     assert.ok(csv.includes('"Pipe ""Traders"", Ltd"'), 'quotes/commas escaped per RFC-4180');
     assert.ok(csv.includes('919812345678'), 'data row present');
@@ -220,6 +327,7 @@ async function main() {
     try {
         await test1_validateExcelBufferParsesUpload();
         await test2_allContactSheetsAreCombined();
+        await test3_trimmedDealerWorkbookValidationAndCreate();
         await test2_previewMessagesRendersFromParsedRows();
         await test3_csvExportHelper();
         await test4_excelExportProducesValidXlsx();

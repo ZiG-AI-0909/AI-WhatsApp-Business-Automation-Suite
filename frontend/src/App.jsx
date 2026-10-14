@@ -285,6 +285,17 @@ function CampaignsView({ onNavigate }) {
     }
   }
 
+  const downloadRejectedRows = () => {
+    if (!upload?.rejectedCsv || !upload.rejectedRowCount) return
+    const blob = new Blob([upload.rejectedCsv], { type: 'text/csv;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = upload.rejectedCsvFilename || 'campaign-rejected-rows.csv'
+    link.click()
+    window.URL.revokeObjectURL(url)
+  }
+
   const changeUploadCountry = (event) => {
     setUploadCountryCode(event.target.value)
     // Only re-validate when a file is already loaded; otherwise the choice
@@ -502,7 +513,16 @@ function CampaignsView({ onNavigate }) {
                 <small>Connect WhatsApp Business API to use buttons</small>
               </>}
             </div>
-            {upload && <div className="validation-summary"><strong>{upload.valid} valid</strong><span>{upload.invalid} invalid</span><span>{upload.duplicates} duplicates</span><span>Phone column: {upload.phoneColumn}</span></div>}
+            {upload && <div className="validation-summary">
+              <strong>{upload.countsByReason?.valid ?? upload.valid} valid</strong>
+              <span>{upload.countsByReason?.blank ?? 0} blank</span>
+              <span>{upload.countsByReason?.['too short'] ?? 0} too short</span>
+              <span>{upload.countsByReason?.['too long'] ?? 0} too long</span>
+              <span>{upload.countsByReason?.duplicate ?? upload.duplicates} duplicates</span>
+              <span>{upload.countsByReason?.['not a mobile number'] ?? 0} not mobile</span>
+              <span>Phone column: {upload.phoneColumn}</span>
+              {upload.rejectedRowCount > 0 && <button type="button" className="secondary-btn" onClick={downloadRejectedRows}>Download rejected CSV ({upload.rejectedRowCount})</button>}
+            </div>}
             {upload && <div className="notice info upload-formatting-notice">{upload.formattingNotice || `${upload.valid} contacts found. Numbers will be formatted as +${upload.countryCode || uploadCountryCode || '91'} XXXXXXXXXX unless they already include a country code.`} Change the country selector above to re-format against a different code.</div>}
             {upload?.ignoredSheets?.length > 0 && <div className="notice warning">Skipped sheets without a phone-number header: {upload.ignoredSheets.join(', ')}.</div>}
             {Object.entries(missingByField).filter(([, count]) => count > 0).map(([field, count]) => <div className="missing-warning" key={field}>Warning: {count} contacts have no value for {`{{${field}}}`}. Creating this campaign requires explicit approval.</div>)}

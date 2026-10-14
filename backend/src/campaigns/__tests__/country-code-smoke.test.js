@@ -129,15 +129,14 @@ async function test3_excelParseAppliesCode() {
     console.log('▶ Test 3: Excel parse applies the country code to the phone column');
     const buffer = await buildWorkbook([
         { Name: 'Raj', Phone: '9876543210', City: 'Pune' },        // national → +91
-        { Name: 'Amira', Phone: '971501234567', City: 'Dubai' },   // already intl → unchanged
+        { Name: 'Amira', Phone: '971501234567', City: 'Dubai' },   // non-Indian international number → rejected for +91
         { Name: 'Bad', Phone: '123', City: 'Nashik' },             // still invalid after prefix
     ]);
     const result = await campaignService.validateExcelBuffer(buffer, { countryCode: '91' }, USER_A);
-    assert.strictEqual(result.valid, 2, 'two valid rows');
+    assert.strictEqual(result.valid, 1, 'only a valid Indian mobile passes strict +91 validation');
     const raj = result.previewRows.find((r) => r.name === 'Raj');
-    const amira = result.previewRows.find((r) => r.name === 'Amira');
     assert.strictEqual(raj.phone, '919876543210', 'national number prefixed with 91');
-    assert.strictEqual(amira.phone, '971501234567', 'international number untouched');
+    assert.strictEqual(result.countsByReason['not a mobile number'], 1, 'non-91 international phone rejected with a clear reason');
     assert.strictEqual(result.countryCode, '91', 'resolved code echoed');
     assert.strictEqual(result.countryName, 'India', 'country name resolved');
     console.log('✅ Test 3 passed\n');
