@@ -1261,7 +1261,7 @@ function AnalyticsView({ onNavigate }) {
 
 function SettingsView({ userEmail }) {
   const [settings, setSettings] = useState(null)
-  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91' })
+  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91' })
   const [showKey, setShowKey] = useState(false)
   const [showResendKey, setShowResendKey] = useState(false)
   const [notice, setNotice] = useState({ type: '', text: '' })
@@ -1269,8 +1269,8 @@ function SettingsView({ userEmail }) {
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
   useEffect(() => { apiFetch('/settings').then(setSettings).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
-  useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, defaultCountryCode: settings.defaultCountryCode || '91', resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '' })) }, [settings])
-  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, companyAddress: settings.business.address || '', companyState: settings.business.state || '', companyGstin: settings.business.gstin || '', companyPhone: settings.business.phone || '', companyEmail: settings.business.email || '', companyLogo: settings.business.logo || '', companyBankDetails: settings.business.bankDetails || '', defaultCountryCode: settings.defaultCountryCode || '91', resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '' })) }, [settings])
+  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, companyAddress: updated.business.address || '', companyState: updated.business.state || '', companyGstin: updated.business.gstin || '', companyPhone: updated.business.phone || '', companyEmail: updated.business.email || '', companyLogo: updated.business.logo || '', companyBankDetails: updated.business.bankDetails || '', defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
   const testResend = async () => {
     setTesting(true); setTestNotice({ type: '', text: '' })
     try {
@@ -1286,7 +1286,54 @@ function SettingsView({ userEmail }) {
   }
   if (!settings) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <div className="panel empty-preview">Loading settings...</div>}</div>
   const update = (field) => (event) => setForm({ ...form, [field]: event.target.value })
-  return <div className="view-workspace"><div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update the AI connection, email sender, business details, and default country code for your account.</p></div>{notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}<form onSubmit={save}><section className="panel settings-panel"><div className="panel-header"><h2>AI assistant</h2><span className={`campaign-status ${settings.ai.available ? 'running' : 'stopped'}`}>{settings.ai.available ? 'Available' : 'Unavailable'}</span></div><div className="settings-grid"><label className="form-label">API key<div className="input-with-action"><input type={showKey ? 'text' : 'password'} value={form.aiApiKey} onChange={update('aiApiKey')} placeholder="Leave blank to keep current key" autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button></div><small>Configured via the server's .env file. Leave blank to keep the current key.</small></label><label className="form-label">Base URL<input value={form.aiBaseURL} onChange={update('aiBaseURL')} /><small>Configured via the server's .env file.</small></label><label className="form-label">Model<input value={form.aiModel} onChange={update('aiModel')} /><small>Configured via the server's .env file.</small></label></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Email (Resend)</h2><span className={`campaign-status ${settings.email?.configured ? 'running' : 'stopped'}`}>{settings.email?.configured ? 'Configured' : 'Not configured'}</span></div><div className="settings-grid"><label className="form-label">API key<div className="input-with-action"><input type={showResendKey ? 'text' : 'password'} value={form.resendApiKey} onChange={update('resendApiKey')} placeholder={settings.email?.apiKeySet ? 'Leave blank to keep current key' : 're_...'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowResendKey(!showResendKey)}>{showResendKey ? 'Hide' : 'Show'}</button></div><small>Your own Resend API key from resend.com/api-keys. Leave blank to keep the current key.</small></label><label className="form-label">From email<input value={form.resendFromEmail} onChange={update('resendFromEmail')} placeholder="hello@yourdomain.com" /><small>Your verified sender address in Resend (e.g. hello@theirdomain.com).</small></label><label className="form-label">From name<input value={form.resendFromName} onChange={update('resendFromName')} placeholder="Your Business Name" /><small>Display name shown in the inbox — optional.</small></label></div>{testNotice.text && <div className={`notice ${testNotice.type}`} style={{ margin: '0.75rem 0 0' }}>{testNotice.text}</div>}<div className="button-row"><button type="button" className="secondary-btn" onClick={testResend} disabled={testing || busy}>{testing ? 'Sending test email...' : 'Test Connection'}</button><small className="help-note">Sends one test email to your own account address ({userEmail || 'not available'}) using the saved credentials. Save your settings first.</small></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Business information</h2></div><div className="settings-grid"><label className="form-label">Business name<input value={form.businessName} onChange={update('businessName')} /><small>Configured via the server's .env file.</small></label><label className="form-label">Tagline<input value={form.businessTagline} onChange={update('businessTagline')} /><small>Configured via the server's .env file.</small></label></div></section><section className="panel settings-panel"><div className="panel-header"><h2>Default country code</h2></div><div className="settings-grid"><label className="form-label">Default country code<select value={form.defaultCountryCode} onChange={update('defaultCountryCode')} className="country-select">{(settings.countries || COUNTRIES).map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>Prepended to phone numbers that don't already include a country code — Excel uploads without a per-upload override, and manually added contacts. The Campaigns upload lets you pick a different code per file.</small></label></div></section><div className="button-row"><button className="primary-btn" disabled={busy}>{busy ? 'Saving...' : 'Save settings'}</button></div></form></div>
+  return <div className="view-workspace">
+    <div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update your AI connection, email sender, business details, quotation company profile, and default country code.</p></div>
+    {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
+    <form onSubmit={save}>
+      <section className="panel settings-panel">
+        <div className="panel-header"><h2>AI assistant</h2><span className={`campaign-status ${settings.ai.available ? 'running' : 'stopped'}`}>{settings.ai.available ? 'Available' : 'Unavailable'}</span></div>
+        <div className="settings-grid">
+          <label className="form-label">API key<div className="input-with-action"><input type={showKey ? 'text' : 'password'} value={form.aiApiKey} onChange={update('aiApiKey')} placeholder="Leave blank to keep current key" autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button></div><small>Leave blank to keep the saved key.</small></label>
+          <label className="form-label">Base URL<input value={form.aiBaseURL} onChange={update('aiBaseURL')} /></label>
+          <label className="form-label">Model<input value={form.aiModel} onChange={update('aiModel')} /></label>
+        </div>
+      </section>
+      <section className="panel settings-panel">
+        <div className="panel-header"><h2>Email (Resend)</h2><span className={`campaign-status ${settings.email?.configured ? 'running' : 'stopped'}`}>{settings.email?.configured ? 'Configured' : 'Not configured'}</span></div>
+        <div className="settings-grid">
+          <label className="form-label">API key<div className="input-with-action"><input type={showResendKey ? 'text' : 'password'} value={form.resendApiKey} onChange={update('resendApiKey')} placeholder={settings.email?.apiKeySet ? 'Leave blank to keep current key' : 're_...'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowResendKey(!showResendKey)}>{showResendKey ? 'Hide' : 'Show'}</button></div><small>Leave blank to keep the saved key.</small></label>
+          <label className="form-label">From email<input value={form.resendFromEmail} onChange={update('resendFromEmail')} placeholder="hello@yourdomain.com" /></label>
+          <label className="form-label">From name<input value={form.resendFromName} onChange={update('resendFromName')} placeholder="Your Business Name" /></label>
+        </div>
+        {testNotice.text && <div className={`notice ${testNotice.type}`} style={{ margin: '0.75rem 0 0' }}>{testNotice.text}</div>}
+        <div className="button-row"><button type="button" className="secondary-btn" onClick={testResend} disabled={testing || busy}>{testing ? 'Sending test email...' : 'Test Connection'}</button><small className="help-note">Sends one test email to {userEmail || 'your account email'} using the saved credentials.</small></div>
+      </section>
+      <section className="panel settings-panel">
+        <div className="panel-header"><h2>Business information</h2></div>
+        <div className="settings-grid">
+          <label className="form-label">Business name<input value={form.businessName} onChange={update('businessName')} /></label>
+          <label className="form-label">Tagline<input value={form.businessTagline} onChange={update('businessTagline')} /></label>
+        </div>
+      </section>
+      <section className="panel settings-panel">
+        <div className="panel-header"><h2>Quotation company profile</h2></div>
+        <div className="settings-grid">
+          <label className="form-label">Company address<textarea value={form.companyAddress} onChange={update('companyAddress')} /></label>
+          <label className="form-label">Company state<input value={form.companyState} onChange={update('companyState')} /><small>Used to split GST into CGST/SGST for same-state customers; otherwise IGST is shown.</small></label>
+          <label className="form-label">Company GSTIN<input value={form.companyGstin} onChange={update('companyGstin')} /></label>
+          <label className="form-label">Company phone<input value={form.companyPhone} onChange={update('companyPhone')} /></label>
+          <label className="form-label">Company email<input value={form.companyEmail} onChange={update('companyEmail')} /></label>
+          <label className="form-label">Logo data URL<input value={form.companyLogo} onChange={update('companyLogo')} placeholder="data:image/png;base64,..." /><small>Optional PNG/JPEG data URL used on exported quotations.</small></label>
+          <label className="form-label">Bank details<textarea value={form.companyBankDetails} onChange={update('companyBankDetails')} /></label>
+        </div>
+      </section>
+      <section className="panel settings-panel">
+        <div className="panel-header"><h2>Default country code</h2></div>
+        <div className="settings-grid"><label className="form-label">Default country code<select value={form.defaultCountryCode} onChange={update('defaultCountryCode')} className="country-select">{(settings.countries || COUNTRIES).map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select></label></div>
+      </section>
+      <div className="button-row"><button className="primary-btn" disabled={busy}>{busy ? 'Saving...' : 'Save settings'}</button></div>
+    </form>
+  </div>
 }
 
 function App() {

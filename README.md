@@ -48,6 +48,7 @@ queue changes; the backend checks for it at startup and once per minute.
 11. `supabase-unread-increment-migration.sql` — atomic unread counter RPC.
 12. `supabase-schedule-estimate-migration.sql` — schedule estimate cache.
 13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability, queue, and duplicate-draft changes; includes campaign media metadata, queue columns/index, source campaign id, recipient-row data, and atomic per-user queue RPCs.**
+14. **`supabase-quotation-migration.sql` — required before deploying BOQ-to-Quotation; run after `supabase-boq-migration.sql`. Adds per-user price lists, quotations, line items, audit history, and sequential numbering RPCs.**
 
 Run the startup guard's migration if it logs:
 `Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`.
@@ -71,6 +72,18 @@ claims are serialized by migration RPCs. The Campaigns view also lets you
 duplicate a finished campaign into an editable draft, including its attachment
 reference; the shared media object is retained until no campaign references it.
 Apply the migration before using these controls.
+
+### BOQ to Quotation
+
+After confirming a BOQ, open **BOQ to Quotation** in Document Intelligence.
+Import your catalogue from Excel/CSV (or download its template), review the
+suggested matches, and manually price every unmatched line before finalizing.
+Quotation totals and GST are calculated by the backend; the company address,
+state, GSTIN, phone, email, logo data URL, and bank details are read from
+Settings. PDF and Excel exports are available, and a finalized draft can be
+sent as a single WhatsApp document after confirming the customer number.
+Run `supabase-quotation-migration.sql` after `supabase-boq-migration.sql`
+before deploying this feature. No new Render environment variables are needed.
 
 ### API smoke check
 

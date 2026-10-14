@@ -15,6 +15,13 @@ const fieldKeys = {
     AI_MODEL: 'aiModel',
     BUSINESS_NAME: 'businessName',
     BUSINESS_TAGLINE: 'businessTagline',
+    COMPANY_ADDRESS: 'companyAddress',
+    COMPANY_STATE: 'companyState',
+    COMPANY_GSTIN: 'companyGstin',
+    COMPANY_PHONE: 'companyPhone',
+    COMPANY_EMAIL: 'companyEmail',
+    COMPANY_LOGO: 'companyLogo',
+    COMPANY_BANK_DETAILS: 'companyBankDetails',
     // Per-user Resend (email campaigns) — same bring-your-own-key pattern
     // as the AI settings above.
     RESEND_API_KEY: 'resendApiKey',
@@ -97,6 +104,13 @@ async function getSettings(userId) {
         business: {
             name: (stored?.BUSINESS_NAME || process.env.BUSINESS_NAME || '').trim() || 'Sudarshan Pipes',
             tagline: (stored?.BUSINESS_TAGLINE || process.env.BUSINESS_TAGLINE || '').trim(),
+            address: (stored?.COMPANY_ADDRESS || '').trim(),
+            state: (stored?.COMPANY_STATE || '').trim(),
+            gstin: (stored?.COMPANY_GSTIN || '').trim(),
+            phone: (stored?.COMPANY_PHONE || '').trim(),
+            email: (stored?.COMPANY_EMAIL || '').trim(),
+            logo: (stored?.COMPANY_LOGO || '').trim(),
+            bankDetails: (stored?.COMPANY_BANK_DETAILS || '').trim(),
         },
         // Default country code used to normalize phone numbers. Existing
         // accounts with no stored value resolve to India (+91), which        // preserves the historical DEFAULT_COUNTRY_CODE=91 behavior.

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
+import QuotationView from './QuotationView.jsx'
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : ''
 const formatSource = (source = {}) => [
@@ -332,6 +333,8 @@ export default function DocumentIntelView() {
           </div>
         </section>
       )}
+
+      <QuotationView document={selected?.status === 'confirmed' ? selected : null} />
 
       <section className="panel">
         <div className="panel-header">

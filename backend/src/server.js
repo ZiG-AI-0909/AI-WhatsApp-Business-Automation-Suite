@@ -17,6 +17,7 @@ const { requireAuth } = require('./middleware/auth');
 const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
 const { assertEncryptionKey } = require('./utils/encryption');
 const { startCampaignReliabilityMigrationGuard } = require('./database/campaignReliabilityMigrationGuard');
+const { startQuotationMigrationGuard } = require('./database/quotationMigrationGuard');
 const { ensureCampaignMediaBucket } = require('./campaigns/campaignMediaStorage');
 
 const app = express();
@@ -112,6 +113,8 @@ app.use('/api/settings', requireAuth, require('./middleware/rateLimiterMiddlewar
 app.use('/api/schedules', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/schedules'));
 app.use('/api/image-extractor', requireAuth, require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
 app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
+app.use('/api', requireAuth, require('./routes/quotations'));
+app.use('/api/boq', requireAuth, require('./routes/priceList'));
 app.use('/api/boq', requireAuth, require('./routes/boq').router);
 app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
 
@@ -147,6 +150,7 @@ async function startServer() {
         // set ENCRYPTION_KEY (64 hex chars) in the environment first.
         assertEncryptionKey();
         await startCampaignReliabilityMigrationGuard();
+        await startQuotationMigrationGuard();
         await ensureCampaignMediaBucket();
 
         // Sessions are created lazily per user on demand — nothing global
