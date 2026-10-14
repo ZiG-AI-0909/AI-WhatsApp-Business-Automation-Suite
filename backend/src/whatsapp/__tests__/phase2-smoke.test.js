@@ -37,6 +37,9 @@ function table(name) {
             const builder = {
                 eq(col, val) { filters.push({ op: 'eq', col, val }); return builder; },
                 in(col, vals) { filters.push({ op: 'in', col, vals }); return builder; },
+                order() { return builder; },
+                limit() { return builder; },
+                range() { return builder; },
                 maybeSingle: async () => {
                     const out = this._apply(state.rows[name], filters);
                     return { data: out[0] || null, error: null };
@@ -45,7 +48,7 @@ function table(name) {
                     const out = this._apply(state.rows[name], filters);
                     return { data: out[0] || null, error: out.length ? null : { code: 'PGRST116' } };
                 },
-                then(resolve) { return resolve({ data: this._apply(state.rows[name], filters), error: null }); },
+                then(resolve) { return resolve({ data: table(name)._apply(state.rows[name], filters), error: null }); },
             };
             return builder;
         },

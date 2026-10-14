@@ -74,6 +74,14 @@ router.get('/:id/contacts', async (req, res) => {
     }
 });
 
+router.get('/:id/estimate', async (req, res) => {
+    try {
+        res.json(await campaignService.estimateRemaining(+req.params.id, req.user.id));
+    } catch (err) {
+        res.status(err.message === 'Campaign not found' ? 404 : 500).json({ error: err.message });
+    }
+});
+
 // POST /api/campaigns/validate-excel
 router.post('/validate-excel', uploadExcel.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });

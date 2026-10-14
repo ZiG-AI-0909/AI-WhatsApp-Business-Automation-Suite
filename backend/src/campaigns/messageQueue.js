@@ -149,6 +149,7 @@ class MessageQueue {
         worker._running = false; worker._paused = false;
         try {
             await this._update(worker, 'campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
+            await this._recountCampaign(campaignId, userId);
             await this._update(worker, 'campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
         } catch (e) { console.error('Campaign stop update failed:', e); throw e; }
         worker._emit('campaign:stopped', { campaignId });
@@ -189,8 +190,14 @@ class MessageQueue {
     async _process() {
         while (this._running) {
             if (this._paused) { await this._sleep(500); continue; }
-            const limitCheck = this._rateLimiter?.checkLimits() ?? { allowed: true };
-            if (!limitCheck.allowed) { await this._sleep(60000); continue; }
+            const limitCheck = this._rateLimiter
+                ? await this._rateLimiter.checkDatabaseLimits(db, this._ownerUserId)
+                : { allowed: true };
+            if (!limitCheck.allowed) { await this._sleepResponsive(60000); continue; }
+            if (this._rateLimiter && !this._rateLimiter.isWithinBusinessHours()) {
+                await this._sleepResponsive(Math.min(this._rateLimiter.msUntilBusinessHours(), 60000));
+                continue;
+            }
 
             const campaignId = this._campaignId;
             const userId = this._ownerUserId;
@@ -208,22 +215,21 @@ class MessageQueue {
 
             if (!item || item.length === 0) {
                 const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
-                if (remaining > 0) { await this._sleep(1000); continue; }
-                const [sent, failed, optedOut, skipped] = await Promise.all(
-                    ['sent', 'failed', 'opted_out', 'skipped'].map(status =>
-                        db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, status])
-                    )
-                );
+                if (remaining > 0) { await this._sleepResponsive(1000); continue; }
+                const counters = await db.recountCampaignCounters(campaignId, userId);
+                const status = counters.sent === 0
+                    ? 'failed'
+                    : counters.failed > 0 ? 'completed_with_errors' : 'completed';
                 await this._update(this, 'campaigns', {
-                    status: 'completed',
-                    processed: sent + failed + optedOut + skipped,
-                    sent,
-                    failed,
-                    opt_outs: optedOut,
+                    status,
+                    ...counters,
+                    last_error: status === 'failed'
+                        ? (counters.failed > 0 ? `${counters.failed} contact(s) failed. Review the contact errors before retrying.` : 'No messages were sent; all contacts were skipped or opted out.')
+                        : counters.failed > 0 ? `${counters.failed} contact(s) failed. Review the contact errors before retrying.` : null,
                     completed_at: new Date(),
                     updated_at: new Date(),
                 }, 'id = ? AND user_id = ?', [campaignId, userId]);
-                this._emit('campaign:completed', { campaignId });
+                this._emit(status === 'failed' ? 'campaign:error' : 'campaign:completed', { campaignId, status });
                 this._running = false;
                 this._queues.delete(userId);
                 break;
@@ -254,59 +260,103 @@ class MessageQueue {
             const contact = await contactService.findByPhone(contactItem.phone, userId);
             if (contact && !contact.marketing_opt_in) {
                 await this._update(this, 'campaign_contacts', { status: 'opted_out' }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-                const campaignRow = await db.getById('campaigns', campaignId, userId);
-                await this._update(this, 'campaigns', { processed: (parseInt(campaignRow?.processed) || 0) + 1, opt_outs: (parseInt(campaignRow?.opt_outs) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                await this._recountCampaign(campaignId, userId);
                 this._emitProgress(campaignId);
                 continue;
             }
 
             const attempts = parseInt(contactItem.attempts) || 0;
+            let send;
+            let sendError = null;
             try {
                 // SECURITY: resolve the send function to THIS user's own
                 // session. If it isn't connected, the send fails — there is
                 // deliberately no fallback to any other user's session.
-                const send = await this._getSender(userId, this._provider || 'web');
+                send = await this._getSender(userId, this._provider || 'web');
+            } catch (error) {
+                sendError = error;
+            }
+
+            let attemptStarted = false;
+            let result;
+            if (!sendError) {
                 await this._update(this, 'campaign_contacts', { status: 'processing', attempts: attempts + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+                attemptStarted = true;
                 const buttons = parseJsonField(contactItem.buttons, []);
                 const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
-                const result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
-                const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
-                await this._update(this, 'campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-                const sentRow = await db.getById('campaigns', campaignId, userId);
-                await this._update(this, 'campaigns', { processed: (parseInt(sentRow?.processed) || 0) + 1, sent: (parseInt(sentRow?.sent) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
-                this._rateLimiter?.recordSent();
-            } catch (error) {
-                const lastError = describeSendError(error);
-                const retryable = shouldRetrySendError(error);
-                const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
-                const connectionError = isConnectionError(error);
-                console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
-                if (connectionError) {
-                    await this._update(this, 'campaign_contacts', { status: 'pending', attempts, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-                    await this._update(this, 'campaigns', {
-                        status: 'paused',
-                        pause_reason: 'whatsapp_disconnected',
-                        last_error: lastError.slice(0, 500),
-                        updated_at: new Date(),
-                    }, 'id = ? AND user_id = ?', [campaignId, userId]);
-                    this._running = false;
-                    this._paused = true;
-                    this._queues.delete(userId);
-                    this._emit('campaign:paused', { campaignId, reason: 'whatsapp_disconnected', error: lastError });
-                    return;
-                }
-                if (retryable && attempts + 1 <= maxAttempts) {
-                    const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
-                    await this._update(this, 'campaign_contacts', { status: 'pending', last_error: lastError, retry_at: new Date(Date.now() + retryDelay) }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-                } else {
-                    await this._update(this, 'campaign_contacts', { status: 'failed', last_error: lastError, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-                    const failedRow = await db.getById('campaigns', campaignId, userId);
-                    await this._update(this, 'campaigns', { processed: (parseInt(failedRow?.processed) || 0) + 1, failed: (parseInt(failedRow?.failed) || 0) + 1, updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+                try {
+                    result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
+                } catch (error) {
+                    sendError = error;
                 }
             }
+
+            if (sendError) {
+                const paused = await this._handleSendFailure(sendError, contactItem, attempts, attemptStarted, campaignId, userId);
+                this._emitProgress(campaignId);
+                if (paused) return;
+                if (this._rateLimiter && this._running) await this._sleepResponsive(this._rateLimiter.nextDelayMs());
+                continue;
+            }
+
+            const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
+            await this._update(this, 'campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+            await this._recountCampaign(campaignId, userId);
             this._emitProgress(campaignId);
-            if (this._rateLimiter && this._running) await this._rateLimiter.wait();
+            if (this._rateLimiter && this._running) await this._sleepResponsive(this._rateLimiter.nextDelayMs());
         }
+    }
+
+    async _handleSendFailure(error, contactItem, attempts, attemptStarted, campaignId, userId) {
+        const lastError = describeSendError(error);
+        const retryable = shouldRetrySendError(error);
+        const connectionError = isConnectionError(error);
+        const attemptsAfterFailure = attempts + (attemptStarted ? 1 : 0);
+        const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
+        console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
+        if (connectionError) {
+            await this._update(this, 'campaign_contacts', { status: 'pending', attempts, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+            await this._update(this, 'campaigns', {
+                status: 'paused',
+                pause_reason: 'whatsapp_disconnected',
+                last_error: lastError.slice(0, 500),
+                updated_at: new Date(),
+            }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            this._running = false;
+            this._paused = true;
+            this._queues.delete(userId);
+            this._emit('campaign:paused', { campaignId, reason: 'whatsapp_disconnected', error: lastError });
+            return true;
+        }
+        if (retryable && attemptsAfterFailure <= maxAttempts) {
+            const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
+            await this._update(this, 'campaign_contacts', {
+                status: 'pending',
+                attempts: attemptsAfterFailure,
+                last_error: lastError,
+                retry_at: new Date(Date.now() + retryDelay),
+            }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+        } else {
+            await this._update(this, 'campaign_contacts', {
+                status: 'failed',
+                attempts: attemptsAfterFailure,
+                last_error: lastError,
+                retry_at: null,
+            }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+            await this._recountCampaign(campaignId, userId, lastError);
+        }
+        return false;
+    }
+
+    async _recountCampaign(campaignId, userId, lastError = null) {
+        const counters = await db.recountCampaignCounters(campaignId, userId);
+        if (lastError) {
+            await this._update(this, 'campaigns', {
+                last_error: lastError.slice(0, 500),
+                updated_at: new Date(),
+            }, 'id = ? AND user_id = ?', [campaignId, userId]);
+        }
+        return counters;
     }
 
     _emitProgress(campaignId) {
@@ -317,20 +367,34 @@ class MessageQueue {
 
     _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+    async _sleepResponsive(ms) {
+        let remaining = Math.max(0, ms);
+        while (remaining > 0 && this._running && !this._paused) {
+            const chunk = Math.min(remaining, 1000);
+            await this._sleep(chunk);
+            remaining -= chunk;
+        }
+    }
+
     async resumeDisconnectedCampaigns(userId, candidates = null) {
         if (!userId) throw new Error('userId is required to resume disconnected campaigns.');
         let campaigns = candidates;
         if (!campaigns) {
-            const result = await db.paginate(
-                'campaigns',
-                'user_id = ? AND status = ? AND pause_reason = ?',
-                [userId, 'paused', 'whatsapp_disconnected'],
-                'id',
-                'asc',
-                1000,
-                0,
-            );
-            campaigns = result.data;
+            campaigns = [];
+            const pageSize = 500;
+            for (let offset = 0; ; offset += pageSize) {
+                const page = await db.select(
+                    'campaigns',
+                    '*',
+                    'user_id = ? AND status = ? AND pause_reason = ?',
+                    [userId, 'paused', 'whatsapp_disconnected'],
+                    'id',
+                    pageSize,
+                    offset,
+                );
+                campaigns.push(...page);
+                if (page.length < pageSize) break;
+            }
         }
         const campaign = campaigns.find(row => row.status === 'paused' && row.pause_reason === 'whatsapp_disconnected');
         if (!campaign) return null;
@@ -404,6 +468,13 @@ class MessageQueue {
                 const resumedId = await this.resumeDisconnectedCampaigns(userId, connectionPaused);
                 if (resumedId !== null) {
                     resumed = resumed ?? resumedId;
+                    for (const duplicate of ownerCampaigns.filter(row => String(row.id) !== String(resumedId))) {
+                        await this._update(this, 'campaigns', {
+                            status: 'stopped',
+                            completed_at: new Date(),
+                            updated_at: new Date(),
+                        }, 'id = ? AND user_id = ?', [duplicate.id, userId]);
+                    }
                     continue;
                 }
                 ownerCampaigns.splice(0, ownerCampaigns.length, ...ownerCampaigns.filter(row => !connectionPaused.includes(row)));

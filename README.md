@@ -30,5 +30,30 @@ The backend deploys from `render.yaml` as a Node web service
 ### Database migrations
 
 Run the `supabase-*.sql` migrations in Supabase before first deploy. The
-schedule-estimate cache requires `supabase-schedule-estimate-migration.sql`
-(idempotent — safe to re-run).
+campaign reliability migration (`supabase-campaign-reliability-migration.sql`)
+adds pause/error tracking and the atomic counter recount function. The
+schedule-estimate cache requires `supabase-schedule-estimate-migration.sql`.
+These migrations are idempotent and safe to re-run.
+
+### API smoke check
+
+After deploying the backend, set `API_BASE_URL` to the service URL and
+`TEST_JWT` to a valid Supabase access token for a test account, then run:
+
+```powershell
+$env:API_BASE_URL = "https://your-service.onrender.com"
+$env:TEST_JWT = "your-test-user-access-token"
+cd backend
+npm run smoke:api
+```
+
+Use `npm run smoke:api -- --list-only` to print discovered mounted routes
+without making API requests.
+
+The command discovers mounted routes, performs safe GET checks, and validates
+the Excel upload route using an in-memory `test.xlsx`. Mutating routes are
+listed as skipped unless explicitly enabled with `npm run smoke:api -- --write`.
+Use a non-production test account when enabling writes; any data created by
+those requests should be cleaned up manually. Routes that can send WhatsApp
+messages or stop/restart a campaign or schedule are always skipped to avoid
+accidental live actions.

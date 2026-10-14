@@ -70,7 +70,7 @@ function table(name) {
     if (!state.rows[name]) state.rows[name] = [];
     return {
         rows: state.rows[name],
-        select(_cols) {
+        select(_cols, options = {}) {
             const filters = [];
             const builder = {
                 ...filterMethods(filters),
@@ -85,7 +85,14 @@ function table(name) {
                     const out = applyRows(state.rows[name], filters);
                     return { data: out[0] || null, error: out.length ? null : { code: 'PGRST116' } };
                 },
-                then(resolve) { return resolve({ data: applyRows(state.rows[name], filters), error: null }); },
+                then(resolve) {
+                    const rows = applyRows(state.rows[name], filters);
+                    return resolve({
+                        data: options.head ? null : rows,
+                        count: options.count === 'exact' ? rows.length : null,
+                        error: null,
+                    });
+                },
             };
             return builder;
         },

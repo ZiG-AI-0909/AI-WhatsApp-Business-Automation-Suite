@@ -419,6 +419,39 @@ async function count(table, where = '', params = []) {
     return count;
 }
 
+async function recountCampaignCounters(campaignId, userId) {
+    if (!userId) throw new Error('[db] userId is required to recount campaign counters.');
+    if (isAvailable() && typeof supabase.rpc === 'function') {
+        const { data, error } = await supabase.rpc('recount_campaign_counters', {
+            p_campaign_id: campaignId,
+            p_user_id: userId,
+        });
+        if (error) throw error;
+        const row = Array.isArray(data) ? data[0] : data;
+        if (!row) throw new Error(`[db] Campaign ${campaignId} was not found while recounting counters.`);
+        const counters = {};
+        for (const key of ['processed', 'sent', 'failed', 'opt_outs', 'skipped']) {
+            const value = Number(row[key]);
+            if (!Number.isFinite(value)) {
+                throw new Error(`[db] Invalid ${key} counter returned while recounting campaign ${campaignId}.`);
+            }
+            counters[key] = value;
+        }
+        return counters;
+    }
+
+    const statuses = ['sent', 'failed', 'opted_out', 'skipped'];
+    const counts = await Promise.all(statuses.map(status => module.exports.count(
+        'campaign_contacts',
+        'campaign_id = ? AND user_id = ? AND status = ?',
+        [campaignId, userId, status],
+    )));
+    const [sent, failed, opt_outs, skipped] = counts.map(value => Number(value) || 0);
+    const counters = { sent, failed, opt_outs, skipped, processed: sent + failed + opt_outs + skipped };
+    await module.exports.update('campaigns', counters, 'id = ? AND user_id = ?', [campaignId, userId]);
+    return counters;
+}
+
 /**
  * Get count and data in one call (for pagination)
  */
@@ -641,6 +674,7 @@ module.exports = {
     getById,
     getOne,
     count,
+    recountCampaignCounters,
     paginate,
     raw,
 

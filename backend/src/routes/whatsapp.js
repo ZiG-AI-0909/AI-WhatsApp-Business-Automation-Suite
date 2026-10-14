@@ -11,6 +11,7 @@
 const express = require('express');
 const router = express.Router();
 const sessionManager = require('../whatsapp/sessionManager');
+const businessApiProvider = require('../whatsapp/businessApiProvider');
 
 // GET /api/whatsapp/status — this user's connection status only
 router.get('/status', (req, res) => {
@@ -22,6 +23,7 @@ router.get('/status', (req, res) => {
     res.json({
         status,
         provider: 'web',
+        businessStatus: businessApiProvider.getStatus(req.user.id),
         qrAvailable,
         lastError: sessionManager.getLastError(req.user.id),
     });

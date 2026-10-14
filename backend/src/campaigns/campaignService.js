@@ -243,33 +243,55 @@ class CampaignService {
         if (['running', 'paused'].includes(campaign.status) || messageQueue.getCurrentCampaignId(userId) !== null) {
             throw new Error('Stop the current campaign before retrying failed contacts.');
         }
+        if (!['failed', 'completed_with_errors', 'completed', 'stopped'].includes(campaign.status)) {
+            throw new Error(`Cannot retry failed contacts in status: ${campaign.status}`);
+        }
         await this._assertOwnerConnected(userId, campaign.provider || 'web');
 
-        const failedCount = await db.count(
-            'campaign_contacts',
-            'campaign_id = ? AND user_id = ? AND status = ?',
-            [campaignId, userId, 'failed'],
-        );
-        if (!failedCount) throw new Error('This campaign has no failed contacts to retry.');
+        const failedIds = [];
+        const batchSize = 500;
+        for (let offset = 0; ; offset += batchSize) {
+            const page = await db.select(
+                'campaign_contacts',
+                'id',
+                'campaign_id = ? AND user_id = ? AND status = ?',
+                [campaignId, userId, 'failed'],
+                'id',
+                batchSize,
+                offset,
+            );
+            if (!page.length) break;
+            failedIds.push(...page.map(row => row.id));
+            if (page.length < batchSize) break;
+        }
+        if (!failedIds.length) throw new Error('This campaign has no failed contacts to retry.');
 
-        const requeued = await db.update(
-            'campaign_contacts',
-            { status: 'pending', attempts: 0, last_error: null, retry_at: null },
-            'campaign_id = ? AND user_id = ? AND status = ?',
-            [campaignId, userId, 'failed'],
-        );
-        if (!requeued.length) throw new Error('No failed contacts were available to retry.');
+        let requeuedCount = 0;
+        for (let offset = 0; offset < failedIds.length; offset += batchSize) {
+            const ids = failedIds.slice(offset, offset + batchSize);
+            const requeued = await db.update(
+                'campaign_contacts',
+                { status: 'pending', attempts: 0, last_error: null, retry_at: null },
+                'id IN (?) AND campaign_id = ? AND user_id = ? AND status = ?',
+                [ids, campaignId, userId, 'failed'],
+            );
+            requeuedCount += requeued.length;
+        }
+        if (!requeuedCount) throw new Error('No failed contacts were available to retry.');
+
+        const counters = await db.recountCampaignCounters(campaignId, userId);
 
         await db.update('campaigns', {
             status: 'stopped',
-            processed: Math.max(0, (parseInt(campaign.processed) || 0) - requeued.length),
-            failed: Math.max(0, (parseInt(campaign.failed) || 0) - requeued.length),
+            ...counters,
+            pause_reason: null,
+            last_error: null,
             completed_at: null,
             updated_at: new Date(),
         }, 'id = ? AND user_id = ?', [campaignId, userId]);
 
         await this.start(campaignId, io, userId);
-        return { requeued: requeued.length };
+        return { requeued: requeuedCount };
     }
 
     pause(campaignId, userId) {
@@ -286,6 +308,12 @@ class CampaignService {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
         }
         if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
+            if (campaign.pause_reason === 'whatsapp_disconnected') {
+                await this._assertOwnerConnected(userId, campaign.provider || 'web');
+                messageQueue.setIO(io);
+                await messageQueue.start(campaignId, parseJsonField(campaign.settings, {}), userId);
+                return;
+            }
             throw new Error('This campaign is not currently loaded in the queue.');
         }
         await this._assertOwnerConnected(userId, campaign.provider || 'web');
@@ -297,9 +325,11 @@ class CampaignService {
         const ownedCampaign = await this.get(campaignId, userId);
         if (!ownedCampaign) throw new Error('Campaign not found');
         if (messageQueue.getCurrentCampaignId(userId) !== campaignId) {
+            if (!['running', 'paused'].includes(ownedCampaign.status)) return;
             // Force-stop from DB even if queue doesn't match
             await db.update('campaign_contacts', { status: 'skipped' }, 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
-            await db.update('campaigns', { status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            const counters = await db.recountCampaignCounters(campaignId, userId);
+            await db.update('campaigns', { ...counters, status: 'stopped', completed_at: new Date(), updated_at: new Date() }, 'id = ? AND user_id = ?', [campaignId, userId]);
             return;
         }
         if (messageQueue.getCurrentOwnerUserId(userId) === userId) await messageQueue.stop(userId);
@@ -353,17 +383,55 @@ class CampaignService {
         return { total, page, limit, data };
     }
 
+    async estimateRemaining(campaignId, userId) {
+        const campaign = await this.get(campaignId, userId);
+        if (!campaign) throw new Error('Campaign not found');
+        const contacts = await db.count(
+            'campaign_contacts',
+            "campaign_id = ? AND user_id = ? AND status IN ('pending', 'processing')",
+            [campaignId, userId],
+        );
+        const settings = parseJsonField(campaign.settings, {});
+        const schedulerService = require('./schedulerService');
+        const RateLimiter = require('./rateLimiter');
+        const durationMs = schedulerService._computeDurationMs(settings, contacts);
+        const now = new Date();
+        const rateLimiter = new RateLimiter(settings);
+        let startAt = now;
+        if (campaign.status === 'paused') {
+            startAt = null;
+        } else if (!rateLimiter.isWithinBusinessHours()) {
+            startAt = new Date(now.getTime() + rateLimiter.msUntilBusinessHours(now));
+        }
+        return {
+            campaignId,
+            contacts,
+            durationMs,
+            durationLabel: schedulerService._humanDuration(durationMs),
+            startAt: startAt?.toISOString() || null,
+            endAt: startAt ? new Date(startAt.getTime() + durationMs).toISOString() : null,
+        };
+    }
+
     async stats(userId) {
         const total = await db.count('campaigns', 'user_id = ?', [userId]);
         const active = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'running']);
-        const campaigns = await db.select('campaigns', 'sent, failed, replies, opt_outs', 'user_id = ?', [userId], '', 1000, 0);
-        
+        const campaigns = [];
+        const pageSize = 500;
+        for (let offset = 0; ; offset += pageSize) {
+            const page = await db.select('campaigns', 'sent, failed, replies, opt_outs', 'user_id = ?', [userId], 'id', pageSize, offset);
+            campaigns.push(...page);
+            if (page.length < pageSize) break;
+        }
+
         const totalSent = campaigns.reduce((sum, c) => sum + (parseInt(c.sent) || 0), 0);
         const totalFailed = campaigns.reduce((sum, c) => sum + (parseInt(c.failed) || 0), 0);
         const totalReplies = campaigns.reduce((sum, c) => sum + (parseInt(c.replies) || 0), 0);
         const totalOptOuts = campaigns.reduce((sum, c) => sum + (parseInt(c.opt_outs) || 0), 0);
 
-        return { total, active, totalSent, totalFailed, totalReplies, totalOptOuts };
+        const failedCampaigns = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'failed']);
+        const campaignsWithErrors = await db.count('campaigns', 'user_id = ? AND status = ?', [userId, 'completed_with_errors']);
+        return { total, active, totalSent, totalFailed, totalReplies, totalOptOuts, failedCampaigns, campaignsWithErrors };
     }
 
     getQueueStatus(userId) {

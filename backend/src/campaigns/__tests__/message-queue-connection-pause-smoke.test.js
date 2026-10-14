@@ -42,8 +42,10 @@ async function main() {
             _rateLimiter: null,
             _queues: queue._queues,
             _update: queue._update,
+            _handleSendFailure: queue._handleSendFailure,
             _getSender: async () => { throw new Error('Your WhatsApp session is not connected.'); },
             _emit: (event, payload) => emitted.push({ event, payload }),
+            _emitProgress: () => {},
         });
 
         const contactUpdate = updates.find(update => update.table === 'campaign_contacts' && update.data.attempts !== undefined);

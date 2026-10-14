@@ -98,9 +98,43 @@ class RateLimiter {
      * Wait for the configured delay between messages.
      */
     async wait() {
+        await new Promise(r => setTimeout(r, this.nextDelayMs()));
+    }
+
+    nextDelayMs() {
         const delay = Number(this.settings.delayBetweenMessages) || 17500;
-        const jitteredDelay = delay * (JITTER_MIN + Math.random() * (JITTER_MAX - JITTER_MIN));
-        await new Promise(r => setTimeout(r, jitteredDelay));
+        return delay * (JITTER_MIN + Math.random() * (JITTER_MAX - JITTER_MIN));
+    }
+
+    async checkDatabaseLimits(db, userId, now = new Date()) {
+        if (!userId) throw new Error('userId is required to check campaign send limits.');
+        const checks = [];
+        if (this.settings.maxPerHour > 0) {
+            checks.push(db.count(
+                'campaign_contacts',
+                'user_id = ? AND status = ? AND sent_at >= ?',
+                [userId, 'sent', new Date(now.getTime() - 3600000)],
+            ));
+        } else {
+            checks.push(Promise.resolve(0));
+        }
+        if (this.settings.maxPerDay > 0) {
+            checks.push(db.count(
+                'campaign_contacts',
+                'user_id = ? AND status = ? AND sent_at >= ?',
+                [userId, 'sent', new Date(now.getTime() - 86400000)],
+            ));
+        } else {
+            checks.push(Promise.resolve(0));
+        }
+        const [hourCount, dayCount] = await Promise.all(checks);
+        if (this.settings.maxPerHour > 0 && hourCount >= this.settings.maxPerHour) {
+            return { allowed: false, reason: 'Hourly limit reached' };
+        }
+        if (this.settings.maxPerDay > 0 && dayCount >= this.settings.maxPerDay) {
+            return { allowed: false, reason: 'Daily limit reached' };
+        }
+        return { allowed: true, reason: '' };
     }
 
     /**

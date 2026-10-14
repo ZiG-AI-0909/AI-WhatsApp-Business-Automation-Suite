@@ -77,6 +77,7 @@ const defaultTemplate = `Hello {{name}} 👋\n\nThis is Sudarshan Pipes.\nWe wan
 
 function CampaignsView({ onNavigate }) {
   const [campaignList, setCampaignList] = useState([])
+  const [campaignEstimate, setCampaignEstimate] = useState(null)
   const [schedules, setSchedules] = useState([])
   const [scheduleEstimates, setScheduleEstimates] = useState({})
   const [selectedScheduleIds, setSelectedScheduleIds] = useState([])
@@ -245,6 +246,14 @@ function CampaignsView({ onNavigate }) {
     apiFetch(`/campaigns/${selectedCampaign.id}/contacts?limit=100`).then((data) => setCampaignContacts(data.data || [])).catch(() => setCampaignContacts([]))
   }, [selectedCampaign?.id, selectedCampaign?.processed])
 
+  useEffect(() => {
+    if (!selectedCampaign) { setCampaignEstimate(null); return }
+    setCampaignEstimate(null)
+    apiFetch(`/campaigns/${selectedCampaign.id}/estimate`)
+      .then(setCampaignEstimate)
+      .catch((error) => setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign estimate' }) }))
+  }, [selectedCampaign?.id, selectedCampaign?.processed, selectedCampaign?.status])
+
   const uploadExcel = async (event) => {
     const nextFile = event.target.files?.[0]
     if (!nextFile) return
@@ -336,7 +345,7 @@ function CampaignsView({ onNavigate }) {
     if (!upload?.filePath) return setMessage({ type: 'error', text: 'Upload a valid XLSX file first.' })
     setBusy(true)
     try {
-      const buttonsPayload = whatsappStatus.provider === 'WhatsApp Business API' ? buttons : []
+      const buttonsPayload = whatsappStatus.businessStatus === 'connected' ? buttons : []
       const settingsPayload = { delayBetweenMessages: 17500, retryCount: 2, retryDelay: 30000 }
       if (scheduleType !== 'now') {
         if (scheduleType === 'once' && (!runAt || new Date(runAt) <= new Date())) throw new Error('Choose a future date and time.')
@@ -426,7 +435,10 @@ function CampaignsView({ onNavigate }) {
   const toggleAllSchedules = () => setSelectedScheduleIds(selectedScheduleIds.length === schedules.length ? [] : schedules.map((schedule) => schedule.id))
   const bulkDeleteSchedules = async () => { if (!selectedScheduleIds.length || !window.confirm(`Delete ${selectedScheduleIds.length} selected schedule(s)?`)) return; try { await apiFetch('/schedules/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: selectedScheduleIds }) }); setSelectedScheduleIds([]); await loadSchedules() } catch (error) { setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) }) } }
 
-  const statusClass = (status) => `campaign-status ${String(status || '').toLowerCase()}`
+  const statusClass = (status) => `campaign-status ${status === 'completed_with_errors' ? 'completed-with-errors' : String(status || '').toLowerCase()}`
+  const selectedProviderConnected = selectedCampaign?.provider === 'business'
+    ? whatsappStatus.businessStatus === 'connected'
+    : whatsappStatus.status === 'connected'
 
   // Time calculator cell: for active/pending schedules show the approximate
   // run duration and the estimated finish time (start → end of one campaign).
@@ -465,7 +477,7 @@ function CampaignsView({ onNavigate }) {
         <section className="panel campaign-builder">
           <div className="panel-header"><h2>1. Build campaign</h2><span className="file-note">{file?.name || 'No file selected'}</span></div>
           <form onSubmit={createCampaign}>
-            {(whatsappStatus.provider === 'WhatsApp Web' || whatsappStatus.provider === 'web') && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
+            {whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
             <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
             <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
             <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Now</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
@@ -481,7 +493,7 @@ function CampaignsView({ onNavigate }) {
               {mediaPreview && mediaType === 'image' ? <img className="media-thumb" src={mediaPreview} alt="Campaign preview" /> : mediaPreview && mediaType === 'document' ? <div className="media-document-preview"><div>📄</div><small>{mediaFilename}</small></div> : <small>Optional image (JPG, PNG, WEBP) or document (PDF, DOC, DOCX, XLS, XLSX), up to 16 MB.</small>}
             </div>
             <div className="field-panel inline-fields">
-              {whatsappStatus.provider === 'WhatsApp Business API' ? <>
+              {whatsappStatus.businessStatus === 'connected' ? <>
                 <div className="panel-header"><h3>Buttons (Business API only)</h3>{buttons.length < 3 && <button type="button" className="secondary-btn" onClick={() => setButtons([...buttons, { type: 'quick_reply', text: '', url: '' }])}>Add button</button>}</div>
                 {buttons.map((button, index) => <div className="button-config" key={index}><select value={button.type} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value } : item))}><option value="quick_reply">Quick Reply</option><option value="url">URL</option></select><input value={button.text} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} placeholder="Button text" />{button.type === 'url' && <input value={button.url} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item))} placeholder="https://example.com" />}<button type="button" className="danger-btn" onClick={() => setButtons(buttons.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}
                 <small>Buttons only send on the WhatsApp Business API provider — ignored when sending via WhatsApp Web.</small>
@@ -495,7 +507,7 @@ function CampaignsView({ onNavigate }) {
             {upload?.ignoredSheets?.length > 0 && <div className="notice warning">Skipped sheets without a phone-number header: {upload.ignoredSheets.join(', ')}.</div>}
             {Object.entries(missingByField).filter(([, count]) => count > 0).map(([field, count]) => <div className="missing-warning" key={field}>Warning: {count} contacts have no value for {`{{${field}}}`}. Creating this campaign requires explicit approval.</div>)}
             {Object.values(missingByField).some((count) => count > 0) && <label className="check-label"><input type="checkbox" checked={allowMissingFields} onChange={(event) => setAllowMissingFields(event.target.checked)} /> Allow unresolved fields to remain in messages</label>}
-            {(whatsappStatus.provider === 'WhatsApp Web' || whatsappStatus.provider === 'web') && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
+            {whatsappStatus.businessStatus !== 'connected' && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
             <div className="button-row"><button type="button" className="secondary-btn" onClick={previewMessages} disabled={!upload || busy}>Preview messages</button><button className="primary-btn" disabled={!upload || !name.trim() || busy}>Create persistent queue</button></div>
           </form>
         </section>
@@ -507,9 +519,48 @@ function CampaignsView({ onNavigate }) {
       </div>
 
       <section className="panel queue-panel">
-        <div className="panel-header"><div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>{selectedCampaign && <div className="button-row"><button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)}>Start</button><button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || ['running', 'paused'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button><button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button><button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button><button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button></div>}</div>
-        {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead><tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td><td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small></td><td data-label="Provider">{campaign.provider || 'web'}</td><td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status}</span></td><td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td></tr>)}</tbody></table>{!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }] } />}</div>
-        {selectedCampaign && <div className="campaign-detail"><div className="panel-header"><div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div><strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong></div><p className="detail-template">{selectedCampaign.template_message}</p><div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div></div>}
+        <div className="panel-header">
+          <div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>
+          {selectedCampaign && <div className="button-row">
+            <button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !selectedProviderConnected || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)} title={!selectedProviderConnected ? 'Connect WhatsApp before starting this campaign.' : undefined}>Start</button>
+            <button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || !['failed', 'completed_with_errors', 'completed', 'stopped'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button>
+            <button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button>
+            <button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button>
+            <button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button>
+          </div>}
+        </div>
+        {selectedCampaign && !selectedProviderConnected && <div className="notice warning campaign-connection-notice" role="status">
+          <span>{selectedCampaign.pause_reason === 'whatsapp_disconnected' ? 'WhatsApp disconnected — reconnect to continue.' : 'WhatsApp is not connected. Connect before starting this campaign.'}</span>
+          <button type="button" className="secondary-btn" onClick={() => onNavigate?.('WhatsApp Connection')}>Open WhatsApp Connection</button>
+        </div>}
+        {selectedCampaign?.last_error && <div className="notice warning">{selectedCampaign.last_error}</div>}
+        {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}
+        <div className="campaign-table-wrap">
+          <table>
+            <thead><tr><th><input type="checkbox" aria-label="Select all campaigns on this page" checked={campaignList.length > 0 && selectedIds.length === campaignList.length} onChange={toggleAllCampaigns} /></th><th>Campaign</th><th>Provider</th><th>Status</th><th>Progress</th><th>Sent</th><th>Failed</th></tr></thead>
+            <tbody>{campaignList.map((campaign) => <tr key={campaign.id} className={selectedCampaign?.id === campaign.id ? 'selected-row' : ''} onClick={() => setSelectedCampaign(campaign)}>
+              <td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${campaign.name}`} checked={selectedIds.includes(campaign.id)} onChange={() => toggleCampaign(campaign.id)} /></td>
+              <td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small>{campaign.pause_reason && <small className="campaign-error">Paused: {campaign.pause_reason.replaceAll('_', ' ')}</small>}{campaign.last_error && <small className="campaign-error">{campaign.last_error}</small>}</td>
+              <td data-label="Provider">{campaign.provider || 'web'}</td>
+              <td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status.replaceAll('_', ' ')}</span></td>
+              <td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td>
+            </tr>)}</tbody>
+          </table>
+          {!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }]} />}
+        </div>
+        {selectedCampaign && <div className="campaign-detail">
+          <div className="panel-header">
+            <div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div>
+            <div className="campaign-progress-summary">
+              <strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong>
+              <small>{campaignEstimate ? `${campaignEstimate.contacts} remaining` : 'Calculating remaining contacts…'}</small>
+              {campaignEstimate?.endAt && <small>Estimated finish: {new Date(campaignEstimate.endAt).toLocaleString()}</small>}
+              {campaignEstimate && !campaignEstimate.endAt && <small>Paused — reconnect/resume to estimate finish</small>}
+            </div>
+          </div>
+          <p className="detail-template">{selectedCampaign.template_message}</p>
+          <div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div>
+        </div>}
       </section>
       <section className="panel queue-panel"><div className="panel-header"><div><h2>Scheduled campaigns</h2><span className="file-note">{schedules.length} schedules</span></div></div>{selectedScheduleIds.length > 0 && <div className="button-row"><span>{selectedScheduleIds.length} selected</span><button className="danger-btn" onClick={bulkDeleteSchedules}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all schedules" checked={schedules.length > 0 && selectedScheduleIds.length === schedules.length} onChange={toggleAllSchedules} /></th><th>Name</th><th>Type</th><th>Next run</th><th>Est. one campaign run</th><th>Status</th><th>Last run</th><th>Actions</th></tr></thead><tbody>{schedules.map((schedule) => <tr key={schedule.id} title={schedule.last_error || undefined}><td data-label="Select"><input type="checkbox" aria-label={`Select ${schedule.name}`} checked={selectedScheduleIds.includes(schedule.id)} onChange={() => toggleSchedule(schedule.id)} /></td><td data-label="Name"><strong>{schedule.name}</strong>{schedule.last_error && <small className="schedule-error">{schedule.last_error}</small>}</td><td data-label="Type">{schedule.schedule_type}</td><td data-label="Next run">{formatDate(schedule.next_run_at)}</td><td data-label="Est. one campaign run">{scheduleEstimateCell(schedule)}</td><td data-label="Status"><span className={statusClass(schedule.status)}>{schedule.status}</span></td><td data-label="Last run">{formatDate(schedule.last_run_at)}</td><td data-label="Actions"><div className="button-row">{schedule.status === 'failed' && <button className="secondary-btn" onClick={() => retrySchedule(schedule.id)}>Retry now</button>}{['active', 'pending'].includes(schedule.status) && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'pause')}>Pause</button>}{schedule.status === 'paused' && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'resume')}>Resume</button>}{!['cancelled', 'completed', 'failed'].includes(schedule.status) && <button className="danger-btn" onClick={() => scheduleAction(schedule.id, 'cancel', 'POST')}>Cancel</button>}<button className="danger-btn" onClick={() => deleteSchedule(schedule.id)}>Delete</button></div></td></tr>)}</tbody></table>{!schedules.length && <EmptyState icon="🗓️" title="No scheduled campaigns yet" description="When you create a campaign with “Schedule once” or “Recurring” timing, it will show up here." />}</div></section>
     </div>

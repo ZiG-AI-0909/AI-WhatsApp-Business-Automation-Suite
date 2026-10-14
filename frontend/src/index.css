@@ -608,7 +608,12 @@ td strong { color: var(--text-primary); }
 .campaign-status.running { background: var(--success-bg); color: var(--success-text); }
 .campaign-status.paused { background: var(--warning-bg); color: var(--warning-text); }
 .campaign-status.completed { background: var(--accent-bg); color: var(--accent-hover); }
+.campaign-status.completed-with-errors { background: var(--warning-bg); color: var(--warning-text); }
 .campaign-status.stopped, .campaign-status.failed { background: var(--danger-bg); color: var(--danger-text); }
+.campaign-error { color: var(--danger-text); white-space: normal; }
+.campaign-connection-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.campaign-progress-summary { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; text-align: right; }
+.campaign-progress-summary small { color: var(--text-secondary); }
 
 @media (max-width: 920px) {
   .app-shell {
