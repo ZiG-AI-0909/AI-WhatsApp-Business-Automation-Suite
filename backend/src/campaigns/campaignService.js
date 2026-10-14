@@ -334,7 +334,7 @@ class CampaignService {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
         }
         if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
-            if (campaign.pause_reason === 'whatsapp_disconnected') {
+            if (['whatsapp_disconnected', 'repeated_send_failures', 'media_upload_failed', 'media_load_failed'].includes(campaign.pause_reason)) {
                 await this._assertOwnerConnected(userId, campaign.provider || 'web');
                 messageQueue.setIO(io);
                 await messageQueue.start(campaignId, parseJsonField(campaign.settings, {}), userId);

@@ -12,6 +12,7 @@ const contactService = require('../contacts/contactService');
 const RateLimiter = require('./rateLimiter');
 const { emitToUser } = require('../realtime');
 const { parseJsonField } = require('../utils/jsonField');
+const fs = require('node:fs/promises');
 
 const OPT_OUT_PATTERNS = [
     /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\s*me\b/i,
@@ -31,10 +32,45 @@ function describeSendError(error) {
     ].find(value => typeof value === 'string' && value.trim());
     const status = error?.response?.status || error?.output?.statusCode;
     const code = providerError?.code || responseData?.error_code || error?.output?.payload?.code;
+    const requestConfig = error?.response?.config || error?.config;
+    const requestUrl = requestConfig?.url;
+    let requestLocation = null;
+    if (requestUrl) {
+        try {
+            const fullUrl = new URL(requestUrl, requestConfig.baseURL);
+            requestLocation = `${fullUrl.host}${fullUrl.pathname}`;
+        } catch {
+            requestLocation = String(requestUrl).split('?')[0].slice(0, 200);
+        }
+    }
+    let bodySnippet = '';
+    if (responseData !== undefined && responseData !== null) {
+        const body = typeof responseData === 'string' ? responseData : JSON.stringify(responseData);
+        bodySnippet = body
+            .replace(/bearer\s+[^\s"',}]+/gi, 'Bearer [redacted]')
+            .replace(/("(?:access_token|refresh_token|token|authorization|password)"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+            .replace(/([?&](?:access_token|token|key)=)[^&\s]+/gi, '$1[redacted]')
+            .replace(/\s+/g, ' ')
+            .slice(0, 240);
+    }
+    let safeMessage = String(message || 'Unknown WhatsApp send error')
+        .replace(/https?:\/\/[^\s"'<>]+/gi, value => {
+            try {
+                const url = new URL(value);
+                return `${url.host}${url.pathname}`;
+            } catch {
+                return '[redacted URL]';
+            }
+        })
+        .replace(/bearer\s+[^\s"',}]+/gi, 'Bearer [redacted]')
+        .replace(/((?:access[_-]?token|refresh[_-]?token|token|password|authorization)\s*[=:]\s*)[^,\s;]+/gi, '$1[redacted]');
+    if (status) safeMessage = safeMessage.replace(new RegExp(`^HTTP ${status}:?\\s*`, 'i'), '');
     const details = [
         status ? `HTTP ${status}` : null,
-        message || 'Unknown WhatsApp send error',
+        requestLocation,
+        safeMessage,
         code ? `code ${code}` : null,
+        bodySnippet ? `response ${bodySnippet}` : null,
     ].filter(Boolean);
     return details.join(': ').slice(0, 1000);
 }
@@ -47,11 +83,43 @@ function shouldRetrySendError(error) {
 
 function isConnectionError(error) {
     const message = String(error?.message || '');
-    if (/WhatsApp (?:session|Business API) is not connected|Reconnect WhatsApp|ensureConnected failed/i.test(message)) {
+    if (/WhatsApp (?:(?:session|Business API) )?is not connected|Reconnect WhatsApp|ensureConnected failed/i.test(message)) {
         return true;
     }
     const status = error?.response?.status || error?.output?.statusCode;
     return !status && /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|socket (?:closed|ended)|connection (?:closed|lost|reset)/i.test(message);
+}
+
+function isNotRegisteredError(error) {
+    const responseError = error?.response?.data?.error;
+    return /WhatsApp number is not registered/i.test([
+        error?.message,
+        error?.response?.data?.message,
+        typeof responseError === 'string' ? responseError : responseError?.message,
+        error?.output?.payload?.message,
+    ].filter(Boolean).join(' '));
+}
+
+function isMediaUploadError(error, hasMedia) {
+    if (!hasMedia || isNotRegisteredError(error)) return false;
+    const requestUrl = error?.response?.config?.url || error?.config?.url || '';
+    const responseError = error?.response?.data?.error;
+    let path = String(requestUrl).split('?')[0];
+    try { path = new URL(requestUrl, error?.config?.baseURL).pathname; } catch {}
+    return /\/(?:media|upload|mms|mmg)(?:\/|$)/i.test(path)
+        || /(?:media|attachment|upload).{0,40}(?:failed|invalid|unsupported|error)|(?:failed|invalid|unsupported|error).{0,40}(?:media|attachment|upload)/i
+            .test([
+                error?.message,
+                error?.response?.data?.message,
+                typeof responseError === 'string' ? responseError : responseError?.message,
+            ].filter(Boolean).join(' '))
+        || /campaign attachment is unavailable/i.test(error?.message || '');
+}
+
+function sanitizedMediaLoadError(error) {
+    const status = error?.status || error?.response?.status;
+    if (status) return new Error(`Attachment could not be loaded (HTTP ${status}) - re-upload the file`);
+    return new Error('Attachment could not be loaded - re-upload the file');
 }
 
 class MessageQueue {
@@ -76,12 +144,27 @@ class MessageQueue {
         if (!userId) throw new Error('Campaign must be started by its owner.');
         if (this._worker(userId)?._running) throw new Error('A campaign is already running. Stop or pause it first.');
         const worker = Object.create(this);
-        Object.assign(worker, { _campaignId: campaignId, _ownerUserId: userId, _provider: 'web', _running: true, _paused: false, _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
+        Object.assign(worker, {
+            _campaignId: campaignId,
+            _ownerUserId: userId,
+            _provider: 'web',
+            _running: true,
+            _paused: false,
+            _rateLimiter: new RateLimiter(settings),
+            _io: this._io,
+            _processPromise: null,
+            _consecutiveSendFailures: 0,
+            _lastSendFailure: null,
+            _consecutiveFailureContacts: [],
+            _mediaBuffer: null,
+            _mediaPath: null,
+        });
         this._queues.set(userId, worker);
         try {
             const campaign = await db.getById('campaigns', campaignId, userId);
             if (!campaign) throw new Error('Campaign not found');
             worker._provider = campaign.provider || 'web';
+            await worker._loadCampaignMedia(campaign);
             await this._update(worker, 'campaigns', {
                 status: 'running',
                 started_at: campaign.started_at || new Date(),
@@ -95,6 +178,33 @@ class MessageQueue {
             worker._running = false;
             if (this._queues.get(userId) === worker) this._queues.delete(userId);
             throw error;
+        }
+    }
+
+    async _loadCampaignMedia(campaign) {
+        this._mediaPath = campaign?.media_path || null;
+        if (!campaign?.media_path) {
+            this._mediaBuffer = null;
+            return null;
+        }
+
+        try {
+            let buffer;
+            if (/^https?:\/\//i.test(campaign.media_path)) {
+                const response = await fetch(campaign.media_path, { signal: AbortSignal.timeout(30000) });
+                if (!response.ok) {
+                    await response.body?.cancel();
+                    throw Object.assign(new Error('Attachment fetch failed'), { status: response.status });
+                }
+                buffer = Buffer.from(await response.arrayBuffer());
+            } else {
+                buffer = await fs.readFile(campaign.media_path);
+            }
+            if (!buffer.length) throw new Error('Attachment is empty');
+            this._mediaBuffer = buffer;
+            return buffer;
+        } catch (error) {
+            throw sanitizedMediaLoadError(error);
         }
     }
 
@@ -137,8 +247,18 @@ class MessageQueue {
 
     async resume(userId) {
         const worker = this._worker(userId); if (!worker?._running) throw new Error('No campaign is loaded. Start first.');
+        if (worker._mediaPath && !Buffer.isBuffer(worker._mediaBuffer)) {
+            const campaign = await db.getById('campaigns', worker._campaignId, userId);
+            if (!campaign) throw new Error('Campaign not found');
+            await worker._loadCampaignMedia(campaign);
+        }
         worker._paused = false;
-        await this._update(worker, 'campaigns', { status: 'running', updated_at: new Date() }, 'id = ? AND user_id = ?', [worker._campaignId, userId]);
+        await this._update(worker, 'campaigns', {
+            status: 'running',
+            pause_reason: null,
+            last_error: null,
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [worker._campaignId, userId]);
         if (worker._processPromise === null) this._startProcessor(worker);
         worker._emit('campaign:resumed', { campaignId: worker._campaignId });
     }
@@ -283,7 +403,12 @@ class MessageQueue {
                 await this._update(this, 'campaign_contacts', { status: 'processing', attempts: attempts + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
                 attemptStarted = true;
                 const buttons = parseJsonField(contactItem.buttons, []);
-                const media = contactItem.media_path ? { path: contactItem.media_path, type: contactItem.media_type || 'image', filename: contactItem.media_filename, mimetype: contactItem.media_mimetype } : null;
+                const media = contactItem.media_path ? {
+                    buffer: this._mediaBuffer,
+                    type: contactItem.media_type || 'image',
+                    filename: contactItem.media_filename,
+                    mimetype: contactItem.media_mimetype,
+                } : null;
                 try {
                     result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
                 } catch (error) {
@@ -300,6 +425,8 @@ class MessageQueue {
             }
 
             const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
+            this._consecutiveSendFailures = 0;
+            this._lastSendFailure = null;
             await this._update(this, 'campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
             await this._recountCampaign(campaignId, userId);
             this._emitProgress(campaignId);
@@ -313,19 +440,41 @@ class MessageQueue {
         const connectionError = isConnectionError(error);
         const attemptsAfterFailure = attempts + (attemptStarted ? 1 : 0);
         const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
-        console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
-        if (connectionError) {
-            await this._update(this, 'campaign_contacts', { status: 'pending', attempts, retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-            await this._update(this, 'campaigns', {
-                status: 'paused',
-                pause_reason: 'whatsapp_disconnected',
-                last_error: lastError.slice(0, 500),
-                updated_at: new Date(),
-            }, 'id = ? AND user_id = ?', [campaignId, userId]);
-            this._running = false;
-            this._paused = true;
-            this._queues.delete(userId);
-            this._emit('campaign:paused', { campaignId, reason: 'whatsapp_disconnected', error: lastError });
+        const hasMedia = !!contactItem.media_path;
+        const mediaFailure = isMediaUploadError(error, hasMedia);
+        const notRegistered = isNotRegisteredError(error);
+        console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : mediaFailure ? 'media' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
+        if (connectionError || mediaFailure) {
+            const reason = connectionError ? 'whatsapp_disconnected' : 'media_upload_failed';
+            await this._pauseCampaignForSendFailure(lastError, reason, contactItem, attempts, campaignId, userId);
+            return true;
+        }
+
+        const configuredThreshold = Number(this._rateLimiter?.settings?.circuitBreakerThreshold ?? 5);
+        const breakerThreshold = Number.isFinite(configuredThreshold) ? Math.max(1, Math.floor(configuredThreshold)) : 5;
+        if (notRegistered) {
+            this._consecutiveSendFailures = 0;
+            this._lastSendFailure = null;
+            this._consecutiveFailureContacts = [];
+        } else if (this._lastSendFailure === lastError) {
+            this._consecutiveSendFailures = (this._consecutiveSendFailures || 0) + 1;
+            this._consecutiveFailureContacts ||= [];
+        } else {
+            this._lastSendFailure = lastError;
+            this._consecutiveSendFailures = 1;
+            this._consecutiveFailureContacts = [];
+        }
+        if (!notRegistered) this._consecutiveFailureContacts.push({ id: contactItem.id, attempts });
+        if (!notRegistered && this._consecutiveSendFailures >= breakerThreshold) {
+            for (const prior of this._consecutiveFailureContacts) {
+                if (prior.id === contactItem.id) continue;
+                await this._update(this, 'campaign_contacts', {
+                    status: 'pending',
+                    attempts: prior.attempts,
+                    retry_at: null,
+                }, 'id = ? AND user_id = ?', [prior.id, userId]);
+            }
+            await this._pauseCampaignForSendFailure(lastError, 'repeated_send_failures', contactItem, attempts, campaignId, userId);
             return true;
         }
         if (retryable && attemptsAfterFailure <= maxAttempts) {
@@ -346,6 +495,25 @@ class MessageQueue {
             await this._recountCampaign(campaignId, userId, lastError);
         }
         return false;
+    }
+
+    async _pauseCampaignForSendFailure(lastError, reason, contactItem, attempts, campaignId, userId) {
+        await this._update(this, 'campaign_contacts', {
+            status: 'pending',
+            attempts,
+            retry_at: null,
+        }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+        await this._update(this, 'campaigns', {
+            status: 'paused',
+            pause_reason: reason,
+            last_error: lastError.slice(0, 500),
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [campaignId, userId]);
+        await this._recountCampaign(campaignId, userId, lastError);
+        this._running = false;
+        this._paused = true;
+        this._queues.delete(userId);
+        this._emit('campaign:paused', { campaignId, reason, error: lastError });
     }
 
     async _recountCampaign(campaignId, userId, lastError = null) {
@@ -501,7 +669,31 @@ class MessageQueue {
             const worker = Object.create(this);
             const settings = parseJsonField(activeCampaign.settings, {});
             Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
+            Object.assign(worker, {
+                _consecutiveSendFailures: 0,
+                _lastSendFailure: null,
+                _consecutiveFailureContacts: [],
+                _mediaBuffer: null,
+                _mediaPath: activeCampaign.media_path || null,
+            });
             this._queues.set(userId, worker);
+            try {
+                await worker._loadCampaignMedia(activeCampaign);
+            } catch (error) {
+                worker._paused = true;
+                await this._update(worker, 'campaigns', {
+                    status: 'paused',
+                    pause_reason: 'media_load_failed',
+                    last_error: error.message.slice(0, 500),
+                    updated_at: new Date(),
+                }, 'id = ? AND user_id = ?', [activeCampaign.id, userId]);
+                worker._emit('campaign:paused', {
+                    campaignId: activeCampaign.id,
+                    reason: 'media_load_failed',
+                    error: error.message,
+                });
+                continue;
+            }
             if (!worker._paused) this._startProcessor(worker);
             if (resumed === null) resumed = activeCampaign.id;
 
@@ -525,3 +717,4 @@ module.exports = new MessageQueue();
 module.exports.OPT_OUT_PATTERNS = OPT_OUT_PATTERNS;
 module.exports.shouldRetrySendError = shouldRetrySendError;
 module.exports.isConnectionError = isConnectionError;
+module.exports.describeSendError = describeSendError;

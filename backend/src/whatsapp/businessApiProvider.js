@@ -1,7 +1,6 @@
 // NOTE: env vars are loaded once by src/server.js from backend/.env —
 // do not add a dotenv.config() here.
 const axios = require('axios');
-const fs = require('fs');
 const FormData = require('form-data');
 const WhatsAppProvider = require('./WhatsAppProvider');
 const { parseJsonField } = require('../utils/jsonField');
@@ -138,9 +137,15 @@ class WhatsAppBusinessProvider extends WhatsAppProvider {
         const text = String(body).trim().substring(0, 4096);
         let message;
         if (media) {
+            if (!Buffer.isBuffer(media.buffer)) {
+                throw new Error('Campaign attachment is unavailable. Resume the campaign to reload it.');
+            }
             const form = new FormData();
             form.append('messaging_product', 'whatsapp');
-            form.append('file', fs.createReadStream(media.path));
+            form.append('file', media.buffer, {
+                filename: media.filename || 'attachment',
+                contentType: media.mimetype || 'application/octet-stream',
+            });
             form.append('type', media.type || 'image');
             const uploadResponse = await axios.post(`https://graph.facebook.com/${config.apiVersion}/${config.phoneNumberId}/media`, form, {
                 headers: { Authorization: `Bearer ${config.accessToken}`, ...form.getHeaders() },

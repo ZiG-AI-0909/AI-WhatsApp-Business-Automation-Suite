@@ -490,16 +490,20 @@ class SessionManager {
 
         const text = String(body).trim().substring(0, 4096);
         if (!media) return session.socket.sendMessage(recipientJid, { text });
+        const mediaBuffer = media.buffer;
+        if (!Buffer.isBuffer(mediaBuffer)) {
+            throw new Error('Campaign attachment is unavailable. Resume the campaign to reload it.');
+        }
         if (media.type === 'document') {
             return session.socket.sendMessage(recipientJid, {
-                document: { url: media.path },
+                document: mediaBuffer,
                 mimetype: media.mimetype,
                 fileName: media.filename,
                 caption: text,
             });
         }
         return session.socket.sendMessage(recipientJid, {
-            image: { url: media.path },
+            image: mediaBuffer,
             caption: text,
         });
     }

@@ -98,6 +98,7 @@ function CampaignsView({ onNavigate }) {
   const [accountCountries, setAccountCountries] = useState(COUNTRIES)
   const [template, setTemplate] = useState(defaultTemplate)
   const [name, setName] = useState('')
+  const [circuitBreakerThreshold, setCircuitBreakerThreshold] = useState('5')
   const [scheduleType, setScheduleType] = useState('now')
   const [runAt, setRunAt] = useState('')
   const [recurrenceMode, setRecurrenceMode] = useState('daily')
@@ -357,7 +358,12 @@ function CampaignsView({ onNavigate }) {
     setBusy(true)
     try {
       const buttonsPayload = whatsappStatus.businessStatus === 'connected' ? buttons : []
-      const settingsPayload = { delayBetweenMessages: 17500, retryCount: 2, retryDelay: 30000 }
+      const settingsPayload = {
+        delayBetweenMessages: 17500,
+        retryCount: 2,
+        retryDelay: 30000,
+        circuitBreakerThreshold: Number(circuitBreakerThreshold),
+      }
       if (scheduleType !== 'now') {
         if (scheduleType === 'once' && (!runAt || new Date(runAt) <= new Date())) throw new Error('Choose a future date and time.')
         const recurrenceCron = scheduleType === 'recurring' ? (recurrenceMode === 'custom' ? customCron.trim() : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()) : undefined
@@ -492,6 +498,7 @@ function CampaignsView({ onNavigate }) {
             <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
             <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
             <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Now</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
+            <label className="form-label">Pause after identical send errors<input type="number" min="1" step="1" value={circuitBreakerThreshold} onChange={(event) => setCircuitBreakerThreshold(event.target.value)} required /><small>Default: 5. “Number is not registered” remains a contact-level error.</small></label>
             {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
             {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
             <label className="form-label">Message template<textarea value={template} onChange={(event) => setTemplate(event.target.value)} required /></label>

@@ -65,6 +65,7 @@ function resolveSendSettings(settings = {}) {
         businessDays: (settings.businessDays && settings.businessDays.length) ? settings.businessDays : [1, 2, 3, 4, 5, 6], // Mon-Sat
         maxPerHour: Number(settings.maxPerHour ?? 50),
         maxPerDay: Number(settings.maxPerDay ?? 175),
+        circuitBreakerThreshold: Number(settings.circuitBreakerThreshold ?? settings.consecutiveFailureLimit ?? 5),
     };
 }
 

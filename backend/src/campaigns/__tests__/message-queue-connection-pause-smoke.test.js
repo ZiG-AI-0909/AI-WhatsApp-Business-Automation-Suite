@@ -43,6 +43,8 @@ async function main() {
             _queues: queue._queues,
             _update: queue._update,
             _handleSendFailure: queue._handleSendFailure,
+            _pauseCampaignForSendFailure: queue._pauseCampaignForSendFailure,
+            _recountCampaign: async () => {},
             _getSender: async () => { throw new Error('Your WhatsApp session is not connected.'); },
             _emit: (event, payload) => emitted.push({ event, payload }),
             _emitProgress: () => {},
