@@ -1,5 +1,6 @@
 const express = require('express');
 const campaignService = require('../campaigns/campaignService');
+const db = require('../database/db');
 const { formattingNotice } = require('../utils/countryCodes');
 const {
     uploadExcel,
@@ -10,11 +11,26 @@ const {
     BUCKETS,
 } = require('../middleware/upload');
 const { respondIfInvalidUpload } = require('../middleware/fileValidation');
+const path = require('node:path');
+const campaignMediaStorage = require('../campaigns/campaignMediaStorage');
+const sessionManager = require('../whatsapp/sessionManager');
 
 const router = express.Router();
 
 function validIds(ids) {
     return Array.isArray(ids) && ids.length > 0 && ids.every(id => Number.isInteger(id));
+}
+
+function sanitizeCampaignMediaFilename(fileName) {
+    const originalName = path.basename(String(fileName || 'attachment')).normalize('NFKD');
+    const extension = path.extname(originalName).toLowerCase().replace(/[^a-z0-9.]/g, '');
+    const rawBase = originalName.slice(0, originalName.length - path.extname(originalName).length);
+    const base = rawBase
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    return `${base || 'attachment'}${extension}`;
 }
 
 // GET /api/campaigns
@@ -123,22 +139,39 @@ router.post('/media', uploadCampaignMedia.single('file'), async (req, res) => {
     if (!respondIfInvalidUpload(req, res)) return;
 
     try {
+        const isImage = ['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype);
+        const isPdf = req.file.mimetype === 'application/pdf';
+        const sizeLimit = isImage ? 5 * 1024 * 1024 : 16 * 1024 * 1024;
+        if (!isImage && !isPdf) {
+            return res.status(400).json({ error: 'Campaign attachments must be JPEG, PNG, or WEBP images, or PDF documents.' });
+        }
+        if (req.file.size > sizeLimit) {
+            return res.status(400).json({
+                error: isImage ? 'Images must be 5 MB or smaller.' : 'PDF documents must be 16 MB or smaller.',
+            });
+        }
+
+        const safeFilename = sanitizeCampaignMediaFilename(req.file.originalname);
+        const objectName = `${Date.now()}-${safeFilename}`;
         // Multer parsed the file into memory — upload it to Supabase Storage.
         const stored = await uploadToStorage(
             campaignMediaStorageConfig.bucket,
-            `${campaignMediaStorageConfig.prefix}${Date.now()}_${req.file.originalname}`,
+            `${campaignMediaStorageConfig.prefix}${objectName}`,
             req.file.buffer,
-            req.file.originalname,
+            safeFilename,
             req.file.mimetype,
+            { objectName },
         );
 
-        // Determine media type based on mimetype
-        let mediaType = 'image';
-        if (['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'].includes(req.file.mimetype)) {
-            mediaType = 'document';
-        }
-
-        res.json({ mediaPath: stored.path, filename: stored.filename, mediaType, mimetype: req.file.mimetype });
+        const mediaType = isImage ? 'image' : 'document';
+        res.json({
+            mediaPath: stored.path,
+            mediaBucket: stored.bucket,
+            mediaObjectPath: stored.objectPath,
+            filename: safeFilename,
+            mediaType,
+            mimetype: req.file.mimetype,
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -157,7 +190,7 @@ router.post('/preview', async (req, res) => {
 
 // POST /api/campaigns
 router.post('/', async (req, res) => {
-    const { name, templateMessage, filePath, settings, allowMissingFields, mediaPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode } = req.body;
+    const { name, templateMessage, filePath, settings, allowMissingFields, mediaPath, mediaBucket, mediaObjectPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode } = req.body;
     if (!name?.trim() || !templateMessage?.trim() || !filePath) {
         return res.status(400).json({ error: 'name, templateMessage, and filePath required' });
     }
@@ -166,7 +199,7 @@ router.post('/', async (req, res) => {
         const resolvedFilePath = filePath;
         const resolvedMediaPath = mediaPath || null;
 
-        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode });
+        const campaign = await campaignService.create(req.user.id, { name, templateMessage, filePath: resolvedFilePath, settings, allowMissingFields: !!allowMissingFields, mediaPath: resolvedMediaPath, mediaBucket, mediaObjectPath, mediaType, mediaFilename, mediaMimetype, buttons, countryCode });
         res.status(201).json(campaign);
     } catch (err) {
         res.status(400).json({ error: err.message });
@@ -178,6 +211,53 @@ router.post('/:id/start', async (req, res) => {
     try {
         await campaignService.start(+req.params.id, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign started' });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+router.post('/:id/test-media', async (req, res) => {
+    try {
+        const campaign = await campaignService.get(+req.params.id, req.user.id);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+        if (!campaign.media_path) return res.status(400).json({ error: 'This campaign has no attachment to test.' });
+        if ((campaign.provider || 'web') !== 'web') {
+            return res.status(400).json({ error: 'Test-to-self is available for WhatsApp Web campaigns only.' });
+        }
+        if (sessionManager.getStatus(req.user.id) !== 'connected') {
+            return res.status(400).json({ error: 'Connect WhatsApp Web before sending a media test.' });
+        }
+
+        const ownPhone = sessionManager.getOwnPhoneNumber(req.user.id);
+        if (!ownPhone) {
+            return res.status(400).json({ error: 'Could not read your connected WhatsApp number. Reconnect WhatsApp and try again.' });
+        }
+        const [firstContact] = await db.select(
+            'campaign_contacts',
+            'rendered_message',
+            'campaign_id = ? AND user_id = ? AND rendered_message IS NOT NULL',
+            [+req.params.id, req.user.id],
+            'id',
+            1,
+            0,
+        );
+        if (!firstContact?.rendered_message) {
+            return res.status(400).json({ error: 'This campaign has no message available to test.' });
+        }
+
+        let downloaded;
+        try {
+            downloaded = await campaignMediaStorage.downloadCampaignMedia(campaign);
+        } catch (error) {
+            return res.status(400).json({ error: error.message });
+        }
+        await sessionManager.sendMessage(req.user.id, ownPhone, firstContact.rendered_message, null, {
+            buffer: downloaded.buffer,
+            type: campaign.media_type || 'image',
+            filename: campaign.media_filename || 'attachment',
+            mimetype: campaign.media_mimetype || 'application/octet-stream',
+        });
+        res.json({ success: true, message: `Media test sent to your WhatsApp number ending in ${ownPhone.slice(-4)}.` });
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -234,3 +314,4 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.sanitizeCampaignMediaFilename = sanitizeCampaignMediaFilename;

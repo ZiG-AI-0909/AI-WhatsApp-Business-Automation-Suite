@@ -86,6 +86,8 @@ function CampaignsView({ onNavigate }) {
   const [file, setFile] = useState(null)
   const [mediaFile, setMediaFile] = useState(null)
   const [mediaPath, setMediaPath] = useState('')
+  const [mediaBucket, setMediaBucket] = useState('')
+  const [mediaObjectPath, setMediaObjectPath] = useState('')
   const [mediaType, setMediaType] = useState('')
   const [mediaFilename, setMediaFilename] = useState('')
   const [mediaMimetype, setMediaMimetype] = useState('')
@@ -310,6 +312,8 @@ function CampaignsView({ onNavigate }) {
     setMediaFile(nextFile)
     setMediaPreview(URL.createObjectURL(nextFile))
     setMediaPath('')
+    setMediaBucket('')
+    setMediaObjectPath('')
     setMediaType('')
     setMediaFilename('')
     setMediaMimetype('')
@@ -320,6 +324,8 @@ function CampaignsView({ onNavigate }) {
     try {
       const data = await apiFetch('/campaigns/media', { method: 'POST', body: formData })
       setMediaPath(data.mediaPath)
+      setMediaBucket(data.mediaBucket)
+      setMediaObjectPath(data.mediaObjectPath)
       setMediaType(data.mediaType)
       setMediaFilename(data.filename)
       setMediaMimetype(data.mimetype)
@@ -367,14 +373,14 @@ function CampaignsView({ onNavigate }) {
       if (scheduleType !== 'now') {
         if (scheduleType === 'once' && (!runAt || new Date(runAt) <= new Date())) throw new Error('Choose a future date and time.')
         const recurrenceCron = scheduleType === 'recurring' ? (recurrenceMode === 'custom' ? customCron.trim() : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()) : undefined
-        await apiFetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, scheduleType, runAt: scheduleType === 'once' ? new Date(runAt).toISOString() : undefined, recurrenceCron, countryCode: uploadCountryCode || undefined }) })
+        await apiFetch('/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaBucket: mediaBucket || undefined, mediaObjectPath: mediaObjectPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, scheduleType, runAt: scheduleType === 'once' ? new Date(runAt).toISOString() : undefined, recurrenceCron, countryCode: uploadCountryCode || undefined }) })
         setMessage({ type: 'success', text: scheduleType === 'once' ? 'Campaign scheduled.' : 'Recurring campaign schedule created.' })
         await loadSchedules()
       } else {
         const campaign = await apiFetch('/campaigns', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, countryCode: uploadCountryCode || undefined }),
+          body: JSON.stringify({ name, templateMessage: template, filePath: upload.filePath, mediaPath: mediaPath || undefined, mediaBucket: mediaBucket || undefined, mediaObjectPath: mediaObjectPath || undefined, mediaType: mediaType || undefined, mediaFilename: mediaFilename || undefined, mediaMimetype: mediaMimetype || undefined, buttons: buttonsPayload, allowMissingFields, settings: settingsPayload, countryCode: uploadCountryCode || undefined }),
         })
         setSelectedCampaign(campaign)
         setMessage({ type: 'success', text: `Campaign created with ${campaign.total_contacts} queued contacts.` })
@@ -385,6 +391,8 @@ function CampaignsView({ onNavigate }) {
       setUpload(null)
       setMediaFile(null)
       setMediaPath('')
+      setMediaBucket('')
+      setMediaObjectPath('')
       setMediaType('')
       setMediaFilename('')
       setMediaMimetype('')
@@ -409,6 +417,19 @@ function CampaignsView({ onNavigate }) {
       await loadCampaigns()
       const refreshed = await apiFetch(`/campaigns/${selectedCampaign.id}`)
       setSelectedCampaign(refreshed)
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const testCampaignMedia = async () => {
+    if (!selectedCampaign?.id) return
+    setBusy(true)
+    try {
+      const result = await apiFetch(`/campaigns/${selectedCampaign.id}/test-media`, { method: 'POST' })
+      setMessage({ type: 'success', text: result.message || 'Media test sent to your WhatsApp number.' })
     } catch (error) {
       setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
     } finally {
@@ -507,8 +528,8 @@ function CampaignsView({ onNavigate }) {
               {upload?.dynamicFields?.length ? <div className="field-list">{upload.dynamicFields.map((field) => <button key={field} type="button" className="field-chip" onClick={() => setTemplate((current) => `${current} {{${field}}}`)}>{`{{${field}}}`}</button>)}</div> : <small>Upload an XLSX file to detect every header automatically.</small>}
             </div>
             <div className="field-panel inline-fields">
-              <div className="panel-header"><h3>Campaign media</h3><label className="secondary-btn upload-btn">{mediaFile ? 'Replace file' : 'Choose file'}<input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx" onChange={uploadMedia} disabled={busy} /></label></div>
-              {mediaPreview && mediaType === 'image' ? <img className="media-thumb" src={mediaPreview} alt="Campaign preview" /> : mediaPreview && mediaType === 'document' ? <div className="media-document-preview"><div>📄</div><small>{mediaFilename}</small></div> : <small>Optional image (JPG, PNG, WEBP) or document (PDF, DOC, DOCX, XLS, XLSX), up to 16 MB.</small>}
+              <div className="panel-header"><h3>Campaign media</h3><label className="secondary-btn upload-btn">{mediaFile ? 'Replace file' : 'Choose file'}<input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf" onChange={uploadMedia} disabled={busy} /></label></div>
+              {mediaPreview && mediaType === 'image' ? <img className="media-thumb" src={mediaPreview} alt="Campaign preview" /> : mediaPreview && mediaType === 'document' ? <div className="media-document-preview"><div>📄</div><small>{mediaFilename}</small></div> : <small>Optional JPEG, PNG, or WEBP image (up to 5 MB) or PDF document (up to 16 MB).</small>}
             </div>
             <div className="field-panel inline-fields">
               {whatsappStatus.businessStatus === 'connected' ? <>
@@ -549,6 +570,7 @@ function CampaignsView({ onNavigate }) {
         <div className="panel-header">
           <div><h2>Persistent campaign queue</h2><span className="file-note">{campaignList.length} campaigns</span></div>
           {selectedCampaign && <div className="button-row">
+            {selectedCampaign.media_path && selectedCampaign.provider === 'web' && <button className="secondary-btn" onClick={testCampaignMedia} disabled={busy || whatsappStatus.status !== 'connected'} title={whatsappStatus.status !== 'connected' ? 'Connect WhatsApp Web to send a test.' : 'Send the first campaign message and attachment to your connected number.'}>Send test to my number</button>}
             <button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !selectedProviderConnected || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)} title={!selectedProviderConnected ? 'Connect WhatsApp before starting this campaign.' : undefined}>Start</button>
             <button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || !['failed', 'completed_with_errors', 'completed', 'stopped'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button>
             <button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button>

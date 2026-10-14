@@ -60,7 +60,7 @@ class SchedulerService {
         return this._toDbDate(CronExpressionParser.parse(cron, { currentDate: from }).next().toDate());
     }
 
-    async create(userId, { name, templateMessage, filePath, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], settings = {}, allowMissingFields = false, scheduleType, runAt, recurrenceCron, countryCode = null }) {
+    async create(userId, { name, templateMessage, filePath, mediaPath = null, mediaBucket = null, mediaObjectPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], settings = {}, allowMissingFields = false, scheduleType, runAt, recurrenceCron, countryCode = null }) {
         // Resolve the code ONCE at schedule creation (per-upload override →
         // account default) so the validation-time parse and the campaign the
         // schedule later fires both use the same code.
@@ -77,6 +77,8 @@ class SchedulerService {
             template_message: templateMessage.trim(),
             file_path: filePath,
             media_path: mediaPath,
+            media_bucket: mediaBucket,
+            media_object_path: mediaObjectPath,
             media_type: mediaType,
             media_filename: mediaFilename,
             media_mimetype: mediaMimetype,
@@ -492,6 +494,8 @@ class SchedulerService {
                             templateMessage: schedule.template_message,
                             filePath: schedule.file_path,
                             mediaPath: schedule.media_path,
+                            mediaBucket: schedule.media_bucket,
+                            mediaObjectPath: schedule.media_object_path,
                             mediaType: schedule.media_type,
                             mediaFilename: schedule.media_filename,
                             mediaMimetype: schedule.media_mimetype,

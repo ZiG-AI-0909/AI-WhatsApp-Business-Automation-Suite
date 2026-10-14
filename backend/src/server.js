@@ -17,6 +17,7 @@ const { requireAuth } = require('./middleware/auth');
 const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
 const { assertEncryptionKey } = require('./utils/encryption');
 const { startCampaignReliabilityMigrationGuard } = require('./database/campaignReliabilityMigrationGuard');
+const { ensureCampaignMediaBucket } = require('./campaigns/campaignMediaStorage');
 
 const app = express();
 const server = http.createServer(app);
@@ -146,6 +147,7 @@ async function startServer() {
         // set ENCRYPTION_KEY (64 hex chars) in the environment first.
         assertEncryptionKey();
         await startCampaignReliabilityMigrationGuard();
+        await ensureCampaignMediaBucket();
 
         // Sessions are created lazily per user on demand — nothing global
         // to initialize at startup. Interrupted campaigns resume per owner.

@@ -22,7 +22,7 @@ async function testMigrationGuardDetectsMissingSchemaAndRecovers() {
             assert.equal(table, 'campaigns');
             return {
                 select(columns) {
-                    assert.equal(columns, 'pause_reason,last_error');
+                    assert.equal(columns, 'pause_reason,last_error,media_bucket,media_object_path');
                     return {
                         limit(limit) {
                             assert.equal(limit, 0);

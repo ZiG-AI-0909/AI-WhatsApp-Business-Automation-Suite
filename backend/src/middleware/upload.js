@@ -39,12 +39,12 @@ function isStorageAvailable() {
 /**
  * Upload a file buffer to Supabase Storage and return the public URL
  */
-async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentType) {
+async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentType, { objectName = null } = {}) {
     if (!isStorageAvailable()) {
         throw new Error('Supabase Storage is not configured. Set SUPABASE_URL and SUPABASE_SECRET_KEY.');
     }
 
-    const uniqueFileName = `${Date.now()}_${fileName}`;
+    const uniqueFileName = objectName || `${Date.now()}_${fileName}`;
 
     const { data, error } = await supabaseStorage
         .storage
@@ -55,7 +55,7 @@ async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentTy
         });
 
     if (error) {
-        console.error(`[upload] Error uploading to ${bucket}:`, error.message);
+        console.error(`[upload] Error uploading bucket=${bucket} object=${uniqueFileName}: ${error.message}`);
         throw new Error(`Failed to upload file: ${error.message}`);
     }
 
@@ -68,6 +68,7 @@ async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentTy
     return {
         path: urlData.publicUrl,
         filename: uniqueFileName,
+        objectPath: uniqueFileName,
         bucket: bucket,
     };
 }
@@ -187,7 +188,7 @@ const knowledgeStorageConfig = {
 const campaignMediaStorageConfig = {
     bucket: BUCKETS.campaignMedia,
     prefix: 'media_',
-    acceptedTypes: ['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx'],
+    acceptedTypes: ['.jpg', '.jpeg', '.png', '.webp', '.pdf'],
     maxSize: 16 * 1024 * 1024, // 16MB
 };
 

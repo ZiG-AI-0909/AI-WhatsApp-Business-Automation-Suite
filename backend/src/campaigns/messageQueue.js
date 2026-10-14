@@ -12,7 +12,7 @@ const contactService = require('../contacts/contactService');
 const RateLimiter = require('./rateLimiter');
 const { emitToUser } = require('../realtime');
 const { parseJsonField } = require('../utils/jsonField');
-const fs = require('node:fs/promises');
+const campaignMediaStorage = require('./campaignMediaStorage');
 
 const OPT_OUT_PATTERNS = [
     /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\s*me\b/i,
@@ -116,12 +116,6 @@ function isMediaUploadError(error, hasMedia) {
         || /campaign attachment is unavailable/i.test(error?.message || '');
 }
 
-function sanitizedMediaLoadError(error) {
-    const status = error?.status || error?.response?.status;
-    if (status) return new Error(`Attachment could not be loaded (HTTP ${status}) - re-upload the file`);
-    return new Error('Attachment could not be loaded - re-upload the file');
-}
-
 class MessageQueue {
     constructor() {
         this._queues = new Map();
@@ -187,25 +181,10 @@ class MessageQueue {
             this._mediaBuffer = null;
             return null;
         }
-
-        try {
-            let buffer;
-            if (/^https?:\/\//i.test(campaign.media_path)) {
-                const response = await fetch(campaign.media_path, { signal: AbortSignal.timeout(30000) });
-                if (!response.ok) {
-                    await response.body?.cancel();
-                    throw Object.assign(new Error('Attachment fetch failed'), { status: response.status });
-                }
-                buffer = Buffer.from(await response.arrayBuffer());
-            } else {
-                buffer = await fs.readFile(campaign.media_path);
-            }
-            if (!buffer.length) throw new Error('Attachment is empty');
-            this._mediaBuffer = buffer;
-            return buffer;
-        } catch (error) {
-            throw sanitizedMediaLoadError(error);
-        }
+        const { buffer } = await campaignMediaStorage.downloadCampaignMedia(campaign);
+        if (!buffer.length) throw new Error('Campaign attachment is empty.');
+        this._mediaBuffer = buffer;
+        return buffer;
     }
 
     async _update(worker, table, data, where, params) {

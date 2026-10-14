@@ -96,6 +96,14 @@ class SessionManager {
         return session.status;
     }
 
+    getOwnPhoneNumber(userId) {
+        const session = this.sessions.get(userId);
+        const jid = session?.socket?.user?.id;
+        if (!jid) return '';
+        const number = String(jid).split('@')[0].split(':')[0];
+        return this._normalizePhone(number);
+    }
+
     /**
      * True if this user has linked a number before (stored auth state) —
      * used to decide whether an automatic reconnect can succeed without

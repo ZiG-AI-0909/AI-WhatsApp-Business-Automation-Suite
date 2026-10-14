@@ -47,10 +47,17 @@ queue changes; the backend checks for it at startup and once per minute.
 10. `supabase-analytics-dashboard-migration.sql` — analytics aggregation.
 11. `supabase-unread-increment-migration.sql` — atomic unread counter RPC.
 12. `supabase-schedule-estimate-migration.sql` — schedule estimate cache.
-13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability changes.**
+13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability changes; includes campaign media bucket/object metadata.**
 
 Run the startup guard's migration if it logs:
 `Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`.
+
+Campaign attachments use the `campaign-media` Supabase Storage bucket. At
+startup, the backend creates it as private if it is missing and logs its
+visibility. The service-role backend downloads attachments before a campaign
+starts; images are limited to 5 MB (JPEG, PNG, WEBP) and PDF documents to 16 MB.
+After applying updated campaign reliability SQL, use **Send test to my number**
+to verify an attachment before starting a large campaign.
 
 ### API smoke check
 

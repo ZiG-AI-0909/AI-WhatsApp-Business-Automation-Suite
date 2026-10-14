@@ -132,7 +132,7 @@ class CampaignService {
         };
     }
 
-    async create(userId, { name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], countryCode = null }) {
+    async create(userId, { name, templateMessage, filePath, settings = {}, allowMissingFields = false, mediaPath = null, mediaBucket = null, mediaObjectPath = null, mediaType = null, mediaFilename = null, mediaMimetype = null, buttons = [], countryCode = null }) {
         const source = await this._resolveExcelSource(filePath);
         // Same resolution order as validate*: per-upload override → account
         // Settings default → env → '91'. The resolved code is stored on the
@@ -166,6 +166,8 @@ class CampaignService {
             // THIS user has the Cloud API connected, otherwise web.
             provider: require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected' ? 'business' : 'web',
             media_path: mediaPath,
+            media_bucket: mediaBucket,
+            media_object_path: mediaObjectPath,
             media_type: mediaType,
             media_filename: mediaFilename,
             media_mimetype: mediaMimetype,

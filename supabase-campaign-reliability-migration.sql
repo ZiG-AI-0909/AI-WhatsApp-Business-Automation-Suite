@@ -3,7 +3,13 @@
 
 alter table public.campaigns
     add column if not exists pause_reason text null,
-    add column if not exists last_error text null;
+    add column if not exists last_error text null,
+    add column if not exists media_bucket text null,
+    add column if not exists media_object_path text null;
+
+alter table public.campaign_schedules
+    add column if not exists media_bucket text null,
+    add column if not exists media_object_path text null;
 
 create index if not exists idx_campaigns_disconnected_paused
     on public.campaigns(user_id, id)
@@ -13,6 +19,10 @@ comment on column public.campaigns.pause_reason is
     'Reason a campaign was paused, including recoverable WhatsApp connection loss';
 comment on column public.campaigns.last_error is
     'Most recent concise campaign-level error';
+comment on column public.campaigns.media_bucket is
+    'Supabase Storage bucket containing the campaign attachment';
+comment on column public.campaigns.media_object_path is
+    'Supabase Storage object path for the campaign attachment';
 
 create index if not exists idx_campaign_contacts_user_status_sent_at
     on public.campaign_contacts(user_id, status, sent_at);

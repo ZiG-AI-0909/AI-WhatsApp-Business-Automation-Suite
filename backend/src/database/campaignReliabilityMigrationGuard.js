@@ -40,7 +40,7 @@ function createCampaignReliabilityMigrationGuard({
 
                 const { error: columnsError } = await client
                     .from('campaigns')
-                    .select('pause_reason,last_error')
+                    .select('pause_reason,last_error,media_bucket,media_object_path')
                     .limit(0);
                 if (columnsError) throw columnsError;
 
