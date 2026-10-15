@@ -1,0 +1,581 @@
+{
+  "_note": "Trimmed copy (25 of 104 items) of the DMA MGNVY-2.0 Package-02 Belagavi BOQ, taken from the text transcription Quotation_MGNVY2_Package02.pdf (not from OCR of the scan). The printed total line below is the sum of these 25 amounts so the integrity check passes on the unmodified fixture; the real document prints Rs. 42,85,90,237.37 for all 104 items.",
+  "document_text": "pages 19\nQUOTATION\nItemwise Priced Schedule — reproduced from the source document “Itemwise Schedule-B, MGNVY-2.0” (19 pages)\nWork \tPackage-02 Comprehensive development of arterial & sub arterial roads with underground conduits for utilities under\nUrban connectivity including footpath, drains, drain cover slab at ward nos 2, 3, 10, 15, 16, 21, 22, 23, 24, 25, 27, 28,\n30, 31, 33, 34, 36, 39, 40, 41, 44, 49, 50, 51, 53, 56, 57 & 58 in Belagavi city corporation limits (DMA/2025-\n26/RD/WORK_INDENT38534)\nScheme \tMGNVY - 2.0 | Itemwise Schedule-B Authority \tDirectorate of Municipal Administration (DMA)\nIssued to\n(Contractor)\nSri. Veerabhadragouda Patil (Prime\nContractor), Joint Venture with\nInfracon Structures Prop. Pramodh\nAnand\nAgreement No. \t1740586/DMA/TECH/MGNV/12/2025-26/AGR-\n[final handwritten suffix illegible in source]\nAgreement date \t__-02-2026 [day handwritten, not\nreliably legible]\nHead of Account /\nDDO\n4217-60-051-0-06-132-V / DDO Code: 19503D\nQuotation No. / Date Not stated in source \tBasis of rates \t“After Negotiation Final Quoted Rate in Figure” (as\nprinted)\n...\nTotal Contract Amount in Rs. 15,27,97,921.27",
+  "items": [
+    {
+      "serialNumber": "1",
+      "itemCode": "1.10",
+      "product": null,
+      "description": "Manual Means - Refilling available earth around trenches/pipelines, cables in layers not exceeding 20 cms in depth, compacting Each deposited layer by ramming after watering with a lead upto 50 m, and lift upto 1.5 m. Including cost of all labour complete as per specifications",
+      "size": null,
+      "specification": null,
+      "quantity": 28503.23,
+      "unit": "m³",
+      "sourceValues": {
+        "S.No.": "1",
+        "Item Code": "1.10",
+        "Item Name / Description": "Manual Means - Refilling available earth around trenches/pipelines, cables in layers not exceeding 20 cms in depth, compacting Each deposited layer by ramming after watering with a lead upto 50 m, and lift upto 1.5 m. Including cost of all labour complete as per specifications",
+        "Unit": "m³",
+        "Estimate Quantity": "28,503.23",
+        "Final Quoted Rate (Rs.)": "176.00",
+        "Amount (Rs.)": "50,16,568.48"
+      },
+      "provenance": {
+        "page": 1,
+        "row": 1
+      }
+    },
+    {
+      "serialNumber": "4",
+      "itemCode": "1.17.1",
+      "product": null,
+      "description": "Mechanical Means - Earth work excavation for pipeline trenches by mechanical means as per drawing and technical specifications, including setting out, construction of shoring, strutting, barricading, caution lights, bracing, using sight rails & bonding rods at every 100 mm wherever necessary as directed, removal of stumps and other deleterious matter, dressing of sides and levelling the bottom of trench to the extent required , utilising the available excavated earth locally for the work etc., and all other appurtenances complete in the following strata. All kinds of soils. Depth upto 1.50 m",
+      "size": null,
+      "specification": null,
+      "quantity": 5171.94,
+      "unit": "m³",
+      "sourceValues": {
+        "S.No.": "4",
+        "Item Code": "1.17.1",
+        "Item Name / Description": "Mechanical Means - Earth work excavation for pipeline trenches by mechanical means as per drawing and technical specifications, including setting out, construction of shoring, strutting, barricading, caution lights, bracing, using sight rails & bonding rods at every 100 mm wherever necessary as directed, removal of stumps and other deleterious matter, dressing of sides and levelling the bottom of trench to the extent required , utilising the available excavated earth locally for the work etc., and all other appurtenances complete in the following strata. All kinds of soils. Depth upto 1.50 m",
+        "Unit": "m³",
+        "Estimate Quantity": "5,171.94",
+        "Final Quoted Rate (Rs.)": "288.00",
+        "Amount (Rs.)": "14,89,518.72"
+      },
+      "provenance": {
+        "page": 1,
+        "row": 4
+      }
+    },
+    {
+      "serialNumber": "11",
+      "itemCode": "12.2",
+      "product": null,
+      "description": "Providing weep holes in Brick masonry/Plain/ Reinforced concrete abutment, wing wall/ return wall with PVC Pipe 110mm outer dia. at 2 kg per m2, extending through the full width of the structure with slope of 1V :20H towards drawing foce. Complete as per drawing and Technical Specifications. Ref to MoRT&H : IRC - 2706 & 2200",
+      "size": null,
+      "specification": null,
+      "quantity": 459.8,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "11",
+        "Item Code": "12.2",
+        "Item Name / Description": "Providing weep holes in Brick masonry/Plain/ Reinforced concrete abutment, wing wall/ return wall with PVC Pipe 110mm outer dia. at 2 kg per m2, extending through the full width of the structure with slope of 1V :20H towards drawing foce. Complete as per drawing and Technical Specifications. Ref to MoRT&H : IRC - 2706 & 2200",
+        "Unit": "m",
+        "Estimate Quantity": "459.80",
+        "Final Quoted Rate (Rs.)": "263.00",
+        "Amount (Rs.)": "1,20,927.40"
+      },
+      "provenance": {
+        "page": 2,
+        "row": 11
+      }
+    },
+    {
+      "serialNumber": "12",
+      "itemCode": "12.2",
+      "product": null,
+      "description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 100 mm dia. pipes (This is for house service connection only)",
+      "size": null,
+      "specification": null,
+      "quantity": 135,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "12",
+        "Item Code": "12.2",
+        "Item Name / Description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 100 mm dia. pipes (This is for house service connection only)",
+        "Unit": "m",
+        "Estimate Quantity": "135.00",
+        "Final Quoted Rate (Rs.)": "407.00",
+        "Amount (Rs.)": "54,945.00"
+      },
+      "provenance": {
+        "page": 2,
+        "row": 12
+      }
+    },
+    {
+      "serialNumber": "13",
+      "itemCode": "16.1.1",
+      "product": null,
+      "description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 100 mm dia. pipes (This is for house service connection only)",
+      "size": null,
+      "specification": null,
+      "quantity": 1156,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "13",
+        "Item Code": "16.1.1",
+        "Item Name / Description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 100 mm dia. pipes (This is for house service connection only)",
+        "Unit": "m",
+        "Estimate Quantity": "1,156.00",
+        "Final Quoted Rate (Rs.)": "407.00",
+        "Amount (Rs.)": "4,70,492.00"
+      },
+      "provenance": {
+        "page": 2,
+        "row": 13
+      }
+    },
+    {
+      "serialNumber": "14",
+      "itemCode": "16.1.2",
+      "product": null,
+      "description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 150 mm dia. pipes",
+      "size": null,
+      "specification": null,
+      "quantity": 2288,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "14",
+        "Item Code": "16.1.2",
+        "Item Name / Description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 150 mm dia. pipes",
+        "Unit": "m",
+        "Estimate Quantity": "2,288.00",
+        "Final Quoted Rate (Rs.)": "640.00",
+        "Amount (Rs.)": "14,64,320.00"
+      },
+      "provenance": {
+        "page": 3,
+        "row": 14
+      }
+    },
+    {
+      "serialNumber": "15",
+      "itemCode": "16.1.4",
+      "product": null,
+      "description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 230 mm dia. pipes",
+      "size": null,
+      "specification": null,
+      "quantity": 573.75,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "15",
+        "Item Code": "16.1.4",
+        "Item Name / Description": "Providing, lowering, laying, jointing, testing and commissioning of Glazed Stone Ware Pipes of following dia, conforming to IS 651:1992, IS 4127 with latest amendments, including conveying to work site, caulking with hemp dipped in tar and jointing with CM 1:1.5 using OPC, perfect linking and curing for 10 days and testing with water etc. with all lead, lifts and as per Technical Specifications. The cost to include the cost of all jointing materials, necessary survey works for laying of sewer lines etc. complete. The contractor will make own arrangements for procuring water for testing. 230 mm dia. pipes",
+        "Unit": "m",
+        "Estimate Quantity": "573.75",
+        "Final Quoted Rate (Rs.)": "971.00",
+        "Amount (Rs.)": "5,57,111.25"
+      },
+      "provenance": {
+        "page": 3,
+        "row": 15
+      }
+    },
+    {
+      "serialNumber": "16",
+      "itemCode": "16.28",
+      "product": null,
+      "description": "Providing and constructing un-reinforced plain cement concrete pavement, thickness as per design, over a prepared sub base, with 43 grade cement or any other type as per Clause 1501.2.2 M30 (Grade), coarse and fine aggregates conforming to IS:383:2016:, maximum size of coarse aggregate not exceeding 25 mm, mixed in a concrete mixer of not less than 0.2 cum capacity and appropriate weigh batcher using approved mix design, laid in approved fixed side formwork (steel channel), laying and fixing of 125 micron thick polythene film, wedges, steel plates including levelling the formwork as per drawing), spreading the concrete with shovels, rakes, compacted using needle, screed and plate vibrators and finished in continuous operation including construction joints, primer, sealant, curing of concrete slabs for 14-days, and water finishing to lines and grade as per drawing and technical specification clause 1501 with all lead, lifts, loading & unloading charges, cost and conveyance of all materials, labour, equipments etc., complete. as per the directions of the Engineer-in-charge of the work. Ref to MoRT&H : IRC - 1501",
+      "size": null,
+      "specification": null,
+      "quantity": 916.82,
+      "unit": "m³",
+      "sourceValues": {
+        "S.No.": "16",
+        "Item Code": "16.28",
+        "Item Name / Description": "Providing and constructing un-reinforced plain cement concrete pavement, thickness as per design, over a prepared sub base, with 43 grade cement or any other type as per Clause 1501.2.2 M30 (Grade), coarse and fine aggregates conforming to IS:383:2016:, maximum size of coarse aggregate not exceeding 25 mm, mixed in a concrete mixer of not less than 0.2 cum capacity and appropriate weigh batcher using approved mix design, laid in approved fixed side formwork (steel channel), laying and fixing of 125 micron thick polythene film, wedges, steel plates including levelling the formwork as per drawing), spreading the concrete with shovels, rakes, compacted using needle, screed and plate vibrators and finished in continuous operation including construction joints, primer, sealant, curing of concrete slabs for 14-days, and water finishing to lines and grade as per drawing and technical specification clause 1501 with all lead, lifts, loading & unloading charges, cost and conveyance of all materials, labour, equipments etc., complete. as per the directions of the Engineer-in-charge of the work. Ref to MoRT&H : IRC - 1501",
+        "Unit": "m³",
+        "Estimate Quantity": "916.82",
+        "Final Quoted Rate (Rs.)": "7,442.00",
+        "Amount (Rs.)": "68,22,974.44"
+      },
+      "provenance": {
+        "page": 3,
+        "row": 16
+      }
+    },
+    {
+      "serialNumber": "17",
+      "itemCode": "16.28.1",
+      "product": null,
+      "description": "Repairs to Machinehole for different depths including removal of debris, levelling the brick masonry, construction of brick masonry upto Ground level, providing CC coping around the MH cover, plastering both inside and outside to the brick masonry and fixing of manhole frame and cover, curing, refilling with appurtenances complete. Upto 0.30m depth",
+      "size": null,
+      "specification": null,
+      "quantity": 455,
+      "unit": "each",
+      "sourceValues": {
+        "S.No.": "17",
+        "Item Code": "16.28.1",
+        "Item Name / Description": "Repairs to Machinehole for different depths including removal of debris, levelling the brick masonry, construction of brick masonry upto Ground level, providing CC coping around the MH cover, plastering both inside and outside to the brick masonry and fixing of manhole frame and cover, curing, refilling with appurtenances complete. Upto 0.30m depth",
+        "Unit": "each",
+        "Estimate Quantity": "455.00",
+        "Final Quoted Rate (Rs.)": "9,002.00",
+        "Amount (Rs.)": "40,95,910.00"
+      },
+      "provenance": {
+        "page": 3,
+        "row": 17
+      }
+    },
+    {
+      "serialNumber": "19",
+      "itemCode": "16.40.1",
+      "product": null,
+      "description": "Providing and constructing of Machinehole chambers conical in shape at top with CC 1:3:6 foundation using 40mm and down size graded metal of approved quality and with an offset of 0.15m alround the chamber and brick masonry in C.M 1:4 plaster with bricks of approved quality and CM plaster 1:3 proportion 12mm thick inside and outside except for the conical surface outside where the thickness of plaster shall be 20 mm thick, with 1 to 6 slope in the concrete towards the central drain, finished smooth and fixing of pipes in CC 1:2:4 with graded metal of 20 mm and down size including Providing and fixing SFRC Machinehole frame and cover conforming to IS 12592(Part-I): 1988 & IS 12592(Part-II) :1991 with latest amendments in CC 1:2:4, Providing and fixing of plastic foot steps staggered at 30cms apart as directed, watering, curing,barricading, danger lighting, pouring tar over M.H. frame and cover, cost of tar, shoring, strutting, dewatering, engraving Machinehole No. on the inner and outer conical surface etc. as per the drawing with all lead and lift for various diameters and depths noted below. With Table Moulded Bricks & Medium Duty cover and frame [wording partly obscured by stamp in the source] 1.2 m internal dia., 1.0 M depth & Medium duty SFRC cover & frame",
+      "size": null,
+      "specification": null,
+      "quantity": 78,
+      "unit": "each",
+      "sourceValues": {
+        "S.No.": "19",
+        "Item Code": "16.40.1",
+        "Item Name / Description": "Providing and constructing of Machinehole chambers conical in shape at top with CC 1:3:6 foundation using 40mm and down size graded metal of approved quality and with an offset of 0.15m alround the chamber and brick masonry in C.M 1:4 plaster with bricks of approved quality and CM plaster 1:3 proportion 12mm thick inside and outside except for the conical surface outside where the thickness of plaster shall be 20 mm thick, with 1 to 6 slope in the concrete towards the central drain, finished smooth and fixing of pipes in CC 1:2:4 with graded metal of 20 mm and down size including Providing and fixing SFRC Machinehole frame and cover conforming to IS 12592(Part-I): 1988 & IS 12592(Part-II) :1991 with latest amendments in CC 1:2:4, Providing and fixing of plastic foot steps staggered at 30cms apart as directed, watering, curing,barricading, danger lighting, pouring tar over M.H. frame and cover, cost of tar, shoring, strutting, dewatering, engraving Machinehole No. on the inner and outer conical surface etc. as per the drawing with all lead and lift for various diameters and depths noted below. With Table Moulded Bricks & Medium Duty cover and frame [wording partly obscured by stamp in the source] 1.2 m internal dia., 1.0 M depth & Medium duty SFRC cover & frame",
+        "Unit": "each",
+        "Estimate Quantity": "78.00",
+        "Final Quoted Rate (Rs.)": "26,831.00",
+        "Amount (Rs.)": "20,92,818.00"
+      },
+      "provenance": {
+        "page": 3,
+        "row": 19
+      }
+    },
+    {
+      "serialNumber": "56",
+      "itemCode": "5.12.C",
+      "product": null,
+      "description": "Dense Graded Bituminous Macadam Grading - II for traffic <20 MSA - Providing and laying Dense Graded Bituminous Macadam with 40/60 TPH capacity HMP using crushed aggregates of specified grading, premixed with bituminous binder VG-30, @ 4.5 per cent by weight of total mix and filler, transporting the hot mix to work site, laying with mechanical paver finisher to the required grade, level and alignment, rolling with smooth wheeled, vibratory and tandem rollers to achieve the desired compaction as per MoRTH specification clause No 505 complete in all respects. Ref to MoRT&H : IRC - 505",
+      "size": null,
+      "specification": null,
+      "quantity": 4807.69,
+      "unit": "m³",
+      "sourceValues": {
+        "S.No.": "56",
+        "Item Code": "5.12.C",
+        "Item Name / Description": "Dense Graded Bituminous Macadam Grading - II for traffic <20 MSA - Providing and laying Dense Graded Bituminous Macadam with 40/60 TPH capacity HMP using crushed aggregates of specified grading, premixed with bituminous binder VG-30, @ 4.5 per cent by weight of total mix and filler, transporting the hot mix to work site, laying with mechanical paver finisher to the required grade, level and alignment, rolling with smooth wheeled, vibratory and tandem rollers to achieve the desired compaction as per MoRTH specification clause No 505 complete in all respects. Ref to MoRT&H : IRC - 505",
+        "Unit": "m³",
+        "Estimate Quantity": "4,807.69",
+        "Final Quoted Rate (Rs.)": "10,412.00",
+        "Amount (Rs.)": "5,00,57,668.28"
+      },
+      "provenance": {
+        "page": 10,
+        "row": 56
+      }
+    },
+    {
+      "serialNumber": "66",
+      "itemCode": "8.5.iv",
+      "product": null,
+      "description": "Retro-Reflectorised Traffic Signs - Providing and fixing of retro- reflectorised cautionary, mandatory and informatory sign as per IRC:67:2022 made of Class B Type IV retro reflective sheeting fixed over 2 mm thick aluminium sheeting vide clause 803.1, 3mm/4mm thick Aluminium composite material sheet depending on the size of the sign fixed over the back support frame of min 25 x 25 x 3mm angle mounted on a mild steel circular pipe 65 NB, 3.2 mm thickness firmly fixed to the ground by means of properly designed foundation with M25 grade cement concrete 45 cm x 45 cm x 60 cm, 60 cm below ground level as per approved drawing.The sign shall be maintained as per section 12 of IRC:67:2022 - 60 cm equilateral triangle. Ref to MoRT&H : IRC - 801",
+      "size": null,
+      "specification": null,
+      "quantity": 88,
+      "unit": "each",
+      "sourceValues": {
+        "S.No.": "66",
+        "Item Code": "8.5.iv",
+        "Item Name / Description": "Retro-Reflectorised Traffic Signs - Providing and fixing of retro- reflectorised cautionary, mandatory and informatory sign as per IRC:67:2022 made of Class B Type IV retro reflective sheeting fixed over 2 mm thick aluminium sheeting vide clause 803.1, 3mm/4mm thick Aluminium composite material sheet depending on the size of the sign fixed over the back support frame of min 25 x 25 x 3mm angle mounted on a mild steel circular pipe 65 NB, 3.2 mm thickness firmly fixed to the ground by means of properly designed foundation with M25 grade cement concrete 45 cm x 45 cm x 60 cm, 60 cm below ground level as per approved drawing.The sign shall be maintained as per section 12 of IRC:67:2022 - 60 cm equilateral triangle. Ref to MoRT&H : IRC - 801",
+        "Unit": "each",
+        "Estimate Quantity": "88.00",
+        "Final Quoted Rate (Rs.)": "3,940.00",
+        "Amount (Rs.)": "3,46,720.00"
+      },
+      "provenance": {
+        "page": 12,
+        "row": 66
+      }
+    },
+    {
+      "serialNumber": "67",
+      "itemCode": "8.54",
+      "product": null,
+      "description": "Providing and fixing board displaying information, such as Name of work, Tender cost, Name of Contractor, Work completion and liability period etc, having rectangular shape of 1.20m x 0.90m size made out 18 gauge (1.25mm) thick mild steel sheet painted with one coat of Zinc chromate stoving primer and two coats of enamel paint on front side and grey stove enamel on back side and border / messages / symbols etc. with approved colour shade paint complete, on M.S angle of size 35 x 35 x 3 mm frame with properly cross braced M.S. angles of size 35mmx35mmx3mm duly painted including Two M.S. angle iron posts of size 65 mm x 65 mm x 6 mm, 3.65 m long painted with alternate black and white bands of 25 cm width including all fixtures etc.and fixing the boards in 1:4:8 concrete block of size 60 cm x 60 cm x 75 cm including, excavation, refilling, transportation and labour etc complete. Spec. No. As directed by Engineer in Charge & MoRTH specification 804. Ref to MoRT&H : IRC - MoRTH 804 [a few words near the foot of the cell are partly obscured by stamp in the source]",
+      "size": null,
+      "specification": null,
+      "quantity": 392.55,
+      "unit": "No.",
+      "sourceValues": {
+        "S.No.": "67",
+        "Item Code": "8.54",
+        "Item Name / Description": "Providing and fixing board displaying information, such as Name of work, Tender cost, Name of Contractor, Work completion and liability period etc, having rectangular shape of 1.20m x 0.90m size made out 18 gauge (1.25mm) thick mild steel sheet painted with one coat of Zinc chromate stoving primer and two coats of enamel paint on front side and grey stove enamel on back side and border / messages / symbols etc. with approved colour shade paint complete, on M.S angle of size 35 x 35 x 3 mm frame with properly cross braced M.S. angles of size 35mmx35mmx3mm duly painted including Two M.S. angle iron posts of size 65 mm x 65 mm x 6 mm, 3.65 m long painted with alternate black and white bands of 25 cm width including all fixtures etc.and fixing the boards in 1:4:8 concrete block of size 60 cm x 60 cm x 75 cm including, excavation, refilling, transportation and labour etc complete. Spec. No. As directed by Engineer in Charge & MoRTH specification 804. Ref to MoRT&H : IRC - MoRTH 804 [a few words near the foot of the cell are partly obscured by stamp in the source]",
+        "Unit": "No.",
+        "Estimate Quantity": "392.55",
+        "Final Quoted Rate (Rs.)": "9,917.00",
+        "Amount (Rs.)": "38,92,918.35"
+      },
+      "provenance": {
+        "page": 12,
+        "row": 67
+      }
+    },
+    {
+      "serialNumber": "69",
+      "itemCode": "8.8",
+      "product": null,
+      "description": "Direction and Place Identification Signs with size more than 0.9 m2 size Board - Providing and erecting direction and place identification retro- reflectorised sign as per IRC:67:2022 made of high intensity grade sheeting vide clause 801.3, fixed over aluminium sheeting, 2 mm thick or Aluminium composite material sheet with overall thickness of 4mm with area exceeding 0.9 m2 fixed over back support frame of min 40 x 40 x 5mm angle mounted on a mild steel circular pipe 65 NB, firmly fixed to the ground by means of properly designed foundation with M25 grade cement concrete 45 x 45 x 60 cm, 60 cm below ground level as per approved drawing. Ref to MoRT&H : IRC - 801",
+      "size": null,
+      "specification": null,
+      "quantity": 10.85,
+      "unit": "m²",
+      "sourceValues": {
+        "S.No.": "69",
+        "Item Code": "8.8",
+        "Item Name / Description": "Direction and Place Identification Signs with size more than 0.9 m2 size Board - Providing and erecting direction and place identification retro- reflectorised sign as per IRC:67:2022 made of high intensity grade sheeting vide clause 801.3, fixed over aluminium sheeting, 2 mm thick or Aluminium composite material sheet with overall thickness of 4mm with area exceeding 0.9 m2 fixed over back support frame of min 40 x 40 x 5mm angle mounted on a mild steel circular pipe 65 NB, firmly fixed to the ground by means of properly designed foundation with M25 grade cement concrete 45 x 45 x 60 cm, 60 cm below ground level as per approved drawing. Ref to MoRT&H : IRC - 801",
+        "Unit": "m²",
+        "Estimate Quantity": "10.85",
+        "Final Quoted Rate (Rs.)": "10,691.00",
+        "Amount (Rs.)": "1,15,997.35"
+      },
+      "provenance": {
+        "page": 12,
+        "row": 69
+      }
+    },
+    {
+      "serialNumber": "72",
+      "itemCode": "9.1.4",
+      "product": null,
+      "description": "Providing, laying and jointing HDPE pipes of specified grade and conforming to IS 4984-2016 with latest ammendments and conveying to work site including loading and unloading at both destinations and rolling and lowering into trenches, laying true to line and jointing of pipes and specials with electrofusion welding, giving hydraulic test as per relevant ISS with all lead and lifts including encasing the pipe alround to a depth of not less than 15 cms. with soft gravel or selected earth available from the excation, testing and commissioning. The rate is exclusive of required specials and fittings wherever necessary like saddle Tee, stub ends, flanged sets, bedns, reducers etc. complete (Contractor will make his own arrangements for procuring water for testing) etc. complete. NOTE: Upto 110mm dia Coil shall be used. For :HDPE PE 80 PN 6.0 - HDPE Grade PE80-PN6.0,110mm dia",
+      "size": null,
+      "specification": null,
+      "quantity": 45398.8,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "72",
+        "Item Code": "9.1.4",
+        "Item Name / Description": "Providing, laying and jointing HDPE pipes of specified grade and conforming to IS 4984-2016 with latest ammendments and conveying to work site including loading and unloading at both destinations and rolling and lowering into trenches, laying true to line and jointing of pipes and specials with electrofusion welding, giving hydraulic test as per relevant ISS with all lead and lifts including encasing the pipe alround to a depth of not less than 15 cms. with soft gravel or selected earth available from the excation, testing and commissioning. The rate is exclusive of required specials and fittings wherever necessary like saddle Tee, stub ends, flanged sets, bedns, reducers etc. complete (Contractor will make his own arrangements for procuring water for testing) etc. complete. NOTE: Upto 110mm dia Coil shall be used. For :HDPE PE 80 PN 6.0 - HDPE Grade PE80-PN6.0,110mm dia",
+        "Unit": "m",
+        "Estimate Quantity": "45,398.80",
+        "Final Quoted Rate (Rs.)": "470.00",
+        "Amount (Rs.)": "2,13,37,436.00"
+      },
+      "provenance": {
+        "page": 13,
+        "row": 72
+      }
+    },
+    {
+      "serialNumber": "73",
+      "itemCode": "9.1.9",
+      "product": null,
+      "description": "Providing, laying and jointing HDPE pipes of specified grade and conforming to IS 4984-2016 with latest ammendments and conveying to work site including loading and unloading at both destinations and rolling and lowering into trenches, laying true to line and jointing of pipes and specials with electrofusion welding, giving hydraulic test as per relevant ISS with all lead and lifts including encasing the pipe alround to a depth of not less than 15 cms. with soft gravel or selected earth available from the excation, testing and commissioning. The rate is exclusive of required specials and fittings wherever necessary like saddle Tee, stub ends, flanged sets, bedns, reducers etc. complete (Contractor will make his own arrangements for procuring water for testing) etc. complete. NOTE: Upto 110mm dia Coil shall be used. For :HDPE PE 80 PN 6.0 - HDPE Grade PE80-PN6.0,200mm dia",
+      "size": null,
+      "specification": null,
+      "quantity": 22699.4,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "73",
+        "Item Code": "9.1.9",
+        "Item Name / Description": "Providing, laying and jointing HDPE pipes of specified grade and conforming to IS 4984-2016 with latest ammendments and conveying to work site including loading and unloading at both destinations and rolling and lowering into trenches, laying true to line and jointing of pipes and specials with electrofusion welding, giving hydraulic test as per relevant ISS with all lead and lifts including encasing the pipe alround to a depth of not less than 15 cms. with soft gravel or selected earth available from the excation, testing and commissioning. The rate is exclusive of required specials and fittings wherever necessary like saddle Tee, stub ends, flanged sets, bedns, reducers etc. complete (Contractor will make his own arrangements for procuring water for testing) etc. complete. NOTE: Upto 110mm dia Coil shall be used. For :HDPE PE 80 PN 6.0 - HDPE Grade PE80-PN6.0,200mm dia",
+        "Unit": "m",
+        "Estimate Quantity": "22,699.40",
+        "Final Quoted Rate (Rs.)": "1,500.00",
+        "Amount (Rs.)": "3,40,49,100.00"
+      },
+      "provenance": {
+        "page": 13,
+        "row": 73
+      }
+    },
+    {
+      "serialNumber": "74",
+      "itemCode": "9.16.10",
+      "product": null,
+      "description": "Providing and installation of Class SN8 Double Wall Corrugated HDPE pipe outer wall corrugated and inner wall smooth piping system in accordance with IS 16098 part 2 and conveying to work site and lowering into trenches, laying true to line and level and perfect linking at joints with the help of two O rings and a coupler of suitable size, including loading and unloading at both destination and cutting of pipes where ever necessary including jointing with all labour, all lead and lift including encasing the pipe around to a depth of not less than 15 cm with screened soft soil available from the excavated soil. The testing commissioning including necessary hydraulic test to the required pressure as per ISS shall be done the contractor shall have to make his own arrangement for procuring water for testing etc. complete. SN8 Double Wall Corrugated HDPE pipe sizes of 600 mm dia",
+      "size": null,
+      "specification": null,
+      "quantity": 1700,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "74",
+        "Item Code": "9.16.10",
+        "Item Name / Description": "Providing and installation of Class SN8 Double Wall Corrugated HDPE pipe outer wall corrugated and inner wall smooth piping system in accordance with IS 16098 part 2 and conveying to work site and lowering into trenches, laying true to line and level and perfect linking at joints with the help of two O rings and a coupler of suitable size, including loading and unloading at both destination and cutting of pipes where ever necessary including jointing with all labour, all lead and lift including encasing the pipe around to a depth of not less than 15 cm with screened soft soil available from the excavated soil. The testing commissioning including necessary hydraulic test to the required pressure as per ISS shall be done the contractor shall have to make his own arrangement for procuring water for testing etc. complete. SN8 Double Wall Corrugated HDPE pipe sizes of 600 mm dia",
+        "Unit": "m",
+        "Estimate Quantity": "1,700.00",
+        "Final Quoted Rate (Rs.)": "6,406.00",
+        "Amount (Rs.)": "1,08,90,200.00"
+      },
+      "provenance": {
+        "page": 13,
+        "row": 74
+      }
+    },
+    {
+      "serialNumber": "75",
+      "itemCode": "9.16.6",
+      "product": null,
+      "description": "Providing and installation of Class SN8 Double Wall Corrugated HDPE pipe outer wall corrugated and inner wall smooth piping system in accordance with IS 16098 part 2 and conveying to work site and lowering into trenches, laying true to line and level and perfect linking at joints with the help of two O rings and a coupler of suitable size, including loading and unloading at both destination and cutting of pipes where ever necessary including jointing with all labour, all lead and lift including encasing the pipe around to a depth of not less than 15 cm with screened soft soil available from the excavated soil. The testing commissioning including necessary hydraulic test to the required pressure as per ISS shall be done the contractor shall have to make his own arrangement for procuring water for testing etc. complete. SN8 Double Wall Corrugated HDPE pipe sizes of 250 mm dia",
+      "size": null,
+      "specification": null,
+      "quantity": 3462,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "75",
+        "Item Code": "9.16.6",
+        "Item Name / Description": "Providing and installation of Class SN8 Double Wall Corrugated HDPE pipe outer wall corrugated and inner wall smooth piping system in accordance with IS 16098 part 2 and conveying to work site and lowering into trenches, laying true to line and level and perfect linking at joints with the help of two O rings and a coupler of suitable size, including loading and unloading at both destination and cutting of pipes where ever necessary including jointing with all labour, all lead and lift including encasing the pipe around to a depth of not less than 15 cm with screened soft soil available from the excavated soil. The testing commissioning including necessary hydraulic test to the required pressure as per ISS shall be done the contractor shall have to make his own arrangement for procuring water for testing etc. complete. SN8 Double Wall Corrugated HDPE pipe sizes of 250 mm dia",
+        "Unit": "m",
+        "Estimate Quantity": "3,462.00",
+        "Final Quoted Rate (Rs.)": "1,244.00",
+        "Amount (Rs.)": "43,06,728.00"
+      },
+      "provenance": {
+        "page": 13,
+        "row": 75
+      }
+    },
+    {
+      "serialNumber": "76",
+      "itemCode": "9.16.7",
+      "product": null,
+      "description": "Providing and installation of Class SN8 Double Wall Corrugated HDPE pipe outer wall corrugated and inner wall smooth piping system in accordance with IS 16098 part 2 and conveying to work site and lowering into trenches, laying true to line and level and perfect linking at joints with the help of two O rings and a coupler of suitable size, including loading and unloading at both destination and cutting of pipes where ever necessary including jointing with all labour, all lead and lift including encasing the pipe around to a depth of not less than 15 cm with screened soft soil available from the excavated soil. The testing commissioning including necessary hydraulic test to the required pressure as per ISS shall be done the contractor shall have to make his own arrangement for procuring water for testing etc. complete. SN8 Double Wall Corrugated HDPE pipe sizes of 300 mm dia",
+      "size": null,
+      "specification": null,
+      "quantity": 2368,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "76",
+        "Item Code": "9.16.7",
+        "Item Name / Description": "Providing and installation of Class SN8 Double Wall Corrugated HDPE pipe outer wall corrugated and inner wall smooth piping system in accordance with IS 16098 part 2 and conveying to work site and lowering into trenches, laying true to line and level and perfect linking at joints with the help of two O rings and a coupler of suitable size, including loading and unloading at both destination and cutting of pipes where ever necessary including jointing with all labour, all lead and lift including encasing the pipe around to a depth of not less than 15 cm with screened soft soil available from the excavated soil. The testing commissioning including necessary hydraulic test to the required pressure as per ISS shall be done the contractor shall have to make his own arrangement for procuring water for testing etc. complete. SN8 Double Wall Corrugated HDPE pipe sizes of 300 mm dia",
+        "Unit": "m",
+        "Estimate Quantity": "2,368.00",
+        "Final Quoted Rate (Rs.)": "1,655.00",
+        "Amount (Rs.)": "39,19,040.00"
+      },
+      "provenance": {
+        "page": 13,
+        "row": 76
+      }
+    },
+    {
+      "serialNumber": "90",
+      "itemCode": "PWD SR V6 & Item No.32.05",
+      "product": null,
+      "description": "1.1 kV, XLPE or Heat resistant PVC insulated, PVC exutruted Inner Seath Armoured LTUG Cable as per IS-1554 (Part- 1) or IS-7098 Part-1, Armouring strip thickness and resistivity as per IS-3975 16 Sqmm, 4 Core, (11 GI Strips - 4 x 0.8 mm) Material code-287206 SR 2023-2024 (Vol-6 & Item No.32.05)",
+      "size": null,
+      "specification": null,
+      "quantity": 1.5,
+      "unit": "Km",
+      "sourceValues": {
+        "S.No.": "90",
+        "Item Code": "PWD SR V6 & Item No.32.05",
+        "Item Name / Description": "1.1 kV, XLPE or Heat resistant PVC insulated, PVC exutruted Inner Seath Armoured LTUG Cable as per IS-1554 (Part- 1) or IS-7098 Part-1, Armouring strip thickness and resistivity as per IS-3975 16 Sqmm, 4 Core, (11 GI Strips - 4 x 0.8 mm) Material code-287206 SR 2023-2024 (Vol-6 & Item No.32.05)",
+        "Unit": "Km",
+        "Estimate Quantity": "1.50",
+        "Final Quoted Rate (Rs.)": "1,56,306.00",
+        "Amount (Rs.)": "2,34,459.00"
+      },
+      "provenance": {
+        "page": 17,
+        "row": 90
+      }
+    },
+    {
+      "serialNumber": "94",
+      "itemCode": "PWD SR V6 Page No.10 Item No.4.2.7",
+      "product": null,
+      "description": "Fabricating, supplying and erection of . ms long hot dip Galvanized Octagonal hot dip Pole with BSEN 10025 grade S 355 JO steel plate for shaft, IS 2062 for base plate with door opening arrangements, including suitable boards, Bakelite sheet and MCBs as per IS specifications suitable to withstand the wind speed of 47 m/s for . m Pole in single section and single joint welded as per IS 9595/IS10178AWS having dimensions bottom . mm , top. mm with 3 mm thick, suitable base plate and 4Nos of . long J bolts along with template and the Pole shall be hot dip galvanized in single dipping with not less than 65micron as per ASTM-A123 and 153 etc., (excluding foundation) as per drawing appended. 9 m - Top 70 mm and Bottom 155 mm dia CSR 2023-24 (Vol-6 Page No.10 & Item No.4.2.7)",
+      "size": null,
+      "specification": null,
+      "quantity": 50,
+      "unit": "No",
+      "sourceValues": {
+        "S.No.": "94",
+        "Item Code": "PWD SR V6 Page No.10 Item No.4.2.7",
+        "Item Name / Description": "Fabricating, supplying and erection of . ms long hot dip Galvanized Octagonal hot dip Pole with BSEN 10025 grade S 355 JO steel plate for shaft, IS 2062 for base plate with door opening arrangements, including suitable boards, Bakelite sheet and MCBs as per IS specifications suitable to withstand the wind speed of 47 m/s for . m Pole in single section and single joint welded as per IS 9595/IS10178AWS having dimensions bottom . mm , top. mm with 3 mm thick, suitable base plate and 4Nos of . long J bolts along with template and the Pole shall be hot dip galvanized in single dipping with not less than 65micron as per ASTM-A123 and 153 etc., (excluding foundation) as per drawing appended. 9 m - Top 70 mm and Bottom 155 mm dia CSR 2023-24 (Vol-6 Page No.10 & Item No.4.2.7)",
+        "Unit": "No",
+        "Estimate Quantity": "50.00",
+        "Final Quoted Rate (Rs.)": "21,488.00",
+        "Amount (Rs.)": "10,74,400.00"
+      },
+      "provenance": {
+        "page": 17,
+        "row": 94
+      }
+    },
+    {
+      "serialNumber": "100",
+      "itemCode": "PWD SR V6 Page No 19 & Item No 5.40.2",
+      "product": null,
+      "description": "Supplying . A rated 3phase with neutral bus bar using required capacity electrolytic aluminium strips covered with heat shrinkable coloured PVC sleeve, mounted on phenolic/FRP/DMC insulator which are mounted on powder coated 40x6mm M.S flat frame work in existing panel board. The bus bar shall have suitable holes for termination of incoming and outgoing cables as per IS specification with necessary bolts, nuts and washers etc., complete 250 A 4 x 30 x 10 mm Aluminium Strips CSR 2023-2024 (Vol-6 Page No.19 & Item No 5.40.2)",
+      "size": null,
+      "specification": null,
+      "quantity": 1,
+      "unit": "No",
+      "sourceValues": {
+        "S.No.": "100",
+        "Item Code": "PWD SR V6 Page No 19 & Item No 5.40.2",
+        "Item Name / Description": "Supplying . A rated 3phase with neutral bus bar using required capacity electrolytic aluminium strips covered with heat shrinkable coloured PVC sleeve, mounted on phenolic/FRP/DMC insulator which are mounted on powder coated 40x6mm M.S flat frame work in existing panel board. The bus bar shall have suitable holes for termination of incoming and outgoing cables as per IS specification with necessary bolts, nuts and washers etc., complete 250 A 4 x 30 x 10 mm Aluminium Strips CSR 2023-2024 (Vol-6 Page No.19 & Item No 5.40.2)",
+        "Unit": "No",
+        "Estimate Quantity": "1.00",
+        "Final Quoted Rate (Rs.)": "3,785.00",
+        "Amount (Rs.)": "3,785.00"
+      },
+      "provenance": {
+        "page": 18,
+        "row": 100
+      }
+    },
+    {
+      "serialNumber": "102",
+      "itemCode": "PWD SR V6 Page No 4 & Item No 2.3.3",
+      "product": null,
+      "description": "Wiring for lighting/power circuit using one of FRLS PVC insulated 1100V grade, multistrand copper wire with low conductor resistance single core in open or concealed system of wiring with specified IS-694:2010 2.5 mm2 CSR 2023-2024 (Vol-6 Page No.4 & Item No.2.3.3)",
+      "size": null,
+      "specification": null,
+      "quantity": 1000,
+      "unit": "m",
+      "sourceValues": {
+        "S.No.": "102",
+        "Item Code": "PWD SR V6 Page No 4 & Item No 2.3.3",
+        "Item Name / Description": "Wiring for lighting/power circuit using one of FRLS PVC insulated 1100V grade, multistrand copper wire with low conductor resistance single core in open or concealed system of wiring with specified IS-694:2010 2.5 mm2 CSR 2023-2024 (Vol-6 Page No.4 & Item No.2.3.3)",
+        "Unit": "m",
+        "Estimate Quantity": "1,000.00",
+        "Final Quoted Rate (Rs.)": "46.00",
+        "Amount (Rs.)": "46,000.00"
+      },
+      "provenance": {
+        "page": 18,
+        "row": 102
+      }
+    },
+    {
+      "serialNumber": "103",
+      "itemCode": "PWD SR V6 Page No.44 Item No.11.8.3",
+      "product": null,
+      "description": "Supply of LED Streetlight luminaire with pressure die cast aluminium housing body for optimal thermal dissipation. Lamp compartment comprising of anti glare clear diffuser with Injection moulded polycarbonate material, delivering superior light output Rated life Burning Hrs 50000 hr @ Lumen Maintenance of 70%, maximum light intensity should be between 60 degrees to 70 degrees. CCT 5500K, IP66 optical and electrical compartment & impact resistance of complete luminaire IK08. Power Factor 0.9 with mains, Surge Protection Min 5KV along with Over voltage/ Overload, short circuit/ miss- wiring protection. Compatible for pole mounting with outer dia of 40mm to 50mm. Universal Voltage driver to operate wide voltage range from 100V to 270V 50/60Hz application. Compliance to IS 10322/IEC 60598, LM 79 & LM 80 Adherence with RoHS. UL approved MCPCB. Top access street light with single screw to ensure ease of maintenance at the sight site location with minimized minimal tools. LED Light fixture with . W System Power consumption. LED Efficiency130 lm/w, nominal CRI 75. Luminaire manufacturer should have in-house facility accredited by NABL/CPRI & any Government certified agency & Design & Development facility certified by ISO 9001:2008. Housing with supplier word mark /name shall be Engraved / Embossing on the die cast housing/ Body part. Warranty of 2 Years against any manufacturing defect working under standard electrical conditions as mentioned above should be given by LED manufacturer & Cree/Nichia/ Lumileds/Osram make LED Source. LED Streetlight 70W CSR 2023-24 (Vol-6 Page No.44 & Item No.11.8.3)",
+      "size": null,
+      "specification": null,
+      "quantity": 50,
+      "unit": "No",
+      "sourceValues": {
+        "S.No.": "103",
+        "Item Code": "PWD SR V6 Page No.44 Item No.11.8.3",
+        "Item Name / Description": "Supply of LED Streetlight luminaire with pressure die cast aluminium housing body for optimal thermal dissipation. Lamp compartment comprising of anti glare clear diffuser with Injection moulded polycarbonate material, delivering superior light output Rated life Burning Hrs 50000 hr @ Lumen Maintenance of 70%, maximum light intensity should be between 60 degrees to 70 degrees. CCT 5500K, IP66 optical and electrical compartment & impact resistance of complete luminaire IK08. Power Factor 0.9 with mains, Surge Protection Min 5KV along with Over voltage/ Overload, short circuit/ miss- wiring protection. Compatible for pole mounting with outer dia of 40mm to 50mm. Universal Voltage driver to operate wide voltage range from 100V to 270V 50/60Hz application. Compliance to IS 10322/IEC 60598, LM 79 & LM 80 Adherence with RoHS. UL approved MCPCB. Top access street light with single screw to ensure ease of maintenance at the sight site location with minimized minimal tools. LED Light fixture with . W System Power consumption. LED Efficiency130 lm/w, nominal CRI 75. Luminaire manufacturer should have in-house facility accredited by NABL/CPRI & any Government certified agency & Design & Development facility certified by ISO 9001:2008. Housing with supplier word mark /name shall be Engraved / Embossing on the die cast housing/ Body part. Warranty of 2 Years against any manufacturing defect working under standard electrical conditions as mentioned above should be given by LED manufacturer & Cree/Nichia/ Lumileds/Osram make LED Source. LED Streetlight 70W CSR 2023-24 (Vol-6 Page No.44 & Item No.11.8.3)",
+        "Unit": "No",
+        "Estimate Quantity": "50.00",
+        "Final Quoted Rate (Rs.)": "6,603.00",
+        "Amount (Rs.)": "3,30,150.00"
+      },
+      "provenance": {
+        "page": 18,
+        "row": 103
+      }
+    },
+    {
+      "serialNumber": "104",
+      "itemCode": "PWD SR V6 Page No.53 & Item No.12.56",
+      "product": null,
+      "description": "Supplying, fixing, wiring, earth electrode for grounding conduits, LC. cutouts and other equipment's on the meter board using 40 mm dia 2.90 mm thick GI pipe 2.5m long buried in a pit . The pit should be filled with equal proportion of salt and charcoal 150 mm allround the pipe to complete depth. The connection from the pipe to the conduit etc., is to be established through GI wire of size as per ISI specification 7.3.3. of IS 732 using 12 mm dia bolts, nuts, washers and check nuts etc., the pipe shall have 16 through holes of 12 mm dia CSR 2023-2024 (Vol-6 Page No.53 & Item No.12.56)",
+      "size": null,
+      "specification": null,
+      "quantity": 2,
+      "unit": "No",
+      "sourceValues": {
+        "S.No.": "104",
+        "Item Code": "PWD SR V6 Page No.53 & Item No.12.56",
+        "Item Name / Description": "Supplying, fixing, wiring, earth electrode for grounding conduits, LC. cutouts and other equipment's on the meter board using 40 mm dia 2.90 mm thick GI pipe 2.5m long buried in a pit . The pit should be filled with equal proportion of salt and charcoal 150 mm allround the pipe to complete depth. The connection from the pipe to the conduit etc., is to be established through GI wire of size as per ISI specification 7.3.3. of IS 732 using 12 mm dia bolts, nuts, washers and check nuts etc., the pipe shall have 16 through holes of 12 mm dia CSR 2023-2024 (Vol-6 Page No.53 & Item No.12.56)",
+        "Unit": "No",
+        "Estimate Quantity": "2.00",
+        "Final Quoted Rate (Rs.)": "3,867.00",
+        "Amount (Rs.)": "7,734.00"
+      },
+      "provenance": {
+        "page": 18,
+        "row": 104
+      }
+    }
+  ]
+}
