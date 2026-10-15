@@ -26,10 +26,8 @@ function createQuotationMigrationGuard({
             try {
                 if (!databaseAvailable() || !client) throw new Error('Supabase service-role client is unavailable.');
                 const checks = [
-                    ['price_list_items', 'id,user_id,item_code,name,category,size,pressure_class,specification,unit,rate,hsn_code,gst_percent,active,updated_at'],
-                    ['quotations', 'id,user_id,boq_document_id,quote_number,customer_name,customer_phone,customer_address,customer_state,customer_gstin,project_name,status,validity_days,payment_terms,delivery_terms,freight,discount_percent,notes,subtotal,tax_total,grand_total,sent_at,send_claimed_at,created_at,updated_at'],
-                    ['quotation_items', 'id,quotation_id,user_id,line_no,boq_item_ref,price_list_item_id,description,size,unit,quantity,rate,discount_percent,gst_percent,hsn_code,amount,match_status,created_at,updated_at'],
-                    ['quotation_audit', 'id,user_id,quotation_id,quotation_item_id,actor_user_id,field_name,old_value,new_value,created_at'],
+                    ['quotations', 'id,user_id,boq_document_id,source_quotation_id,version,quote_number,quote_date,validity_days,customer_name,customer_address,customer_gstin,project_name,reference_text,supply_type,gst_percent,discount_percent,freight,status,terms,company,integrity,subtotal,grand_total,unpriced_lines,finalized_at,sent_at,sent_to,send_claimed_at,created_at,updated_at'],
+                    ['quotation_items', 'id,quotation_id,user_id,line_no,section,boq_item_no,boq_item_code,description,boq_description,size_mm,unit,qty,rate,hsn,remarks,ref_rate,ref_amount,include,spec,flags,created_at,updated_at'],
                     ['quotation_counters', 'user_id,fiscal_year,last_number'],
                 ];
                 for (const [table, columns] of checks) {
