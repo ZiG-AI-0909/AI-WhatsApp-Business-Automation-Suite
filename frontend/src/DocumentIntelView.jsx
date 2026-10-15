@@ -11,12 +11,13 @@ const formatSource = (source = {}) => [
   source.table ? `Table ${source.table}` : '',
   source.row ? `Row ${source.row}` : '',
 ].filter(Boolean).join(' · ') || 'Not available'
-const formatConfidence = (confidence = {}) => Object.entries(confidence)
-  .filter(([, score]) => typeof score === 'number')
-  .map(([field, score]) => `${field} ${Math.round(score * 100)}%`)
-  .join(', ') || 'Not provided'
 
 const EMPTY_ITEM = { product: '', size: '', specification: '', quantity: '', unit: '', application: '', notes: '' }
+const money = (value) => value === null || value === undefined || value === '' ? '-' : `Rs ${Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+// Corrections that need a human look (info-level normalisations do not).
+const fieldFlags = (item, field) => (item.corrections || []).filter((entry) => entry.field === field && entry.level !== 'info')
+// Editing these on a flagged row withdraws its "Reviewed" tick (the server does the same).
+const REVIEWED_FIELDS = new Set(['quantity', 'rate', 'amount', 'unit'])
 
 // Document Intelligence — upload a BOQ / project requirement document,
 // review the extracted requirement sheet (editable, warnings inline),
@@ -31,6 +32,10 @@ export default function DocumentIntelView() {
   const [exporting, setExporting] = useState('')
   const [progress, setProgress] = useState(null)
   const [openedQuote, setOpenedQuote] = useState(null)
+  const [onlyFlagged, setOnlyFlagged] = useState(false)
+  // Object URL of the PDF uploaded in this session, so page links can open
+  // the scan at the row's page (the file itself is not stored server-side).
+  const [sourcePdf, setSourcePdf] = useState(null)
   const [creatingQuote, setCreatingQuote] = useState(false)
   const activeExtraction = useRef(null)
   const quotationRef = useRef(null)
@@ -95,9 +100,16 @@ export default function DocumentIntelView() {
         signal: requestController.signal,
       })
       setSelected(doc)
+      if (/\.pdf$/i.test(file.name)) {
+        setSourcePdf((current) => {
+          if (current) URL.revokeObjectURL(current.url)
+          return { docId: doc.id, url: URL.createObjectURL(file) }
+        })
+      }
       setFile(null)
       await load()
-      setNotice({ type: 'success', text: `Extracted ${doc.items.length} line item(s) from ${doc.filename}. Review the rows below — warnings are marked inline.`, retryable: false })
+      const flagged = doc.items.filter((item) => item.needsReview).length
+      setNotice({ type: 'success', text: `Extracted ${doc.items.length} line item(s) from ${doc.filename}.${flagged ? ` ${flagged} row(s) are flagged for review: each must be checked before the sheet can be confirmed.` : ' Review the rows below.'}`, retryable: false })
       keepPolling = false
       progressController.abort()
       setProgress((current) => ({ ...current, status: 'completed', completedBatches: current?.totalBatches || current?.completedBatches || 0, handledRows: current?.totalSourceRows || current?.handledRows || doc.items.length, reviewCount: doc.warnings.flat().filter((warnings) => warnings?.length).length, percent: 100 }))
@@ -163,7 +175,12 @@ export default function DocumentIntelView() {
     const changes = field === 'notes' ? { notes: value, remarks: value } : { [field]: value }
     setSelected((current) => ({
       ...current,
-      items: current.items.map((item, i) => i === index ? { ...item, ...changes } : item),
+      items: current.items.map((item, i) => {
+        if (i !== index) return item
+        const next = { ...item, ...changes }
+        if (REVIEWED_FIELDS.has(field) && item.needsReview) next.reviewConfirmed = false
+        return next
+      }),
     }))
   }
 
@@ -190,7 +207,8 @@ export default function DocumentIntelView() {
       await load()
       setNotice({ type: 'success', text: status === 'confirmed' ? 'Requirement sheet confirmed. RFQ exports are ready.' : 'Changes saved.' })
     } catch (error) {
-      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Document Intelligence · save' }) })
+      const raw = error?.message || ''
+      setNotice({ type: 'error', text: [400, 409].includes(error?.status) && raw && !isTechnicalError(raw) ? raw : friendlyErrorMessage(error, { context: 'Document Intelligence · save' }) })
     } finally {
       setBusy(false)
     }
@@ -251,6 +269,10 @@ export default function DocumentIntelView() {
   }
 
   const warnCount = selected ? selected.warnings.flat().filter((list) => list && list.length).length : 0
+  const flaggedCount = selected ? selected.items.filter((item) => item.needsReview).length : 0
+  const pendingReview = selected ? selected.items.filter((item) => item.needsReview && !item.reviewConfirmed).length : 0
+  const validation = selected?.extraction_metadata?.validation || null
+  const sourcePdfUrl = sourcePdf && selected && sourcePdf.docId === selected.id ? sourcePdf.url : null
 
   return (
     <div className="view-workspace">
@@ -314,43 +336,79 @@ export default function DocumentIntelView() {
             </div>
           </div>
 
-          <div className="campaign-table-wrap">
-            <table>
+          {validation && (
+            <div className={`notice ${validation.totalOk === false || pendingReview ? 'warning' : 'info'} boq-validation`}>
+              <span>
+                {validation.items} item(s) from {validation.rowsIn} source row(s)
+                {validation.dropped?.length ? ` · ${validation.dropped.length} footer/stamp/blank row(s) dropped` : ''}
+                {typeof validation.verifiedRows === 'number' ? ` · ${validation.verifiedRows} verified by qty × rate = amount` : ''}
+                {validation.printedTotal ? ` · printed total ${money(validation.printedTotal)}, sum of amounts ${money(validation.amountSum)}${validation.totalOk ? ' (matches)' : ` (differs by ${money(validation.difference)}: some amounts are misread, see flagged rows)`}` : ''}
+              </span>
+              {validation.dropped?.length > 0 && (
+                <details><summary>Dropped rows</summary><ul className="warning-list">{validation.dropped.map((row, dIndex) => <li key={dIndex}>p.{row.page ?? '?'} · {row.reason}: “{row.text || 'blank'}”</li>)}</ul></details>
+              )}
+            </div>
+          )}
+          <div className="button-row boq-review-tools">
+            <label className="boq-toggle"><input type="checkbox" checked={onlyFlagged} onChange={(event) => setOnlyFlagged(event.target.checked)} /> Show only rows needing review ({flaggedCount})</label>
+            {!sourcePdfUrl && <small className="file-note">Page links open the scan only right after an upload in this session; otherwise use the page number.</small>}
+          </div>
+
+          <div className="quote-table-scroll">
+            <table className="quote-table boq-review-table">
               <thead>
-                <tr><th>Product</th><th>Size</th><th>Specification</th><th>Quantity</th><th>Unit</th><th>Application</th><th>Notes</th><th>Source</th><th>Confidence</th><th>Warnings</th><th>Actions</th></tr>
+                <tr><th>Reviewed</th><th>BOQ S.No / Code</th><th>Description</th><th>Size</th><th>Specification</th><th className="num">Qty</th><th>Unit</th><th className="num">Rate</th><th className="num">Amount</th><th>Page</th><th>Checks</th><th /></tr>
               </thead>
               <tbody>
                 {selected.items.map((item, index) => {
+                  if (onlyFlagged && !(item.needsReview && !item.reviewConfirmed)) return null
                   const rowWarnings = selected.warnings?.[index] || item.warnings || []
+                  const flagged = (field) => fieldFlags(item, field)
+                  const cell = (field) => {
+                    const flags = flagged(field)
+                    return flags.length ? { className: 'boq-cell-flagged', title: flags.map((entry) => `${entry.reason} (OCR: ${entry.original})`).join('\n') } : {}
+                  }
+                  const issues = [
+                    ...(item.corrections || []).filter((entry) => entry.level !== 'info'),
+                    ...(item.checks || []).map((check) => ({ ...check, isCheck: true })),
+                  ]
                   return (
-                    <tr key={index} className={rowWarnings.length ? 'row-warnings' : ''}>
-                      <td data-label="Product"><input value={item.product ?? ''} onChange={(event) => editItem(index, 'product', event.target.value)} /></td>
-                      <td data-label="Size"><input value={item.size ?? ''} onChange={(event) => editItem(index, 'size', event.target.value)} /></td>
-                      <td data-label="Specification"><input value={item.specification ?? ''} onChange={(event) => editItem(index, 'specification', event.target.value)} /></td>
-                      <td data-label="Quantity"><input value={item.quantity ?? ''} onChange={(event) => editItem(index, 'quantity', event.target.value)} /></td>
-                      <td data-label="Unit"><input value={item.unit ?? ''} onChange={(event) => editItem(index, 'unit', event.target.value)} /></td>
-                      <td data-label="Application"><input value={item.application ?? ''} onChange={(event) => editItem(index, 'application', event.target.value)} /></td>
-                      <td data-label="Notes"><input value={item.notes ?? item.remarks ?? ''} onChange={(event) => editItem(index, 'notes', event.target.value)} /></td>
-                      <td data-label="Source">{formatSource(item.provenance)}</td>
-                      <td data-label="Confidence">{formatConfidence(item.confidence)}</td>
-                      <td data-label="Warnings">{rowWarnings.length > 0 && (
-                        <ul className="warning-list">
-                          {rowWarnings.map((warning, wIndex) => <li key={wIndex}>{warning}</li>)}
-                        </ul>
-                      )}</td>
-                      <td data-label="Actions">
-                        <button type="button" className="danger-btn" onClick={() => removeItem(index)}>Remove</button>
+                    <tr key={item.lineItemId || index} className={item.needsReview && !item.reviewConfirmed ? 'boq-row-flagged' : (rowWarnings.length ? 'row-warnings' : '')}>
+                      <td>{item.needsReview
+                        ? <label className="boq-toggle"><input type="checkbox" aria-label={`Reviewed row ${item.serialNumber || index + 1}`} checked={!!item.reviewConfirmed} onChange={(event) => editItem(index, 'reviewConfirmed', event.target.checked)} /> {item.reviewConfirmed ? 'Yes' : 'Check'}</label>
+                        : <small className="quote-muted">{item.verified ? '✓ verified' : '-'}</small>}</td>
+                      <td {...cell('serialNumber')}><input className="quote-input-short" aria-label="BOQ S.No" value={item.serialNumber ?? ''} onChange={(event) => editItem(index, 'serialNumber', event.target.value)} /><input aria-label="Item code" className={flagged('itemCode').length || (item.checks || []).some((check) => check.code === 'item_code_suspicious') ? 'boq-input-flagged' : ''} value={item.itemCode ?? ''} onChange={(event) => editItem(index, 'itemCode', event.target.value)} /></td>
+                      <td className="quote-desc"><textarea rows={2} value={item.description ?? item.product ?? ''} title={item.rawDescription ? `OCR text: ${item.rawDescription}` : ''} onChange={(event) => editItem(index, 'description', event.target.value)} />
+                        {item.rawDescription && item.rawDescription !== item.description && <details><summary>Raw OCR text</summary><p className="quote-muted">{item.rawDescription}</p></details>}</td>
+                      <td {...cell('size')}><input className="quote-input-short" value={item.size ?? ''} onChange={(event) => editItem(index, 'size', event.target.value)} /></td>
+                      <td><input value={item.specification ?? ''} onChange={(event) => editItem(index, 'specification', event.target.value)} /></td>
+                      <td className="num" {...cell('quantity')}><input className="quote-input-num" value={item.quantity ?? ''} onChange={(event) => editItem(index, 'quantity', event.target.value)} /></td>
+                      <td {...cell('unit')}><input className="quote-input-short" value={item.unit ?? ''} onChange={(event) => editItem(index, 'unit', event.target.value)} /></td>
+                      <td className="num" {...cell('rate')}><input className="quote-input-num" value={item.rate ?? ''} onChange={(event) => editItem(index, 'rate', event.target.value)} /></td>
+                      <td className="num" {...cell('amount')}><input className="quote-input-num" value={item.amount ?? ''} onChange={(event) => editItem(index, 'amount', event.target.value)} /></td>
+                      <td>{item.provenance?.page
+                        ? (sourcePdfUrl ? <a href={`${sourcePdfUrl}#page=${item.provenance.page}`} target="_blank" rel="noreferrer">p.{item.provenance.page}</a> : `p.${item.provenance.page}`)
+                        : formatSource(item.provenance)}</td>
+                      <td className="boq-issues">
+                        {issues.map((entry, eIndex) => (
+                          <span key={eIndex} className={entry.level === 'error' ? 'quote-flag-error' : 'quote-flag-warning'}>
+                            {entry.isCheck ? entry.message : <><strong>{entry.field}</strong>: {String(entry.original)} → {String(entry.corrected)} <em>({entry.reason})</em></>}
+                          </span>
+                        ))}
+                        {rowWarnings.filter((warning) => !/^Missing size$/.test(warning) && !(item.verified && /over 100x the document median/.test(warning))).map((warning, wIndex) => <span key={`w${wIndex}`} className="quote-muted">{warning}</span>)}
                       </td>
+                      <td><button type="button" className="danger-btn" onClick={() => removeItem(index)}>Remove</button></td>
                     </tr>
                   )
                 })}
               </tbody>
             </table>
-            <div className="button-row" style={{ marginTop: '8px' }}>
-              <button type="button" className="secondary-btn" onClick={addItem}>Add row</button>
-              <button type="button" className="secondary-btn" onClick={() => saveReview('review')} disabled={busy}>Save changes</button>
-              <button type="button" className="primary-btn" onClick={() => saveReview('confirmed')} disabled={busy}>Confirm requirement sheet</button>
-            </div>
+          </div>
+          <div className="button-row" style={{ marginTop: '8px' }}>
+            <button type="button" className="secondary-btn" onClick={addItem}>Add row</button>
+            <button type="button" className="secondary-btn" onClick={() => saveReview('review')} disabled={busy}>Save changes</button>
+            <button type="button" className="primary-btn" onClick={() => saveReview('confirmed')} disabled={busy || pendingReview > 0} title={pendingReview ? 'Review every flagged row first' : ''}>Confirm requirement sheet</button>
+            {pendingReview > 0 && <small className="file-note">{pendingReview} flagged row(s) still need review: check each against the scan, correct it if needed, then tick “Reviewed”.</small>}
           </div>
         </section>
       )}

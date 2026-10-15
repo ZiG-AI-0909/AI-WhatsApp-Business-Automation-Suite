@@ -521,10 +521,10 @@ async function test7_nativePdfUsesVisualTableReconstruction() {
                 rows: [
                     [box('S.No', 20, 100, 55), box('Description', 100, 100, 225), box('Quantity', 600, 100, 665), box('Unit', 700, 100, 730), box('Rate', 780, 100, 820), box('Amount', 870, 100, 930)],
                     row('97', 'Prime Coat including preparation of surface', '', '', '', '', 130),
-                    row('', 'and spraying a uniform coat', '53847.5', 'm²', '4807.66', '259000000.00', 141),
+                    row('', 'and spraying a uniform coat', '53847.5', 'm²', '4807.66', '258880471.85', 141),
                     row('98', 'HDPE pipe 200mm PE80 PN6', '125', 'm', '121.25', '15156.25', 170),
                     row('99', 'HDPE pipe 600mm SN8 DWC', '48', 'm³', '300.00', '14400.00', 190),
-                    row('100', 'HDPE pipe 250mm SN8 DWC', '300', 'No.', '4807.66', '100.00', 210),
+                    row('100', 'HDPE pipe 250mm SN8 DWC', '300', 'No.', '4807.66', '1442298.00', 210),
                     row('101', 'HDPE pipe 300mm SN8 DWC', '75', 'Each', '437.32', '32799.00', 230),
                 ],
             }],
@@ -544,14 +544,21 @@ async function test7_nativePdfUsesVisualTableReconstruction() {
         const primer = items.find((item) => item.serialNumber === '97');
         assert.match(primer.description, /Prime Coat including preparation of surface and spraying a uniform coat/);
         assert.equal(primer.quantity, 53847.5);
-        assert.equal(primer.unit, 'm²');
+        // Units are normalised (m² -> m2); the OCR text stays on the row.
+        assert.equal(primer.unit, 'm2');
+        assert.equal(primer.ocr.unit, 'm²');
+        assert.equal(primer.verified, true, 'qty x rate = amount holds for the source row');
         assert.equal(primer.sourceValues.Rate, '4807.66');
-        assert.equal(primer.sourceValues.Amount, '259000000.00');
+        assert.equal(primer.sourceValues.Amount, '258880471.85');
         const hdpe = items.filter((item) => /HDPE pipe/.test(item.description));
         assert.deepEqual(hdpe.map((item) => item.description.match(/\d+mm[^ ]*(?: [^ ]+)*/)?.[0]), [
             '200mm PE80 PN6', '600mm SN8 DWC', '250mm SN8 DWC', '300mm SN8 DWC',
         ]);
-        assert.deepEqual(hdpe.map((item) => [item.quantity, item.unit]), [[125, 'm'], [48, 'm³'], [300, 'No.'], [75, 'Each']]);
+        assert.deepEqual(hdpe.map((item) => [item.quantity, item.ocr.unit]), [[125, 'm'], [48, 'm³'], [300, 'No.'], [75, 'Each']], 'source unit cells stay in their own columns');
+        // A pipe billed in m³ is a misread superscript: repaired to m and flagged.
+        assert.deepEqual(hdpe.map((item) => item.unit), ['m', 'm', 'No', 'each']);
+        assert.ok(hdpe[1].corrections.some((entry) => entry.field === 'unit' && entry.original === 'm³' && entry.corrected === 'm' && entry.level === 'warning'));
+        assert.equal(hdpe[1].needsReview, true);
         assert.ok(primer.provenance.cellBounds.some((cell) => cell.column === 5 && cell.boundingBox.points.length > 0));
         assert.equal(getBody().extraction_metadata.strategy, 'pdf_visual_tables');
         assert.ok(getBody().extraction_metadata.pages[0].rows.length > 0);

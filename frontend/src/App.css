@@ -743,3 +743,17 @@ tr.row-warnings { background: rgba(245, 158, 11, 0.08); }
 @media (max-width: 920px) {
   .quote-bottom { grid-template-columns: 1fr; }
 }
+
+/* ─── BOQ review (flagged OCR corrections) ─────────────────── */
+.boq-validation { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.boq-validation summary { cursor: pointer; }
+.boq-review-tools { align-items: center; margin-bottom: 8px; }
+.boq-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: .86rem; color: var(--text-secondary); white-space: nowrap; }
+.boq-review-table { min-width: 1500px; }
+.boq-review-table td input + input { margin-top: 4px; }
+.boq-row-flagged td:first-child { box-shadow: inset 4px 0 0 var(--warning); }
+.boq-cell-flagged input, .boq-input-flagged { background: var(--warning-bg); border-color: var(--warning) !important; }
+.boq-issues { min-width: 260px; }
+.boq-issues em { font-style: normal; opacity: .8; }
+.boq-review-table .quote-input-short { min-width: 64px; }
+.boq-review-table input[aria-label="Item code"] { min-width: 96px; }

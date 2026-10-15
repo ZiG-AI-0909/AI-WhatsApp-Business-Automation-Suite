@@ -74,6 +74,23 @@ duplicate a finished campaign into an editable draft, including its attachment
 reference; the shared media object is retained until no campaign references it.
 Apply the migration before using these controls.
 
+### BOQ extraction checks
+
+Extracted BOQ rows pass through `backend/src/documents/boqRowRepair.js`. On
+scanned PDFs it drops page footers, signatures, stamps and blank rows, merges
+descriptions wrapped onto extra rows, and keeps the BOQ's own S.No and Item
+Code. Every row is checked against the BOQ itself: qty × rate = amount
+(Rs 1 tolerance), the rate in words, and the printed total. Decimal points
+read as spaces or commas ("45398 80", "78,00") are resolved by that check, a
+missing quantity is recovered from amount ÷ rate, and unit superscripts
+(m² vs m³) are repaired from the description. Nothing changes silently: each
+row keeps the OCR values and a list of corrections (original, corrected,
+reason), the raw OCR description is kept next to the cleaned text, and every
+flagged row must be ticked **Reviewed** before the sheet can be confirmed
+(`PUT /api/boq/:id` returns 409 otherwise). The RFQ export now carries the
+BOQ S.No and Item Code. No migration is needed (rows are stored in the
+existing `boq_documents.items` JSON).
+
 ### BOQ to Quotation
 
 Tender BOQs are mostly civil works; only the pipe lines are ours. On a

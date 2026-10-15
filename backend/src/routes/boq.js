@@ -4,6 +4,7 @@ const ExcelJS = require('exceljs');
 const db = require('../database/db');
 const boqExtractor = require('../documents/boqExtractor');
 const documentModel = require('../documents/documentModel');
+const boqRowRepair = require('../documents/boqRowRepair');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
 const { aiExtractLimiter } = require('../middleware/rateLimiterMiddleware');
 const { resolveAiConfig } = require('../utils/aiConfig');
@@ -830,6 +831,15 @@ router.post('/process', aiExtractLimiter, upload.single('file'), async (req, res
             return;
         }
         const wasCancelled = job.controller.signal.aborted;
+        // Row repair + numeric validation against the BOQ's own columns
+        // (qty x rate = amount, rate in words, printed total). OCR tables
+        // also get footer/stamp removal and continuation-row merging.
+        const repaired = boqRowRepair.repairExtractedItems(items, {
+            documentText,
+            mergeContinuations: usedOcr || usedVisualOcr,
+        });
+        items = repaired.items;
+        console.log(`[boq:${userId}] row repair: ${repaired.summary.rowsIn} source row(s) -> ${repaired.summary.items} item(s), ${repaired.summary.dropped.length} dropped, ${repaired.summary.verifiedRows} verified by qty x rate = amount, ${repaired.summary.needsReview} need review${repaired.summary.difference !== null ? `, sum vs printed total differs by ${repaired.summary.difference}` : ''}`);
         const warnings = boqExtractor.flagAll(items);
         const extractionMetadata = {
             version: 1,
@@ -845,6 +855,7 @@ router.post('/process', aiExtractLimiter, upload.single('file'), async (req, res
             pages: document.pages || [],
             sheets: (document.sheets || []).map((sheet) => ({ name: sheet.name, tables: sheet.tables || [] })),
             tables: structuredTables,
+            validation: repaired.summary,
         };
 
         const dbStart = Date.now();
@@ -956,9 +967,19 @@ router.put('/:id', async (req, res) => {
         const doc = await db.getById('boq_documents', req.params.id, req.user.id);
         if (!doc) return res.status(404).json({ error: 'Document not found.' });
 
-        const items = (Array.isArray(req.body?.items) ? req.body.items : []).map(boqExtractor.cleanItem);
-        if (!items.length) return res.status(400).json({ error: 'items must be a non-empty array.' });
+        const cleaned = (Array.isArray(req.body?.items) ? req.body.items : []).map(boqExtractor.cleanItem);
+        if (!cleaned.length) return res.status(400).json({ error: 'items must be a non-empty array.' });
         const status = ['review', 'confirmed'].includes(req.body?.status) ? req.body.status : doc.status;
+        // Re-check edited rows (qty x rate = amount); a confirmation is kept
+        // only while the row's numbers stay as they were confirmed.
+        const items = boqRowRepair.revalidateItems(cleaned, parseJsonArray(doc.items));
+        const unreviewed = boqRowRepair.unreviewedRows(items);
+        if (status === 'confirmed' && unreviewed.length) {
+            return res.status(409).json({
+                error: `${unreviewed.length} flagged row(s) must be reviewed before the BOQ can be confirmed (S.No ${unreviewed.slice(0, 12).map(({ item, index }) => item.serialNumber || `row ${index + 1}`).join(', ')}${unreviewed.length > 12 ? ', …' : ''}).`,
+                unreviewed: unreviewed.map(({ index }) => index),
+            });
+        }
 
         // Re-run the rule-based flags on the edited rows so warnings stay
         // truthful after edits (duplicates/outliers may appear or vanish).
@@ -989,12 +1010,16 @@ router.delete('/:id', async (req, res) => {
 
 // ─── RFQ export (Excel + PDF), regenerated from the stored rows ───
 
-const RFQ_HEADERS = ['S.No', 'Product', 'Size', 'Specification', 'Quantity', 'Unit', 'Application / Remarks'];
+// The BOQ's own S.No and Item Code are kept next to the export's running
+// number, so every RFQ line can be traced back to the tender document.
+const RFQ_HEADERS = ['S.No', 'BOQ S.No', 'Item Code', 'Product', 'Size', 'Specification', 'Quantity', 'Unit', 'Application / Remarks'];
 
 function rfqRows(doc) {
     const items = parseJsonArray(doc.items);
     return items.map((item, index) => ({
         'S.No': index + 1,
+        'BOQ S.No': item.serialNumber || '',
+        'Item Code': item.itemCode || '',
         'Product': item.product || item.description || '',
         'Size': item.size || '',
         'Specification': item.specification || '',
@@ -1049,7 +1074,8 @@ function buildRfqPdf(doc) {
     for (const row of rows) {
         const qty = [row.Quantity, row.Unit].filter(Boolean).join(' ');
         const spec = row.Specification ? ` | ${row.Specification}` : '';
-        lines.push({ text: `${row['S.No']}. ${row.Product || '(product not stated)'} — ${row.Size || '(size missing)'}${spec}` });
+        const boqRef = [row['BOQ S.No'] && `BOQ ${row['BOQ S.No']}`, row['Item Code']].filter(Boolean).join(' / ');
+        lines.push({ text: `${row['S.No']}. ${boqRef ? `[${boqRef}] ` : ''}${row.Product || '(product not stated)'} — ${row.Size || '(size missing)'}${spec}` });
         lines.push({ text: `      Qty: ${qty || '(missing)'}${row['Application / Remarks'] ? ` | ${row['Application / Remarks']}` : ''}` });
     }
     lines.push({ text: '' });
