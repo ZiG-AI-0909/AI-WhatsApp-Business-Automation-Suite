@@ -48,10 +48,11 @@ queue changes; the backend checks for it at startup and once per minute.
 11. `supabase-unread-increment-migration.sql` — atomic unread counter RPC.
 12. `supabase-schedule-estimate-migration.sql` — schedule estimate cache.
 13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability, queue, and duplicate-draft changes; includes campaign media metadata, queue columns/index, source campaign id, recipient-row data, and atomic per-user queue RPCs.**
-14. **`supabase-quotation-migration.sql` — required before deploying BOQ-to-Quotation; run after `supabase-boq-migration.sql`. Adds per-user price lists, quotations, line items, audit history, and sequential numbering RPCs.**
+14. **`supabase-quotation-migration.sql` — required before deploying BOQ to Quotation; run after `supabase-boq-migration.sql` (it needs `boq_documents` and `set_updated_at()`). Adds `quotations`, `quotation_items`, the per-user per-financial-year `quotation_counters` table and the `finalize_quotation` RPC that assigns `SP/2026-27/0001` atomically. Idempotent; if the earlier price-list version of this file was already run, rerun this one to upgrade those tables in place (no data is dropped).**
 
 Run the startup guard's migration if it logs:
-`Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`.
+`Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`
+(or the same message naming `supabase-quotation-migration.sql`).
 
 Campaign attachments use the `campaign-media` Supabase Storage bucket. At
 startup, the backend creates it as private if it is missing and logs its
@@ -75,15 +76,53 @@ Apply the migration before using these controls.
 
 ### BOQ to Quotation
 
-After confirming a BOQ, open **BOQ to Quotation** in Document Intelligence.
-Import your catalogue from Excel/CSV (or download its template), review the
-suggested matches, and manually price every unmatched line before finalizing.
-Quotation totals and GST are calculated by the backend; the company address,
-state, GSTIN, phone, email, logo data URL, and bank details are read from
-Settings. PDF and Excel exports are available, and a finalized draft can be
-sent as a single WhatsApp document after confirming the customer number.
-Run `supabase-quotation-migration.sql` after `supabase-boq-migration.sql`
-before deploying this feature. No new Render environment variables are needed.
+Tender BOQs are mostly civil works; only the pipe lines are ours. On a
+**confirmed** BOQ in Document Intelligence, click **Create quotation**
+(idempotent per BOQ: it reopens the existing quotation).
+
+1. **Review pipe lines.** A rule-based detector
+   (`backend/src/documents/pipeLineDetector.js`) classifies every BOQ line as
+   *plastic pipe* (HDPE, PE80/PE100, PVC, uPVC, OPVC, DWC/SWC, SN/PN classes,
+   IS 4984, IS 16098, IS 15778: section A), *other pipe* (stoneware, RCC/hume,
+   DI/CI, GI, steel: section B, review) or *not a pipe* (manholes, signs on
+   "pipe 65 NB", earth electrodes, trench excavation: stored but excluded).
+   Each line shows confidence, reasons, spec chips and its BOQ page/row; any
+   line can be included, excluded or moved between A and B. Composite items
+   (weep holes with PVC pipe) are marked "composite item: quote pipe supply only".
+2. **Enter rates.** Rates start **empty** and are typed by you. The BOQ
+   rate/amount columns are the customer's installed contract rates: they are
+   kept only as a reference (`ref_rate`), shown as a hint, warned about when
+   your rate is higher, and **never** copied into the quotation rate. All
+   totals (sub-total, discount, freight, taxable value, CGST + SGST or IGST,
+   grand total, amount in words) are calculated by the server; empty rates
+   count as 0 and are reported as unpriced lines.
+3. **Finalize.** Allowed only when every included line has a rate above 0,
+   the customer name is filled, the company address and GSTIN are in Settings,
+   and no `[bracketed]` placeholder is left. The number
+   `SP/<financial year>/0001` (April to March, by quotation date in IST) is
+   assigned atomically in the database, and the quotation becomes read-only
+   (use **Duplicate** to revise).
+
+At creation the BOQ is checked but never corrected: each line's
+qty x contract rate is compared with the printed amount (Rs 1 tolerance), and
+the sum of all amounts with the printed total. Mismatches are flagged "qty or
+rate may be misread: verify against the scan".
+
+Exports: **Excel** reproduces the reference quotation workbook (yellow input
+cells with blue text, live formulas for amounts, tax and totals, supply-type
+drop-down, terms, signature, legend). **Excel + internal sheet**
+(`?internal=1`) adds the "Internal - do not send" sheet with the BOQ contract
+rates, the qty x rate check and our rate vs contract rate. **PDF** (pdfkit) is
+the customer copy, with repeating table headers and page numbers; it never
+contains contract rates. **Send via WhatsApp** sends one PDF to one number you
+type and confirm, through your connected session, and marks the quotation
+*sent*.
+
+Company header details (name, address, state, GSTIN, phone, email, bank
+details, optional logo) come from **Settings → Quotation company profile**.
+No new environment variables or npm packages are needed (pdfkit and exceljs
+were already dependencies). The earlier price-list import route is no longer
+mounted; `backend/src/routes/priceList.js` is unused and can be deleted.
 
 ### API smoke check
 
