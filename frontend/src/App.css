@@ -675,3 +675,71 @@ tr.row-warnings { background: rgba(245, 158, 11, 0.08); }
 
 /* ── Knowledge Base: internal-only badge ─────────────────────── */
 .internal-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: .68rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; background: rgba(124, 58, 237, .14); color: #7c3aed; border: 1px solid rgba(124, 58, 237, .35); }
+
+/* ─── BOQ -> Quotation ─────────────────────────────────────── */
+.quotation-workspace { display: flex; flex-direction: column; gap: 16px; }
+.quote-filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.quote-filters .form-label { flex: 1 1 220px; }
+.quote-filters select, .quote-header-grid select { border: 1px solid var(--border); background: var(--surface); color: var(--text-primary); border-radius: 10px; padding: 11px 12px; }
+/* Tables scroll sideways on phones instead of collapsing into cards. */
+.quote-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border-subtle); border-radius: 10px; }
+.quote-table { min-width: 860px; }
+.quote-table th, .quote-table td { padding: 8px; vertical-align: top; cursor: default; }
+.quote-table td.num, .quote-table th.num { text-align: right; white-space: nowrap; }
+.quote-table td small { display: block; }
+.quote-table input, .quote-table select, .quote-table textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--surface); color: var(--text-primary); font: inherit; font-size: .86rem; }
+.quote-table input[type="checkbox"] { width: 18px; height: 18px; }
+.quote-table textarea { resize: vertical; min-height: 44px; }
+.quote-edit-table { min-width: 1180px; }
+.quote-review-table { min-width: 980px; }
+.quote-review-table select { min-width: 118px; }
+.quote-muted { color: var(--text-muted); font-size: .78rem; }
+.quote-empty { padding: 14px; margin: 0; }
+.quote-clip { max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quote-desc { min-width: 300px; }
+.quote-desc details { margin-top: 4px; }
+.quote-desc summary { cursor: pointer; color: var(--accent-hover); font-size: .78rem; }
+.quote-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.quote-chip { background: var(--accent-bg); border: 1px solid var(--accent-border); color: var(--text-secondary); border-radius: 999px; padding: 1px 8px; font-size: .74rem; }
+.quote-class { display: inline-block; border-radius: 6px; padding: 2px 8px; font-size: .78rem; font-weight: 600; white-space: nowrap; }
+.quote-class-pipe_plastic { background: var(--success-bg); color: var(--success-text); }
+.quote-class-pipe_other { background: var(--warning-bg); color: var(--warning-text); }
+.quote-class-not_pipe { background: var(--surface-muted); color: var(--text-muted); }
+.quote-row-excluded td { opacity: .6; }
+.quote-row-active { background: var(--accent-bg); }
+.quote-section-row td { background: var(--surface-muted); color: var(--text-primary); font-weight: 700; }
+.quote-input-short { max-width: 72px; }
+.quote-input-num { min-width: 96px; text-align: right; }
+/* Same convention as the reference workbook: yellow input, blue text. */
+.quote-table .quote-rate-input { background: #FFF2CC; color: #0000FF; font-weight: 600; }
+.quote-table .quote-rate-empty { border: 2px solid var(--danger); }
+.quote-row-unpriced td:first-child { box-shadow: inset 4px 0 0 var(--danger); }
+.quote-checks { min-width: 170px; }
+.quote-flag-error, .quote-flag-warning { display: block; border-radius: 6px; padding: 2px 6px; margin-bottom: 4px; font-size: .76rem; }
+.quote-flag-error { background: var(--danger-bg); color: var(--danger-text); }
+.quote-flag-warning { background: var(--warning-bg); color: var(--warning-text); }
+.quote-status { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: .76rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.quote-status-draft { background: var(--warning-bg); color: var(--warning-text); }
+.quote-status-final { background: var(--accent-bg); color: var(--text-secondary); }
+.quote-status-sent { background: var(--success-bg); color: var(--success-text); }
+.quote-header-grid { margin-bottom: 14px; }
+.quote-header-grid textarea { min-height: 72px; }
+.quote-header-numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.quote-placeholder input, .quote-placeholder textarea, .quote-input-placeholder { background: #FFF2CC; border-color: var(--warning) !important; }
+.quote-placeholder small { color: var(--warning-text); }
+.quote-bottom { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; margin-top: 16px; }
+.quote-terms h3, .quote-totals h3 { margin: 0 0 8px; font-size: 1rem; }
+.quote-term { display: flex; gap: 8px; margin-bottom: 8px; align-items: flex-start; }
+.quote-term textarea { flex: 1; min-height: 54px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; font: inherit; font-size: .86rem; }
+.quote-totals { background: var(--surface-subtle); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 14px; align-self: start; }
+.quote-totals dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0 0 8px; font-size: .9rem; }
+.quote-totals dt { color: var(--text-secondary); }
+.quote-totals dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.quote-totals .quote-grand { font-weight: 800; color: var(--text-primary); border-top: 1px solid var(--border); padding-top: 6px; }
+.quote-blockers { background: var(--danger-bg); color: var(--danger-text); border-radius: 8px; padding: 8px 10px; font-size: .84rem; }
+.quote-blockers ul { margin: 4px 0 0; padding-left: 18px; }
+.quote-actions { margin-top: 14px; }
+.quote-send { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; gap: 8px; max-width: 460px; }
+@media (max-width: 920px) {
+  .quote-bottom { grid-template-columns: 1fr; }
+}

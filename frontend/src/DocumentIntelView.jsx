@@ -30,7 +30,10 @@ export default function DocumentIntelView() {
   const [extracting, setExtracting] = useState(false)
   const [exporting, setExporting] = useState('')
   const [progress, setProgress] = useState(null)
+  const [openedQuote, setOpenedQuote] = useState(null)
+  const [creatingQuote, setCreatingQuote] = useState(false)
   const activeExtraction = useRef(null)
+  const quotationRef = useRef(null)
 
   const load = async () => {
     try {
@@ -230,6 +233,23 @@ export default function DocumentIntelView() {
     }
   }
 
+  // Creates (or reopens) the supply-only quotation for this confirmed BOQ.
+  // The backend is idempotent per BOQ, so a second click opens the same draft.
+  const createQuotation = async () => {
+    setCreatingQuote(true)
+    try {
+      const quote = await apiFetch(`/boq/${selected.id}/quotation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+      setOpenedQuote(quote)
+      setNotice({ type: 'success', text: quote.created ? 'Quotation draft created. Check which BOQ lines are pipes, then enter your rates.' : 'Opened the existing quotation for this BOQ.' })
+      window.setTimeout(() => quotationRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+    } catch (error) {
+      const raw = error?.message || ''
+      setNotice({ type: 'error', text: [400, 409].includes(error?.status) && raw && !isTechnicalError(raw) ? raw : friendlyErrorMessage(error, { context: 'Create quotation' }) })
+    } finally {
+      setCreatingQuote(false)
+    }
+  }
+
   const warnCount = selected ? selected.warnings.flat().filter((list) => list && list.length).length : 0
 
   return (
@@ -290,6 +310,7 @@ export default function DocumentIntelView() {
             <div className="button-row">
               <button type="button" className="secondary-btn" onClick={() => exportRfq('excel')} disabled={!!exporting || !selected.items.length || selected.status !== 'confirmed'}>{exporting === 'excel' ? 'Building…' : 'Export RFQ (Excel)'}</button>
               <button type="button" className="secondary-btn" onClick={() => exportRfq('pdf')} disabled={!!exporting || !selected.items.length || selected.status !== 'confirmed'}>{exporting === 'pdf' ? 'Building…' : 'Export RFQ (PDF)'}</button>
+              <button type="button" className="primary-btn" onClick={createQuotation} disabled={creatingQuote || !selected.items.length || selected.status !== 'confirmed'} title={selected.status === 'confirmed' ? 'Build a supply-only quotation for the pipe lines in this BOQ' : 'Confirm the requirement sheet first'}>{creatingQuote ? 'Preparing…' : 'Create quotation'}</button>
             </div>
           </div>
 
@@ -334,7 +355,9 @@ export default function DocumentIntelView() {
         </section>
       )}
 
-      <QuotationView document={selected?.status === 'confirmed' ? selected : null} />
+      <div ref={quotationRef}>
+        <QuotationView key={openedQuote ? `quote-${openedQuote.id}-${openedQuote.updated_at}` : 'quotes'} initialQuote={openedQuote} />
+      </div>
 
       <section className="panel">
         <div className="panel-header">

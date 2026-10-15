@@ -1,35 +1,74 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
-import { friendlyErrorMessage } from './utils/errorMessages.js'
+import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 
-const emptyPriceItem = () => ({
-  item_code: '', name: '', category: '', size: '', pressure_class: '',
-  specification: '', unit: '', rate: '', hsn_code: '', gst_percent: 18,
-})
+// BOQ -> Quotation. Step 1 reviews the detector's pipe-line selection over
+// every BOQ line; step 2 edits a supply-only quotation. Rates start empty and
+// are typed here; every total shown comes from the server response.
 
-const money = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const money = (value) => value === null || value === undefined || value === ''
+  ? '' : Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const PLACEHOLDER = /\[[^\]\n]{1,160}\]/
+const hasPlaceholder = (text) => PLACEHOLDER.test(String(text || ''))
+const CLASS_LABELS = { pipe_plastic: 'Plastic pipe', pipe_other: 'Other pipe', not_pipe: 'Not a pipe' }
+const HEADER_FIELDS = ['customer_name', 'customer_address', 'customer_gstin', 'project_name', 'reference_text', 'quote_date', 'validity_days', 'supply_type', 'gst_percent', 'discount_percent', 'freight', 'terms']
+const LINE_FIELDS = ['include', 'section', 'description', 'unit', 'qty', 'rate', 'hsn', 'remarks']
 
-export default function QuotationView({ document: boqDocument }) {
-  const [tab, setTab] = useState('quotations')
+const formatSource = (source = {}) => [
+  source.page ? `p.${source.page}` : '',
+  source.sheet ? source.sheet : '',
+  source.row ? `row ${source.row}` : '',
+].filter(Boolean).join(' · ')
+
+function errorText(error, context) {
+  const raw = error?.message || ''
+  if ([400, 409, 422, 502].includes(error?.status) && raw && !isTechnicalError(raw)) return raw
+  return friendlyErrorMessage(error, { context })
+}
+
+function specChips(spec = {}) {
+  return [
+    spec.material,
+    spec.grade,
+    spec.pressure_class,
+    spec.stiffness_class,
+    spec.np_class,
+    spec.standard,
+    spec.size_mm ? `${spec.size_mm} mm` : '',
+    spec.supply_form === 'coil' ? 'coil' : '',
+    spec.scope === 'installed' ? 'BOQ rate = installed' : '',
+  ].filter(Boolean)
+}
+
+function headerFrom(quote) {
+  return Object.fromEntries(HEADER_FIELDS.map((field) => [field, field === 'terms' ? (quote.terms || []).map((term) => ({ ...term })) : (quote[field] ?? '')]))
+}
+
+function lineFrom(item) {
+  return Object.fromEntries(LINE_FIELDS.map((field) => [field, ['qty', 'rate'].includes(field) ? (item[field] ?? '') : item[field]]))
+}
+
+function sameValue(a, b) {
+  if ((a === '' || a === null || a === undefined) && (b === '' || b === null || b === undefined)) return true
+  if (typeof a === 'number' || typeof b === 'number') return Number(a) === Number(b)
+  return a === b
+}
+
+export default function QuotationView({ initialQuote = null }) {
   const [quotes, setQuotes] = useState([])
-  const [priceItems, setPriceItems] = useState([])
-  const [quote, setQuote] = useState(null)
-  const [matches, setMatches] = useState([])
-  const [file, setFile] = useState(null)
-  const [preview, setPreview] = useState(null)
-  const [priceSearch, setPriceSearch] = useState('')
-  const [editingPrice, setEditingPrice] = useState(null)
-  const [draftPrice, setDraftPrice] = useState(emptyPriceItem())
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [quote, setQuote] = useState(initialQuote)
+  const [step, setStep] = useState(initialQuote?.status === 'draft' && initialQuote?.created ? 'review' : 'edit')
+  const [header, setHeader] = useState(initialQuote ? headerFrom(initialQuote) : null)
+  const [lines, setLines] = useState(() => initialQuote ? Object.fromEntries(initialQuote.items.map((item) => [item.id, lineFrom(item)])) : {})
+  const [lineFilter, setLineFilter] = useState('pipes')
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
-  const [amountWords, setAmountWords] = useState('')
+  const [sendPhone, setSendPhone] = useState('')
+  const [sendOpen, setSendOpen] = useState(false)
 
-  const loadPriceItems = async (term = '') => {
-    const result = await apiFetch(`/boq/price-list?limit=200${term ? `&search=${encodeURIComponent(term)}` : ''}`)
-    setPriceItems(result.data || [])
-  }
+  const readOnly = !quote || quote.status !== 'draft'
 
   const loadQuotes = async () => {
     const params = new URLSearchParams()
@@ -40,283 +79,347 @@ export default function QuotationView({ document: boqDocument }) {
   }
 
   useEffect(() => {
-    loadPriceItems().catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Price list' }) }))
-    loadQuotes().catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Quotations' }) }))
-  }, [])
-
-  useEffect(() => {
-    loadQuotes().catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Quotations' }) }))
+    const timer = setTimeout(() => {
+      loadQuotes().catch((error) => setNotice({ type: 'error', text: errorText(error, 'Quotations') }))
+    }, 250)
+    return () => clearTimeout(timer)
   }, [search, statusFilter])
 
-  const showError = (error, context) => setNotice({ type: 'error', text: friendlyErrorMessage(error, { context }) })
-  const patchQuote = (changes) => setQuote((current) => ({ ...current, ...changes }))
-  const patchLine = (lineIndex, changes) => setQuote((current) => ({
-    ...current,
-    items: current.items.map((item, index) => index === lineIndex ? { ...item, ...changes } : item),
-  }))
+  const applyQuote = (next, nextStep) => {
+    setQuote(next)
+    setHeader(headerFrom(next))
+    setLines(Object.fromEntries(next.items.map((item) => [item.id, lineFrom(item)])))
+    if (nextStep) setStep(nextStep)
+  }
 
-  const download = async (path, filename) => {
+  const itemsById = useMemo(() => Object.fromEntries((quote?.items || []).map((item) => [item.id, item])), [quote])
+
+  const dirtyLines = useMemo(() => Object.entries(lines).flatMap(([id, line]) => {
+    const item = itemsById[id]
+    if (!item) return []
+    const original = lineFrom(item)
+    const changed = LINE_FIELDS.filter((field) => !sameValue(line[field], original[field]))
+    return changed.length ? [{ id: item.id, ...Object.fromEntries(changed.map((field) => [field, line[field]])) }] : []
+  }), [lines, itemsById])
+
+  const dirtyHeader = useMemo(() => {
+    if (!quote || !header) return {}
+    const original = headerFrom(quote)
+    return Object.fromEntries(HEADER_FIELDS.filter((field) => field === 'terms'
+      ? JSON.stringify(header.terms) !== JSON.stringify(original.terms)
+      : !sameValue(header[field], original[field])).map((field) => [field, header[field]]))
+  }, [header, quote])
+
+  const dirty = dirtyLines.length > 0 || Object.keys(dirtyHeader).length > 0
+
+  const openQuote = async (id, nextStep = 'edit') => {
+    setBusy(true)
+    try {
+      applyQuote(await apiFetch(`/quotations/${id}`), nextStep)
+      setNotice({ type: '', text: '' })
+    } catch (error) {
+      setNotice({ type: 'error', text: errorText(error, 'Quotation') })
+    } finally { setBusy(false) }
+  }
+
+  // Saves header then lines; returns the server view (with server totals).
+  const save = async ({ quiet = false } = {}) => {
+    if (!quote || readOnly) return quote
+    let latest = quote
+    if (Object.keys(dirtyHeader).length) {
+      latest = await apiFetch(`/quotations/${quote.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dirtyHeader) })
+    }
+    if (dirtyLines.length) {
+      latest = await apiFetch(`/quotations/${quote.id}/items`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: dirtyLines }) })
+    }
+    applyQuote(latest)
+    if (!quiet) setNotice({ type: 'success', text: 'Saved. Totals recalculated by the server.' })
+    return latest
+  }
+
+  const run = async (task, context) => {
+    setBusy(true)
+    try { await task() } catch (error) {
+      setNotice({ type: 'error', text: errorText(error, context) })
+    } finally { setBusy(false) }
+  }
+
+  const continueToEditor = () => run(async () => {
+    await save({ quiet: true })
+    setStep('edit')
+    setNotice({ type: 'info', text: 'Enter a rate for every included line. Rates are your supply prices; the BOQ contract rate is shown only for reference.' })
+  }, 'Save selection')
+
+  const finalize = () => run(async () => {
+    const saved = await save({ quiet: true })
+    if (!saved.finalize?.ready) {
+      setNotice({ type: 'error', text: 'Resolve the items listed under "Before finalizing" first.' })
+      return
+    }
+    if (!window.confirm('Finalize this quotation? It gets the next quotation number and becomes read-only (you can still duplicate it).')) return
+    const result = await apiFetch(`/quotations/${quote.id}/finalize`, { method: 'POST' })
+    applyQuote(result)
+    await loadQuotes()
+    setNotice({ type: 'success', text: `Quotation ${result.quote_number} finalized.` })
+  }, 'Finalize quotation')
+
+  const duplicate = () => run(async () => {
+    const copy = await apiFetch(`/quotations/${quote.id}/duplicate`, { method: 'POST' })
+    applyQuote(copy, 'edit')
+    await loadQuotes()
+    setNotice({ type: 'success', text: 'Copied into a new editable draft.' })
+  }, 'Duplicate quotation')
+
+  const remove = () => run(async () => {
+    if (!window.confirm('Delete this draft quotation?')) return
+    await apiFetch(`/quotations/${quote.id}`, { method: 'DELETE' })
+    setQuote(null)
+    await loadQuotes()
+    setNotice({ type: 'success', text: 'Draft deleted.' })
+  }, 'Delete quotation')
+
+  const download = (kind) => run(async () => {
+    if (!readOnly && dirty) await save({ quiet: true })
+    const path = kind === 'pdf' ? `/quotations/${quote.id}/export/pdf` : `/quotations/${quote.id}/export/excel${kind === 'internal' ? '?internal=1' : ''}`
     const response = await apiFetchRaw(path)
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
-      throw new Error(body.error || `Download failed (${response.status})`)
+      const error = new Error(body.error || `Download failed (${response.status})`)
+      error.status = response.status
+      throw error
     }
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
+    const base = (quote.quote_number || `draft-quotation-${quote.id}`).replace(/[^A-Za-z0-9-]+/g, '-')
     anchor.href = url
-    anchor.download = filename
+    anchor.download = `${base}${kind === 'internal' ? '-INTERNAL' : ''}.${kind === 'pdf' ? 'pdf' : 'xlsx'}`
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }
+  }, 'Quotation download')
 
-  const downloadTemplate = async () => {
-    try { await download('/boq/price-list/template', 'price-list-import-template.xlsx') } catch (error) { showError(error, 'Price-list template') }
-  }
+  const sendWhatsApp = () => run(async () => {
+    const phone = sendPhone.trim()
+    if (!phone) { setNotice({ type: 'error', text: 'Type the customer WhatsApp number.' }); return }
+    if (!window.confirm(`Send quotation ${quote.quote_number} as a PDF to ${phone} on WhatsApp?\n\nOne message to this number only.`)) return
+    const result = await apiFetch(`/quotations/${quote.id}/send-whatsapp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }) })
+    applyQuote(result)
+    setSendOpen(false)
+    await loadQuotes()
+    setNotice({ type: 'success', text: result.message })
+  }, 'Send quotation')
 
-  const previewImport = async () => {
-    if (!file) return
-    setBusy(true)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      setPreview(await apiFetch('/boq/price-list/import/preview', { method: 'POST', body: form }))
-    } catch (error) { showError(error, 'Price-list import preview') } finally { setBusy(false) }
-  }
+  const patchLine = (id, changes) => setLines((current) => ({ ...current, [id]: { ...current[id], ...changes } }))
+  const patchHeader = (changes) => setHeader((current) => ({ ...current, ...changes }))
+  const patchTerm = (index, text) => setHeader((current) => ({ ...current, terms: current.terms.map((term, i) => i === index ? { ...term, text } : term) }))
 
-  const importPriceList = async () => {
-    if (!file || !preview?.valid) return
-    setBusy(true)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      const result = await apiFetch('/boq/price-list/import', { method: 'POST', body: form })
-      setNotice({ type: 'success', text: `${result.imported} catalogue item(s) imported; ${result.skipped} invalid row(s) skipped.` })
-      setFile(null)
-      setPreview(null)
-      await loadPriceItems()
-    } catch (error) { showError(error, 'Price-list import') } finally { setBusy(false) }
-  }
+  const reviewItems = (quote?.items || []).filter((item) => lineFilter === 'all'
+    || lines[item.id]?.include || item.spec?.detection?.classification !== 'not_pipe')
+  const editorGroups = ['A', 'B'].map((section) => ({
+    section,
+    title: section === 'A' ? 'A. Plastic pipes (HDPE / DWC / PVC)' : 'B. Other pipe items (review)',
+    items: (quote?.items || []).filter((item) => lines[item.id]?.include && lines[item.id]?.section === section),
+  })).filter((group) => group.items.length)
 
-  const savePriceItem = async (event) => {
-    event.preventDefault()
-    setBusy(true)
-    try {
-      const saved = await apiFetch(editingPrice ? `/boq/price-list/${editingPrice}` : '/boq/price-list', {
-        method: editingPrice ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draftPrice),
-      })
-      setPriceItems((current) => editingPrice
-        ? current.map((item) => item.id === saved.id ? saved : item)
-        : [saved, ...current])
-      setEditingPrice(null)
-      setDraftPrice(emptyPriceItem())
-      setNotice({ type: 'success', text: 'Price-list item saved.' })
-    } catch (error) { showError(error, 'Price list') } finally { setBusy(false) }
-  }
-
-  const deactivatePriceItem = async (item) => {
-    try {
-      const saved = await apiFetch(`/boq/price-list/${item.id}/deactivate`, { method: 'POST' })
-      setPriceItems((current) => current.filter((row) => row.id !== saved.id))
-    } catch (error) { showError(error, 'Price list') }
-  }
-
-  const openQuote = async (id) => {
-    setBusy(true)
-    try {
-      const loaded = await apiFetch(`/quotations/${id}`)
-      setQuote(loaded)
-      setAmountWords('')
-      if (loaded.boq_document_id) {
-        const result = await apiFetch(`/boq/${loaded.boq_document_id}/quotation/match`, { method: 'POST' })
-        setMatches(result.matches || [])
-      }
-      setTab('quotations')
-    } catch (error) { showError(error, 'Quotation') } finally { setBusy(false) }
-  }
-
-  const createQuotation = async () => {
-    if (!document || document.status !== 'confirmed') return
-    setBusy(true)
-    try {
-      const created = await apiFetch(`/boq/${boqDocument.id}/quotation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
-      setQuote(created)
-      const result = await apiFetch(`/boq/${boqDocument.id}/quotation/match`, { method: 'POST' })
-      setMatches(result.matches || [])
-      await loadQuotes()
-      setNotice({ type: 'success', text: `Draft ${created.quote_number} created. Review every match before finalizing.` })
-    } catch (error) { showError(error, 'Create quotation') } finally { setBusy(false) }
-  }
-
-  const chooseCatalogueItem = (index, itemId) => {
-    const selectedItem = (matches[index]?.candidates || []).find((candidate) => String(candidate.item.id) === String(itemId))?.item
-      || priceItems.find((item) => String(item.id) === String(itemId))
-    if (!selectedItem) {
-      patchLine(index, { match_status: 'unmatched', price_list_item_id: null, rate: null })
-      return
-    }
-    patchLine(index, {
-      price_list_item_id: selectedItem.id,
-      description: selectedItem.name,
-      size: selectedItem.size || quote.items[index].size,
-      unit: selectedItem.unit,
-      rate: selectedItem.rate,
-      gst_percent: selectedItem.gst_percent,
-      hsn_code: selectedItem.hsn_code || '',
-      match_status: 'matched',
-    })
-  }
-
-  const saveQuote = async () => {
-    if (!quote) return
-    setBusy(true)
-    try {
-      const saved = await apiFetch(`/quotations/${quote.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(quote),
-      })
-      setQuote(saved)
-      setNotice({ type: 'success', text: 'Quotation draft saved.' })
-      await loadQuotes()
-    } catch (error) { showError(error, 'Save quotation') } finally { setBusy(false) }
-  }
-
-  const finalizeQuote = async () => {
-    setBusy(true)
-    try {
-      const saved = await apiFetch(`/quotations/${quote.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(quote) })
-      setQuote(saved)
-      const result = await apiFetch(`/quotations/${quote.id}/finalize`, { method: 'POST' })
-      setQuote(result)
-      setAmountWords(result.amount_in_words || '')
-      setNotice({ type: 'success', text: 'All lines are priced. The quotation is ready to export or send.' })
-    } catch (error) { showError(error, 'Finalize quotation') } finally { setBusy(false) }
-  }
-
-  const duplicateQuote = async () => {
-    setBusy(true)
-    try {
-      const copied = await apiFetch(`/quotations/${quote.id}/duplicate`, { method: 'POST' })
-      setQuote(copied)
-      await loadQuotes()
-    } catch (error) { showError(error, 'Duplicate quotation') } finally { setBusy(false) }
-  }
-
-  const sendWhatsApp = async () => {
-    if (!quote?.customer_phone) {
-      setNotice({ type: 'error', text: 'Add the customer phone number before sending.' })
-      return
-    }
-    if (!window.confirm(`Send quotation ${quote.quote_number} as a PDF to ${quote.customer_phone} via WhatsApp?`)) return
-    setBusy(true)
-    try {
-      const result = await apiFetch(`/quotations/${quote.id}/send-whatsapp`, { method: 'POST' })
-      setQuote((current) => ({ ...current, ...result }))
-      setNotice({ type: 'success', text: result.message })
-      await loadQuotes()
-    } catch (error) { showError(error, 'Send quotation') } finally { setBusy(false) }
-  }
-
-  const renderPriceItemForm = () => <form className="settings-grid" onSubmit={savePriceItem}>
-    {[
-      ['item_code', 'Item code'], ['name', 'Description'], ['category', 'Category'], ['size', 'Size'],
-      ['pressure_class', 'PN / pressure class'], ['specification', 'Specification / standard'],
-      ['unit', 'Unit'], ['rate', 'Rate'], ['hsn_code', 'HSN'], ['gst_percent', 'GST %'],
-    ].map(([field, label]) => <label className="form-label" key={field}>{label}
-      <input required={['item_code', 'name', 'unit', 'rate'].includes(field)} type={['rate', 'gst_percent'].includes(field) ? 'number' : 'text'}
-        step={field === 'rate' ? '0.01' : field === 'gst_percent' ? '0.01' : undefined}
-        value={draftPrice[field]} onChange={(event) => setDraftPrice((current) => ({ ...current, [field]: event.target.value }))} />
-    </label>)}
-    <div className="button-row"><button className="primary-btn" disabled={busy}>{editingPrice ? 'Save item' : 'Add item'}</button><button type="button" className="secondary-btn" onClick={() => { setEditingPrice(null); setDraftPrice(emptyPriceItem()) }}>Clear</button></div>
-  </form>
-
-  const renderEditor = () => <section className="panel quotation-editor">
-    <div className="panel-header"><div><p className="eyebrow">Quotation editor</p><h2>{quote.quote_number}</h2><span className="file-note">Status: {quote.status}</span></div><div className="button-row"><button className="secondary-btn" onClick={duplicateQuote} disabled={busy}>Duplicate</button><button className="secondary-btn" onClick={() => setQuote(null)}>Close</button></div></div>
-    <div className="settings-grid">
-      {[
-        ['customer_name', 'Customer name'], ['customer_phone', 'Customer WhatsApp number'], ['customer_address', 'Customer address'],
-        ['customer_state', 'Customer state (for GST split)'], ['customer_gstin', 'Customer GSTIN'], ['project_name', 'Project name'],
-        ['validity_days', 'Validity (days)'], ['payment_terms', 'Payment terms'], ['delivery_terms', 'Delivery terms'],
-        ['freight', 'Freight (₹)'], ['discount_percent', 'Overall discount (%)'], ['notes', 'Notes'],
-      ].map(([field, label]) => <label className="form-label" key={field}>{label}
-        {['notes', 'customer_address', 'payment_terms', 'delivery_terms'].includes(field)
-          ? <textarea value={quote[field] || ''} onChange={(event) => patchQuote({ [field]: event.target.value })} />
-          : <input type={['validity_days', 'freight', 'discount_percent'].includes(field) ? 'number' : 'text'}
-            step={field === 'freight' || field === 'discount_percent' ? '0.01' : undefined}
-            value={quote[field] ?? ''} onChange={(event) => patchQuote({ [field]: event.target.value })} />}
-      </label>)}
+  const renderList = () => <section className="panel">
+    <div className="panel-header">
+      <div><p className="eyebrow">BOQ to Quotation</p><h2>Quotations</h2></div>
     </div>
-    <div className="campaign-table-wrap">
-      <table>
-        <thead><tr><th>BOQ item / source row</th><th>Matched catalogue item</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Discount %</th><th>GST %</th><th>Amount</th></tr></thead>
-        <tbody>{(quote.items || []).map((item, index) => {
-          const options = [
-            ...(matches[index]?.candidates || []).map((candidate) => candidate.item),
-            ...priceItems.filter((row) => `${row.item_code} ${row.name}`.toLowerCase().includes(priceSearch.toLowerCase())).slice(0, 20),
-          ].filter((row, rowIndex, all) => all.findIndex((other) => String(other.id) === String(row.id)) === rowIndex)
-          const source = item.boq_item_ref?.source || {}
-          return <tr key={item.id || item.line_no} className={item.match_status === 'unmatched' ? 'row-warnings' : ''}>
-            <td data-label="BOQ item">{item.boq_item_ref?.original?.product || item.description}<small>Source row {source.row || item.line_no} {source.sheet ? `· ${source.sheet}` : ''}</small></td>
-            <td data-label="Matched product"><input aria-label={`Search price list for line ${index + 1}`} placeholder="Search catalogue" value={priceSearch} onChange={(event) => setPriceSearch(event.target.value)} />
-              <select value={item.price_list_item_id || ''} onChange={(event) => chooseCatalogueItem(index, event.target.value)}>
-                <option value="">Choose catalogue item / manual price</option>{options.map((option) => <option key={option.id} value={option.id}>{option.item_code} · {option.name} · {option.size || ''} · {option.unit} @ {money(option.rate)}</option>)}
-              </select>
-              {matches[index]?.reason && <small>{matches[index].reason}</small>}
-              {matches[index]?.candidates?.some((candidate) => candidate.unitWarning) && <small className="campaign-error">Unit conversion needs manual review; it was not guessed.</small>}
-            </td>
-            <td data-label="Quantity"><input type="number" min="0.001" step="0.001" value={item.quantity ?? ''} onChange={(event) => patchLine(index, { quantity: event.target.value })} /></td>
-            <td data-label="Unit"><input value={item.unit || ''} onChange={(event) => patchLine(index, { unit: event.target.value })} /></td>
-            <td data-label="Rate"><input type="number" min="0" step="0.01" value={item.rate ?? ''} onChange={(event) => patchLine(index, { rate: event.target.value, match_status: item.price_list_item_id ? 'matched' : 'manual' })} /></td>
-            <td data-label="Discount"><input type="number" min="0" max="100" step="0.01" value={item.discount_percent ?? 0} onChange={(event) => patchLine(index, { discount_percent: event.target.value })} /></td>
-            <td data-label="GST"><input type="number" min="0" max="100" step="0.01" value={item.gst_percent ?? 0} onChange={(event) => patchLine(index, { gst_percent: event.target.value })} /></td>
-            <td data-label="Amount">{money(item.amount)}<small>{item.match_status === 'unmatched' ? 'UNMATCHED' : item.match_status}</small></td>
-          </tr>
-        })}</tbody>
+    <div className="quote-filters">
+      <label className="form-label">Search<input value={search} placeholder="Quote no., customer or project" onChange={(event) => setSearch(event.target.value)} /></label>
+      <label className="form-label">Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All</option><option value="draft">Draft</option><option value="final">Final</option><option value="sent">Sent</option></select></label>
+    </div>
+    <div className="quote-table-scroll">
+      <table className="quote-table">
+        <thead><tr><th>Quotation</th><th>Customer</th><th>Project</th><th>Status</th><th className="num">Grand total</th><th>Unpriced</th><th /></tr></thead>
+        <tbody>
+          {quotes.map((row) => <tr key={row.id} className={quote?.id === row.id ? 'quote-row-active' : ''}>
+            <td>{row.quote_number || `Draft v${row.version}`}<small className="quote-muted">{row.quote_date}</small></td>
+            <td className="quote-clip">{row.customer_name || '-'}</td>
+            <td className="quote-clip" title={row.project_name}>{row.project_name || '-'}</td>
+            <td><span className={`quote-status quote-status-${row.status}`}>{row.status}</span></td>
+            <td className="num">{money(row.grand_total)}</td>
+            <td>{row.unpriced_lines ? <span className="quote-flag-error">{row.unpriced_lines}</span> : '0'}</td>
+            <td><button type="button" className="secondary-btn" onClick={() => openQuote(row.id)} disabled={busy}>Open</button></td>
+          </tr>)}
+        </tbody>
       </table>
-    </div>
-    <div className="panel quotation-totals"><strong>Server-calculated totals</strong>
-      <span>Subtotal: {money(quote.totals?.subtotal ?? quote.subtotal)}</span>
-      <span>Discount: {money(quote.totals?.discount_amount)}</span>
-      {quote.totals?.igst > 0
-        ? <span>IGST: {money(quote.totals.igst)}</span>
-        : <><span>CGST: {money(quote.totals?.cgst)}</span><span>SGST: {money(quote.totals?.sgst)}</span></>}
-      <span>Freight: {money(quote.totals?.freight ?? quote.freight)}</span>
-      <span>Grand total: {money(quote.totals?.grand_total ?? quote.grand_total)}</span>
-      {(amountWords || quote.amount_in_words) && <span>Amount in words: {amountWords || quote.amount_in_words}</span>}
-    </div>
-    <div className="button-row">
-      <button className="secondary-btn" onClick={saveQuote} disabled={busy || quote.status !== 'draft'}>Save draft</button>
-      <button className="primary-btn" onClick={finalizeQuote} disabled={busy || quote.status !== 'draft'}>Finalize</button>
-      <button className="secondary-btn" onClick={() => download(`/quotations/${quote.id}/export/pdf`, `${quote.quote_number.replaceAll('/', '-')}.pdf`).catch((error) => showError(error, 'Quotation PDF'))} disabled={busy}>Export PDF</button>
-      <button className="secondary-btn" onClick={() => download(`/quotations/${quote.id}/export/excel`, `${quote.quote_number.replaceAll('/', '-')}.xlsx`).catch((error) => showError(error, 'Quotation Excel'))} disabled={busy}>Export Excel</button>
-      <button className="primary-btn" onClick={sendWhatsApp} disabled={busy || quote.status !== 'draft'}>Send via WhatsApp</button>
+      {!quotes.length && <p className="quote-muted quote-empty">No quotations yet. Confirm a BOQ above and click "Create quotation".</p>}
     </div>
   </section>
 
+  const renderReview = () => <section className="panel">
+    <div className="panel-header">
+      <div><p className="eyebrow">Step 1 of 2 · Review pipe lines</p><h2>Which BOQ lines do we quote?</h2>
+        <span className="file-note">Plastic pipes go to section A, other pipes to section B for review; everything else is kept but excluded.</span></div>
+      <div className="button-row">
+        <button type="button" className={lineFilter === 'pipes' ? 'primary-btn' : 'secondary-btn'} onClick={() => setLineFilter('pipes')}>Pipes only</button>
+        <button type="button" className={lineFilter === 'all' ? 'primary-btn' : 'secondary-btn'} onClick={() => setLineFilter('all')}>All {quote.items.length} lines</button>
+      </div>
+    </div>
+    {quote.integrity?.messages?.length > 0 && <div className="notice warning">{quote.integrity.messages.join(' ')}</div>}
+    <div className="quote-table-scroll">
+      <table className="quote-table quote-review-table">
+        <thead><tr><th>Quote</th><th>Section</th><th>BOQ No. / Code</th><th>Line</th><th>Detected as</th><th className="num">Qty</th><th>Source</th></tr></thead>
+        <tbody>
+          {reviewItems.map((item) => {
+            const line = lines[item.id] || {}
+            const detection = item.spec?.detection || {}
+            return <tr key={item.id} className={line.include ? '' : 'quote-row-excluded'}>
+              <td><input type="checkbox" aria-label={`Include BOQ line ${item.boq_item_no}`} checked={!!line.include} disabled={readOnly} onChange={(event) => patchLine(item.id, { include: event.target.checked })} /></td>
+              <td><select aria-label="Section" value={line.section} disabled={readOnly} onChange={(event) => patchLine(item.id, { section: event.target.value })}><option value="A">A · Plastic</option><option value="B">B · Review</option></select></td>
+              <td>{item.boq_item_no || '-'}<small className="quote-muted">{item.boq_item_code}</small></td>
+              <td className="quote-desc" title={item.boq_description}>
+                <span>{item.description}</span>
+                <span className="quote-chips">{specChips(item.spec).map((chip) => <span key={chip} className="quote-chip">{chip}</span>)}</span>
+                {detection.reasons?.length > 0 && <small className="quote-muted">{detection.reasons.join(' · ')}</small>}
+              </td>
+              <td><span className={`quote-class quote-class-${detection.classification}`}>{CLASS_LABELS[detection.classification] || '-'}</span><small className="quote-muted">{detection.confidence ? `${Math.round(detection.confidence * 100)}% sure` : ''}</small></td>
+              <td className="num">{money(item.qty)} <small className="quote-muted">{item.unit}</small></td>
+              <td><small className="quote-muted">{formatSource(item.spec?.source) || '-'}</small></td>
+            </tr>
+          })}
+        </tbody>
+      </table>
+    </div>
+    <div className="button-row quote-actions">
+      <button type="button" className="primary-btn" disabled={busy || readOnly} onClick={continueToEditor}>{busy ? 'Saving…' : 'Save selection and enter rates'}</button>
+      <button type="button" className="secondary-btn" disabled={busy} onClick={() => setStep('edit')}>Skip to editor</button>
+    </div>
+  </section>
+
+  const field = (name, label, { type = 'text', textarea = false, ...rest } = {}) => {
+    const value = header?.[name] ?? ''
+    const flagged = hasPlaceholder(value)
+    return <label className={`form-label ${flagged ? 'quote-placeholder' : ''}`}>{label}
+      {textarea
+        ? <textarea rows={3} value={value} disabled={readOnly} onChange={(event) => patchHeader({ [name]: event.target.value })} />
+        : <input type={type} value={value} disabled={readOnly} onChange={(event) => patchHeader({ [name]: event.target.value })} {...rest} />}
+      {flagged && <small>Replace the [bracketed] text before finalizing.</small>}
+    </label>
+  }
+
+  const renderEditor = () => {
+    const totals = quote.totals || {}
+    let serial = 0
+    return <section className="panel quote-editor">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Step 2 of 2 · Quotation editor</p>
+          <h2>{quote.quote_number || `Draft quotation v${quote.version}`}</h2>
+          <span className={`quote-status quote-status-${quote.status}`}>{quote.status}</span>
+          {quote.sent_at && <span className="file-note"> Sent to +{quote.sent_to} on {new Date(quote.sent_at).toLocaleString()}</span>}
+        </div>
+        <div className="button-row">
+          {!readOnly && <button type="button" className="secondary-btn" onClick={() => setStep('review')}>Back to line selection</button>}
+          <button type="button" className="secondary-btn" onClick={() => setQuote(null)}>Close</button>
+        </div>
+      </div>
+      {readOnly && <div className="notice info">This quotation is {quote.status} and read-only. Use Duplicate to make changes.</div>}
+
+      <div className="settings-grid quote-header-grid">
+        {field('customer_name', 'Customer (To)')}
+        {field('customer_gstin', 'Customer GSTIN', { maxLength: 15 })}
+        {field('customer_address', 'Customer address', { textarea: true })}
+        {field('project_name', 'Project', { textarea: true })}
+        {field('reference_text', 'Reference', { textarea: true })}
+        <div className="quote-header-numbers">
+          {field('quote_date', 'Quotation date', { type: 'date' })}
+          {field('validity_days', 'Valid for (days)', { type: 'number', min: 1, step: 1 })}
+          <label className="form-label">Supply type<select value={header.supply_type} disabled={readOnly} onChange={(event) => patchHeader({ supply_type: event.target.value })}><option value="intra">Intra-state (CGST + SGST)</option><option value="inter">Inter-state (IGST)</option></select></label>
+          {field('gst_percent', 'GST %', { type: 'number', min: 0, max: 100, step: '0.01' })}
+          {field('discount_percent', 'Discount %', { type: 'number', min: 0, max: 100, step: '0.01' })}
+          {field('freight', 'Freight / loading (Rs)', { type: 'number', min: 0, step: '0.01' })}
+        </div>
+      </div>
+
+      <div className="quote-table-scroll">
+        <table className="quote-table quote-edit-table">
+          <thead><tr><th>S.No</th><th>BOQ No.</th><th>Description</th><th>Unit</th><th className="num">Qty</th><th className="num">Rate (Rs)</th><th className="num">Amount (Rs)</th><th>HSN</th><th>Remarks</th><th>Checks</th></tr></thead>
+          <tbody>
+            {editorGroups.map((group) => [
+              <tr key={`section-${group.section}`} className="quote-section-row"><td colSpan={10}>{group.title}</td></tr>,
+              ...group.items.map((item) => {
+                serial++
+                const line = lines[item.id]
+                const unpriced = line.rate === '' || line.rate === null || Number(line.rate) <= 0
+                const warnings = item.warnings || []
+                return <tr key={item.id} className={unpriced ? 'quote-row-unpriced' : ''}>
+                  <td>{serial}</td>
+                  <td>{item.boq_item_no}<small className="quote-muted">{item.boq_item_code}</small><small className="quote-muted">{formatSource(item.spec?.source)}</small></td>
+                  <td className="quote-desc"><textarea rows={2} value={line.description || ''} title={item.boq_description} disabled={readOnly} className={hasPlaceholder(line.description) ? 'quote-input-placeholder' : ''} onChange={(event) => patchLine(item.id, { description: event.target.value })} />
+                    <details><summary>Full BOQ text</summary><p className="quote-muted">{item.boq_description}</p></details></td>
+                  <td><input className="quote-input-short" value={line.unit || ''} disabled={readOnly} onChange={(event) => patchLine(item.id, { unit: event.target.value })} /></td>
+                  <td className="num"><input type="number" min="0.01" step="0.01" className="quote-input-num" value={line.qty} disabled={readOnly} onChange={(event) => patchLine(item.id, { qty: event.target.value })} /></td>
+                  <td className="num">
+                    <input type="number" min="0" step="0.01" placeholder="enter rate" aria-label={`Rate for BOQ line ${item.boq_item_no}`} className={`quote-input-num quote-rate-input ${unpriced ? 'quote-rate-empty' : ''}`} value={line.rate} disabled={readOnly} onChange={(event) => patchLine(item.id, { rate: event.target.value })} />
+                    {item.ref_rate !== null && item.ref_rate !== undefined && <small className="quote-muted" title="Customer's BOQ contract rate (installed: supply + laying + jointing + testing). Reference only, never our rate.">BOQ contract: {money(item.ref_rate)}</small>}
+                  </td>
+                  <td className="num">{money(item.amount)}</td>
+                  <td><input className="quote-input-short" value={line.hsn || ''} disabled={readOnly} onChange={(event) => patchLine(item.id, { hsn: event.target.value })} /></td>
+                  <td><input value={line.remarks || ''} disabled={readOnly} onChange={(event) => patchLine(item.id, { remarks: event.target.value })} /></td>
+                  <td className="quote-checks">
+                    {unpriced && <span className="quote-flag-error">Rate missing</span>}
+                    {warnings.filter((warning) => warning.code !== 'unpriced').map((warning, index) => <span key={index} className={warning.level === 'error' ? 'quote-flag-error' : 'quote-flag-warning'}>{warning.message}</span>)}
+                  </td>
+                </tr>
+              }),
+            ])}
+          </tbody>
+        </table>
+        {!editorGroups.length && <p className="quote-muted quote-empty">No lines are included. Go back to line selection.</p>}
+      </div>
+
+      <div className="quote-bottom">
+        <div className="quote-terms">
+          <h3>Terms & conditions</h3>
+          {(header.terms || []).map((term, index) => <div key={`${term.key}-${index}`} className={`quote-term ${hasPlaceholder(term.text) ? 'quote-placeholder' : ''}`}>
+            <textarea rows={2} value={term.text} disabled={readOnly} onChange={(event) => patchTerm(index, event.target.value)} />
+            {!readOnly && <button type="button" className="secondary-btn" aria-label={`Remove term ${index + 1}`} onClick={() => patchHeader({ terms: header.terms.filter((_, i) => i !== index) })}>Remove</button>}
+          </div>)}
+          {!readOnly && <button type="button" className="secondary-btn" onClick={() => patchHeader({ terms: [...(header.terms || []), { key: `custom_${Date.now()}`, text: '' }] })}>Add term</button>}
+        </div>
+        <aside className="quote-totals" aria-live="polite">
+          <h3>Totals (server)</h3>
+          {dirty && <p className="quote-flag-warning">Unsaved changes: save to recalculate.</p>}
+          <dl>
+            <dt>Sub-total</dt><dd>{money(totals.subtotal)}</dd>
+            <dt>Discount ({totals.discount_percent || 0}%)</dt><dd>{money(totals.discount_amount)}</dd>
+            <dt>Freight / loading</dt><dd>{money(totals.freight)}</dd>
+            <dt>Taxable value</dt><dd><strong>{money(totals.taxable_value)}</strong></dd>
+            {totals.supply_type === 'inter'
+              ? <><dt>IGST ({totals.gst_percent}%)</dt><dd>{money(totals.igst)}</dd></>
+              : <><dt>CGST ({totals.gst_percent / 2}%)</dt><dd>{money(totals.cgst)}</dd><dt>SGST ({totals.gst_percent / 2}%)</dt><dd>{money(totals.sgst)}</dd></>}
+            <dt className="quote-grand">Grand total (Rs)</dt><dd className="quote-grand">{money(totals.grand_total)}</dd>
+          </dl>
+          <p className="quote-muted">{totals.unpriced_lines ? `${totals.unpriced_lines} included line(s) without a rate count as 0.` : totals.amount_in_words}</p>
+          {!readOnly && quote.finalize?.blockers?.length > 0 && <div className="quote-blockers"><strong>Before finalizing</strong><ul>{quote.finalize.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></div>}
+        </aside>
+      </div>
+
+      <div className="button-row quote-actions">
+        {!readOnly && <button type="button" className="secondary-btn" disabled={busy || !dirty} onClick={() => run(() => save(), 'Save quotation')}>{busy ? 'Working…' : 'Save'}</button>}
+        {!readOnly && <button type="button" className="primary-btn" disabled={busy || dirty || !quote.finalize?.ready} title={dirty ? 'Save first' : quote.finalize?.ready ? '' : 'Price every included line and replace placeholders first'} onClick={finalize}>Finalize</button>}
+        <button type="button" className="secondary-btn" disabled={busy} onClick={() => download('excel')}>Download Excel</button>
+        <button type="button" className="secondary-btn" disabled={busy} onClick={() => download('pdf')}>Download PDF</button>
+        <button type="button" className="secondary-btn" disabled={busy} title="Adds the 'Internal - do not send' sheet with BOQ contract rates" onClick={() => download('internal')}>Excel + internal sheet</button>
+        <button type="button" className="secondary-btn" disabled={busy} onClick={duplicate}>Duplicate</button>
+        {readOnly && <button type="button" className="primary-btn" disabled={busy} onClick={() => setSendOpen((open) => !open)}>Send via WhatsApp</button>}
+        {!readOnly && <button type="button" className="danger-btn" disabled={busy} onClick={remove}>Delete draft</button>}
+      </div>
+      {sendOpen && readOnly && <div className="quote-send">
+        <label className="form-label">Customer WhatsApp number<input value={sendPhone} inputMode="tel" placeholder="e.g. 98765 43210 or +91 98765 43210" onChange={(event) => setSendPhone(event.target.value)} /></label>
+        <small className="quote-muted">Sends one PDF to this number from your connected WhatsApp. Nothing is sent to anyone else.</small>
+        <div className="button-row"><button type="button" className="primary-btn" disabled={busy || !sendPhone.trim()} onClick={sendWhatsApp}>Send PDF</button><button type="button" className="secondary-btn" onClick={() => setSendOpen(false)}>Cancel</button></div>
+      </div>}
+    </section>
+  }
+
   return <div className="quotation-workspace">
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
-    <section className="panel">
-      <div className="panel-header"><div><p className="eyebrow">BOQ to Quotation</p><h2>Price list and quotations</h2></div>
-        <div className="button-row"><button className={tab === 'quotations' ? 'primary-btn' : 'secondary-btn'} onClick={() => setTab('quotations')}>Quotations</button><button className={tab === 'price-list' ? 'primary-btn' : 'secondary-btn'} onClick={() => setTab('price-list')}>Price list</button></div>
-      </div>
-      {tab === 'price-list' ? <>
-        <div className="button-row"><label className="secondary-btn upload-btn">Choose Excel/CSV<input type="file" accept=".xlsx,.csv" onChange={(event) => { setFile(event.target.files?.[0] || null); setPreview(null) }} /></label><button className="secondary-btn" onClick={downloadTemplate}>Download import template</button><button className="secondary-btn" disabled={!file || busy} onClick={previewImport}>Preview & validate</button>{preview && <button className="primary-btn" disabled={!preview.valid || busy} onClick={importPriceList}>Import {preview.valid} valid row(s)</button>}</div>
-        {preview && <p className="file-note">Preview: {preview.valid} valid · {preview.invalid} invalid of {preview.total} rows.</p>}
-        {preview?.rows?.some((row) => !row.valid) && <ul className="warning-list">{preview.rows.filter((row) => !row.valid).slice(0, 20).map((row) => <li key={row.rowNumber}>Row {row.rowNumber}: {row.errors.join(', ')}</li>)}</ul>}
-        <h3>{editingPrice ? 'Edit price-list item' : 'Add price-list item'}</h3>{renderPriceItemForm()}
-        <label className="form-label">Search price list<input value={priceSearch} onChange={(event) => { setPriceSearch(event.target.value); loadPriceItems(event.target.value).catch((error) => showError(error, 'Price list')) }} /></label>
-        <div className="campaign-table-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>Size / PN</th><th>Unit</th><th>Rate</th><th>GST</th><th /></tr></thead><tbody>{priceItems.map((item) => <tr key={item.id}><td>{item.item_code}</td><td>{item.name}<small>{item.category || ''} {item.specification || ''}</small></td><td>{item.size || '-'} / {item.pressure_class || '-'}</td><td>{item.unit}</td><td>{money(item.rate)}</td><td>{item.gst_percent}%</td><td><div className="button-row"><button className="secondary-btn" onClick={() => { setEditingPrice(item.id); setDraftPrice(item) }}>Edit</button><button className="danger-btn" onClick={() => deactivatePriceItem(item)}>Deactivate</button></div></td></tr>)}</tbody></table></div>
-      </> : <>
-        {boqDocument?.status === 'confirmed' && <div className="button-row"><span className="file-note">Create a priced quotation from confirmed BOQ: {boqDocument.filename}</span><button className="primary-btn" disabled={busy} onClick={createQuotation}>Create quotation</button></div>}
-        <div className="inline-fields"><label className="form-label">Search quotations<input value={search} onChange={(event) => setSearch(event.target.value)} /></label><label className="form-label">Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option>{['draft', 'sent', 'accepted', 'rejected', 'expired'].map((status) => <option key={status}>{status}</option>)}</select></label></div>
-        <div className="campaign-table-wrap"><table><thead><tr><th>Quote</th><th>Customer</th><th>Project</th><th>Status</th><th>Total</th><th /></tr></thead><tbody>{quotes.map((item) => <tr key={item.id}><td>{item.quote_number}<small>{new Date(item.created_at).toLocaleDateString()}</small></td><td>{item.customer_name || '-'}</td><td>{item.project_name || '-'}</td><td>{item.status}</td><td>{money(item.grand_total)}</td><td><button className="secondary-btn" onClick={() => openQuote(item.id)}>Open</button></td></tr>)}</tbody></table></div>
-      </>}
-    </section>
-    {quote && renderEditor()}
+    {quote && header && (step === 'review' ? renderReview() : renderEditor())}
+    {renderList()}
   </div>
 }
