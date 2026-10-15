@@ -114,7 +114,9 @@ app.use('/api/schedules', requireAuth, require('./middleware/rateLimiterMiddlewa
 app.use('/api/image-extractor', requireAuth, require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
 app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
 app.use('/api', requireAuth, require('./routes/quotations'));
-app.use('/api/boq', requireAuth, require('./routes/priceList'));
+// Must be the full sub-path: mounted at '/api/boq' its GET '/' shadowed the BOQ
+// history list and '/price-list' fell through to boq's '/:id' (bigint error).
+app.use('/api/boq/price-list', requireAuth, require('./routes/priceList'));
 app.use('/api/boq', requireAuth, require('./routes/boq').router);
 app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
 
