@@ -3,6 +3,7 @@ const router = express.Router();
 const aiService = require('../ai/aiService');
 const resendService = require('../email/resendService');
 const db = require('../database/db');
+const { requireDataOwnerSelf } = require('../middleware/auth');
 const { encryptSettingIfSecret, decryptSettingIfSecret } = require('../utils/encryption');
 const { COUNTRIES, FALLBACK_COUNTRY_CODE, sanitizeDialCode } = require('../utils/countryCodes');
 
@@ -113,7 +114,8 @@ async function getSettings(userId) {
             bankDetails: (stored?.COMPANY_BANK_DETAILS || '').trim(),
         },
         // Default country code used to normalize phone numbers. Existing
-        // accounts with no stored value resolve to India (+91), which        // preserves the historical DEFAULT_COUNTRY_CODE=91 behavior.
+        // accounts with no stored value resolve to India (+91), which
+        // preserves the historical DEFAULT_COUNTRY_CODE=91 behavior.
         countries: COUNTRIES,
         defaultCountryCode: sanitizeDialCode(stored?.DEFAULT_COUNTRY_CODE) || sanitizeDialCode(process.env.DEFAULT_COUNTRY_CODE) || FALLBACK_COUNTRY_CODE,
         // Email (Resend) — mirrors the `ai` section's shape: booleans for
@@ -132,7 +134,8 @@ router.get('/', async (req, res) => {
     }
 });
 
-router.put('/', async (req, res) => {
+// Writing settings (AI/email keys, company profile) is owner-only.
+router.put('/', requireDataOwnerSelf, async (req, res) => {
     try {
         const provided = Object.entries(fieldKeys)
             .map(([key, field]) => [key, req.body?.[field]])
@@ -163,7 +166,7 @@ router.put('/', async (req, res) => {
 // Mirrors POST /api/whatsapp/business/test. On failure the response
 // carries Resend's actual error message (e.g. "domain not verified"),
 // not a generic error.
-router.post('/email/test', async (req, res) => {
+router.post('/email/test', requireDataOwnerSelf, async (req, res) => {
     try {
         const recipient = req.user.email;
         if (!recipient) {

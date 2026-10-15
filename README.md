@@ -50,6 +50,10 @@ queue changes; the backend checks for it at startup and once per minute.
 13. **`supabase-campaign-reliability-migration.sql` — required before deploying the campaign reliability, queue, and duplicate-draft changes; includes campaign media metadata, queue columns/index, source campaign id, recipient-row data, and atomic per-user queue RPCs.**
 14. **`supabase-quotation-migration.sql` — required before deploying BOQ to Quotation; run after `supabase-boq-migration.sql` (it needs `boq_documents` and `set_updated_at()`). Adds `quotations`, `quotation_items`, the per-user per-financial-year `quotation_counters` table and the `finalize_quotation` RPC that assigns `SP/2026-27/0001` atomically. Idempotent; if the earlier price-list version of this file was already run, rerun this one to upgrade those tables in place (no data is dropped).**
 
+15. `supabase-shared-access-migration.sql` — shared workspaces. Exposes `private.user_data_shares` to the backend through `resolve_data_owner` and `list_data_owners` (service role only). Idempotent; changes no data. Until it is run, every user keeps working in their own data only.
+
+16. `supabase-campaign-delivery-migration.sql` — campaign delivery tracking, consent records and rate-limit cooldowns (run after step 13). Optional: without it campaigns still send, but delivered/read counts, opt-out dates/sources and the enforced wait after a WhatsApp rate limit are not stored; the backend logs `Database migration pending: run supabase-campaign-delivery-migration.sql …` until it is applied.
+
 Run the startup guard's migration if it logs:
 `Database migration pending: run supabase-campaign-reliability-migration.sql in the Supabase SQL Editor`
 (or the same message naming `supabase-quotation-migration.sql`).
@@ -73,6 +77,81 @@ claims are serialized by migration RPCs. The Campaigns view also lets you
 duplicate a finished campaign into an editable draft, including its attachment
 reference; the shared media object is retained until no campaign references it.
 Apply the migration before using these controls.
+
+### Campaign sending safety
+
+Campaigns go to opted-in contacts only, one message at a time, from a queue
+stored in `campaign_contacts`. Nothing here hides automation from WhatsApp or
+gets around a block; the goal is to send at a reasonable pace, stop as soon as
+WhatsApp signals a problem, and never message the same person twice. No
+setting can guarantee that WhatsApp will not restrict a number.
+
+**Providers** (`backend/src/whatsapp/providerRegistry.js`):
+
+- *WhatsApp Business Platform (Cloud API)*: the official route and the one to
+  use for campaigns. Supports approved templates, delivery webhooks, quality
+  rating and messaging-limit tiers.
+- *WhatsApp Web (Baileys)*: an unofficial linked device. Kept for existing
+  users, but WhatsApp can restrict or ban numbers that bulk-send through it,
+  and it reports no quality or rate-limit signals. The campaign builder says
+  so whenever the Business API is not connected.
+
+**Pacing**: the configured delay between messages (varied between 0.7× and
+1.4× so messages do not leave in a fixed rhythm), hourly
+and daily caps (on the Business API also the number's WhatsApp tier, e.g.
+1,000 recipients/day), your business hours, and the business hours in each
+recipient's country (from the phone's country code; recipients whose hours
+never overlap with yours are skipped with a reason). Optionally pause for N
+minutes after every M messages. The dashboard shows why a running campaign is
+waiting (limit, hours, pause, retries).
+
+**Failures** (`backend/src/campaigns/sendPolicy.js`):
+
+| WhatsApp says | What happens |
+|---|---|
+| Rate limit (429, 130429, 80007) | Campaign pauses; Resume is refused until `Retry-After`, at least 15 minutes |
+| Spam/policy restriction (131048, 368, 131031), quality flag or downgrade | Campaign pauses (`account_restricted` / `quality_low`) |
+| Auth, account or template problems (190, 131042, 131047, 132xxx) | Campaign pauses with the fix to make |
+| Temporary error (5xx, 131000, 131016) | Recipient retried with exponential backoff: `retryDelay × 2^n`, max 1 hour, never sooner than `Retry-After` |
+| Connection lost | Campaign pauses and resumes when WhatsApp reconnects |
+| Pair rate limit (131056) | That recipient retried after at least 60 s |
+| Permanent error (invalid number, 131026, 131049, …) | Recipient failed, never retried |
+| Marketing opt-out (131050) | Contact recorded as opted out |
+
+The campaign also pauses when 50% of the last 20 messages failed, or 40% were
+numbers not on WhatsApp (thresholds configurable), and after 5 identical errors
+in a row.
+
+**No duplicates**: each recipient is claimed with a conditional update
+(`pending → processing`) before sending, so a second worker or server instance
+cannot send it too. WhatsApp Web messages get their message id before sending
+and keep it across retries. Business API messages carry
+`biz_opaque_callback_data = cc:<recipient id>`. A recipient left in
+`processing` by a crash or restart is not resent: it is marked failed ("Sending
+was interrupted …") and becomes sent automatically if a delivery receipt for
+it arrives. Resuming a paused campaign continues with the pending recipients
+only.
+
+**Consent**: STOP-style replies opt a contact out (with date and source);
+a bare START or SUBSCRIBE reply opts them back in. Turning marketing back on
+by hand for someone who asked to stop needs an explicit confirmation
+(`409 OPTED_OUT` otherwise). Re-adding an existing contact with the opt-in
+box unchecked no longer opts them out.
+
+**Delivery receipts**: in the Meta app's webhook settings subscribe to the
+`messages` field (message statuses) and `phone_number_quality_update`. Sent →
+delivered → read is shown per recipient and per campaign; a message WhatsApp
+later reports as failed is counted as failed. WhatsApp Web receipts come from
+the linked device's acks.
+
+**Typing indicator**: WhatsApp supports one only when replying to a received
+message, never for campaign messages. Set `WABA_TYPING_INDICATOR=true` to show
+it while the AI drafts a reply on the Business API (this also marks the
+customer's message as read). Off by default.
+
+**Logs**: campaign events are JSON lines such as
+`{"scope":"campaign","event":"send_failed","campaign":17,"phone":"***4567",…}`;
+phone numbers are masked and message text and tokens are never logged.
 
 ### BOQ extraction checks
 
@@ -140,6 +219,45 @@ details, optional logo) come from **Settings → Quotation company profile**.
 No new environment variables or npm packages are needed (pdfkit and exceljs
 were already dependencies). The earlier price-list import route is no longer
 mounted; `backend/src/routes/priceList.js` is unused and can be deleted.
+
+### Shared workspaces
+
+One account can open another account's data without any `user_id` being
+changed. The share list is `private.user_data_shares`
+(`owner_user_id` → `shared_user_id`, one-way):
+
+```sql
+-- share User 1's data with User 2
+insert into private.user_data_shares (owner_user_id, shared_user_id)
+values ('<owner uuid>', '<colleague uuid>');
+-- revoke (takes effect within 60 s; DATA_SHARE_CACHE_MS)
+delete from private.user_data_shares
+where owner_user_id = '<owner uuid>' and shared_user_id = '<colleague uuid>';
+```
+
+The browser never reads tables directly: every request goes through the
+backend, which uses the service-role key (RLS does not apply) and scopes each
+query to one `user_id`. RLS policies on the data tables therefore do not
+grant or block anything inside the app. Instead, the browser sends the
+workspace it wants in an `X-Data-Owner` header (and as `dataOwner` in the
+Socket.IO auth). `requireAuth` asks `public.resolve_data_owner` whether the
+signed-in user may use it and answers 403 otherwise. `req.user.id` is then the
+workspace owner (so every existing query, insert and RPC works unchanged) and
+`req.user.authId` is the person signed in.
+
+- The sidebar shows a **Workspace** switcher when something is shared with
+  you. On first sign-in the shared workspace opens; the choice is remembered
+  per user in the browser.
+- Records created in a shared workspace belong to its owner.
+- Owner only, even in a shared workspace: saving Settings (AI and email keys,
+  company profile), the email test, and everything under `/api/whatsapp`
+  except `GET /status` (connect, QR code, logout, Business API credentials).
+  QR-code socket events go to the owner's own room only. Campaigns and inbox
+  replies in a shared workspace do send through the owner's connected
+  WhatsApp.
+- Sign-out always logs out the signed-in user's own WhatsApp session, never
+  the owner's.
+- Rate limits count per signed-in person.
 
 ### API smoke check
 

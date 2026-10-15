@@ -106,6 +106,8 @@ function detectStatus(message) {
   return Number(match[1] || match[2])
 }
 
+const WORKSPACE_ERROR_CODES = new Set(['OWNER_ONLY', 'WORKSPACE_FORBIDDEN', 'WORKSPACE_MIGRATION_PENDING', 'WORKSPACE_UNAVAILABLE'])
+
 function messageForStatus(status) {
   if (status === 401 || status === 403) return FRIENDLY.SESSION
   if (status === 404) return FRIENDLY.NOT_FOUND
@@ -146,6 +148,11 @@ export function friendlyErrorMessage(error, options = {}) {
 
   // 1. Errors already translated stay as they are (avoids double-handling).
   if (raw && Object.values(FRIENDLY).includes(raw)) return raw
+
+  // 2a. Shared-workspace refusals carry a server-written, user-facing message
+  //     ("Only the account owner can change …"). A plain 403 would otherwise
+  //     read as "session expired", which is wrong and sends people to sign out.
+  if (error instanceof Error && WORKSPACE_ERROR_CODES.has(error.code) && raw) return raw
 
   // 2. Explicit status codes (Error.status or "(404)"-style text).
   const status = detectStatus(error)

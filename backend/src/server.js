@@ -18,6 +18,7 @@ const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
 const { assertEncryptionKey } = require('./utils/encryption');
 const { startCampaignReliabilityMigrationGuard } = require('./database/campaignReliabilityMigrationGuard');
 const { startQuotationMigrationGuard } = require('./database/quotationMigrationGuard');
+const { startCampaignDeliveryMigrationGuard } = require('./database/campaignDeliveryMigrationGuard');
 const { ensureCampaignMediaBucket } = require('./campaigns/campaignMediaStorage');
 
 const app = express();
@@ -101,6 +102,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 app.use('/api/whatsapp', requireAuth, require('./routes/whatsapp'));
 app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/whatsappWebhook'));
 app.use('/api/contacts', requireAuth, require('./routes/contacts'));
@@ -142,6 +144,7 @@ if (require('fs').existsSync(FRONTEND_DIST)) {
 attachRealtimeAuth(io);
 
 messageQueue.setIO(io);
+require('./campaigns/deliveryTracker').setIO(io);
 require('./whatsapp/sessionManager').setIO(io);
 
 async function startServer() {
@@ -152,6 +155,9 @@ async function startServer() {
         assertEncryptionKey();
         await startCampaignReliabilityMigrationGuard();
         await startQuotationMigrationGuard();
+        // Optional: enables delivery receipts, opt-out records and rate-limit
+        // cooldowns once supabase-campaign-delivery-migration.sql has run.
+        await startCampaignDeliveryMigrationGuard();
         await ensureCampaignMediaBucket();
 
         // Sessions are created lazily per user on demand — nothing global

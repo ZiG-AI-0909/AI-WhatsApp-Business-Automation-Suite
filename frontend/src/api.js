@@ -16,6 +16,47 @@ export function dispatchSessionInvalidated(reason) {
   window.dispatchEvent(new CustomEvent(SESSION_INVALIDATED_EVENT, { detail: { reason } }))
 }
 
+// ── Shared workspaces ────────────────────────────────────────────────────
+// A user can work in their own data or in an owner's data that was shared
+// with them. The choice is only a REQUEST (X-Data-Owner header / socket
+// auth field): the backend checks it against private.user_data_shares on
+// every call and answers 403 when it is not authorised.
+export const DATA_OWNER_HEADER = 'X-Data-Owner'
+export const WORKSPACE_CHANGED_EVENT = 'app:workspace-changed'
+const WORKSPACE_KEY_PREFIX = 'app:dataOwner:'
+
+export function getStoredDataOwner(authUserId) {
+  if (!authUserId) return null
+  try { return window.localStorage.getItem(`${WORKSPACE_KEY_PREFIX}${authUserId}`) } catch { return null }
+}
+
+export function hasStoredDataOwnerChoice(authUserId) {
+  return getStoredDataOwner(authUserId) !== null
+}
+
+export function setStoredDataOwner(authUserId, ownerUserId, { silent = false } = {}) {
+  if (!authUserId) return
+  try {
+    // The user's own id is stored too, so "my own data" is a remembered choice.
+    window.localStorage.setItem(`${WORKSPACE_KEY_PREFIX}${authUserId}`, ownerUserId || authUserId)
+  } catch { /* storage unavailable: falls back to own workspace */ }
+  if (!silent) window.dispatchEvent(new CustomEvent(WORKSPACE_CHANGED_EVENT, { detail: { ownerUserId } }))
+}
+
+export function clearStoredDataOwner(authUserId) {
+  if (!authUserId) return
+  try { window.localStorage.removeItem(`${WORKSPACE_KEY_PREFIX}${authUserId}`) } catch { /* ignore */ }
+}
+
+/** Header that selects the active workspace for this session's user. */
+export function dataOwnerHeaders(session) {
+  const authUserId = session?.user?.id
+  const owner = getStoredDataOwner(authUserId)
+  return owner && owner !== authUserId ? { [DATA_OWNER_HEADER]: owner } : {}
+}
+
+let lastAuthUserId = null
+
 async function authHeader() {
   if (supabase) {
     try {
@@ -32,8 +73,10 @@ async function authHeader() {
       }
 
       if (session?.access_token) {
+        lastAuthUserId = session.user?.id || null
         return {
           Authorization: `Bearer ${session.access_token}`,
+          ...dataOwnerHeaders(session),
         }
       }
     } catch (error) {
@@ -147,6 +190,12 @@ export async function apiFetch(path, options = {}) {
     // client-side. Clear the dead session from storage so auth-js stops
     // handing it out (it would otherwise be sent on every future call) and
     // tell components to stop polling. Mirrors the auth-js onAuthError path.
+    // The selected shared workspace is no longer authorised (share revoked):
+    // forget it and reload into the user's own workspace.
+    if (response.status === 403 && data.code === 'WORKSPACE_FORBIDDEN' && lastAuthUserId) {
+      clearStoredDataOwner(lastAuthUserId)
+      window.dispatchEvent(new CustomEvent(WORKSPACE_CHANGED_EVENT, { detail: { ownerUserId: null, revoked: true } }))
+    }
     if (response.status === 401 && supabase) {
       try { await supabase.auth._removeSession() } catch { /* best effort */ }
       dispatchSessionInvalidated(`API 401 on ${path}`)
@@ -155,6 +204,7 @@ export async function apiFetch(path, options = {}) {
     // to human-readable text without pattern-matching strings.
     const error = new Error(data.error || `Request failed (${response.status})`)
     error.status = response.status
+    if (typeof data.code === 'string') error.code = data.code
     // Long-running endpoints (BOQ extraction) attach a retry hint and the
     // failure stage so the UI can offer a Retry button instead of guessing.
     if (typeof data.retryable === 'boolean') error.retryable = data.retryable
@@ -191,7 +241,8 @@ export function socketAuth() {
         // token is missing here, the socket joins no room and every
         // whatsapp:qr emit goes to an empty room.
         console.log('[socket] auth callback — token:', session?.access_token ? 'present' : 'MISSING', '| user:', session?.user?.id || 'n/a')
-        cb({ token: session?.access_token || null })
+        const owner = getStoredDataOwner(session?.user?.id)
+        cb({ token: session?.access_token || null, ...(owner && owner !== session?.user?.id ? { dataOwner: owner } : {}) })
       })
       .catch((error) => { console.error('[socket] auth callback getSession failed:', error); cb({}) })
   }

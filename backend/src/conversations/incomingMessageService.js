@@ -20,6 +20,9 @@ const OPT_OUT_PATTERNS = [
     /\bmat\s*bhejo\b/i, /\bnahi\s*chahiye\b/i,
 ];
 
+// A bare START / SUBSCRIBE reply is the contact asking to receive messages.
+const RESUBSCRIBE_PATTERN = /^\s*(?:start|unstop|subscribe)\s*[.!]?\s*$/i;
+
 /**
  * Load per-user runtime settings (AI key/model, business name) from
  * the per-user app_settings table, falling back to env defaults.
@@ -73,8 +76,11 @@ class IncomingMessageService {
      * @param {object} io - Socket.IO server (events go to this user's room only)
      * @param {function} [sendMessage] - send fn bound to the SAME user's session;
      *        defaults to that user's own Baileys session.
+     * @param {object} [hooks]
+     * @param {function} [hooks.beforeAiReply] - called before the AI drafts a
+     *        reply (the Business API uses it for the official typing indicator).
      */
-    async process(input, userId, io, sendMessage = null) {
+    async process(input, userId, io, sendMessage = null, hooks = {}) {
         if (!userId) {
             // Security invariant: a message without a user is dropped, never
             // saved — orphan (NULL user_id) rows must not come back.
@@ -104,9 +110,16 @@ class IncomingMessageService {
         const businessName = (userSettings.BUSINESS_NAME || process.env.BUSINESS_NAME || 'our business').trim();
 
         if (OPT_OUT_PATTERNS.some((pattern) => pattern.test(incoming.text))) {
-            await contactService.setOptOut(incoming.from, userId);
+            await contactService.setOptOut(incoming.from, userId, 'reply');
             await conversationService.setStatus(conversation.id, 'resolved', userId);
             const ack = 'You have been unsubscribed from our marketing messages. You will no longer receive promotional messages from us.';
+            await this._reply(conversation.id, incoming, ack, sendMessage, io, userId);
+            return true;
+        }
+
+        if (RESUBSCRIBE_PATTERN.test(incoming.text) && contact && !Number(contact.marketing_opt_in)) {
+            await contactService.setOptIn(incoming.from, userId, 'reply');
+            const ack = `Thanks, you are subscribed to messages from ${businessName} again. Reply STOP at any time to unsubscribe.`;
             await this._reply(conversation.id, incoming, ack, sendMessage, io, userId);
             return true;
         }
@@ -145,6 +158,13 @@ class IncomingMessageService {
             if (/^(hi|hello|hey)\b[!. ]*$/i.test(incoming.text)) {
                 await this._reply(conversation.id, incoming, `Hello! Welcome to ${businessName}. How can I help you today?`, sendMessage, io, userId);
                 return true;
+            }
+            if (typeof hooks?.beforeAiReply === 'function') {
+                try {
+                    await hooks.beforeAiReply(incoming);
+                } catch (hookError) {
+                    console.warn(`[incoming] beforeAiReply hook failed for user ${userId}:`, hookError.message);
+                }
             }
             const context = await knowledgeBase.getRelevantContext(incoming.text, 4, userId);
             const reply = await aiService.generateReply(

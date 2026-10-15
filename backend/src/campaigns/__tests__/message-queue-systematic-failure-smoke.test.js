@@ -100,7 +100,9 @@ async function testMediaBufferIsDownloadedOnceAndReused() {
             },
         }];
     };
-    db.update = async () => [];
+    // Like PostgREST, an update returns the rows it changed (the queue
+    // claims each recipient with a conditional update before sending).
+    db.update = async () => [{}];
     db.count = async () => 0;
     db.recountCampaignCounters = async () => ({ processed: 2, sent: 2, failed: 0, opt_outs: 0 });
     contactService.findByPhone = async () => ({ marketing_opt_in: true });
@@ -211,7 +213,8 @@ async function testProviderRestrictionPausesImmediately() {
 
     assert.equal(paused, true);
     assert.equal(worker._paused, true);
-    assert.equal(updates.find(update => update.table === 'campaigns').data.pause_reason, 'provider_restriction');
+    // 130429 is WhatsApp's throughput rate limit: paused as rate_limited.
+    assert.equal(updates.find(update => update.table === 'campaigns').data.pause_reason, 'rate_limited');
     assert.equal(events[0].event, 'campaign:paused');
 }
 

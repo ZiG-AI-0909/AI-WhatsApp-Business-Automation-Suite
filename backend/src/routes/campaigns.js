@@ -262,7 +262,7 @@ router.post('/:id/start', async (req, res) => {
         await campaignService.start(+req.params.id, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign started' });
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        res.status(err.statusCode || 400).json({ error: err.message });
     }
 });
 
@@ -339,7 +339,7 @@ router.post('/:id/resume', async (req, res) => {
         await campaignService.resume(+req.params.id, req.app.get('io'), req.user.id);
         res.json({ success: true, message: 'Campaign resumed' });
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        res.status(err.statusCode || 400).json({ error: err.message });
     }
 });
 

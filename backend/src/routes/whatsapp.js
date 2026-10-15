@@ -12,11 +12,18 @@ const express = require('express');
 const router = express.Router();
 const sessionManager = require('../whatsapp/sessionManager');
 const businessApiProvider = require('../whatsapp/businessApiProvider');
+const { requireDataOwnerSelf } = require('../middleware/auth');
+
+// Shared workspaces may read the connection status (campaign and inbox
+// screens need it) but never link, unlink or reconfigure the owner's
+// WhatsApp, and never see the owner's QR code.
+router.use((req, res, next) => (req.method === 'GET' && req.path === '/status' ? next() : requireDataOwnerSelf(req, res, next)));
 
 // GET /api/whatsapp/status — this user's connection status only
 router.get('/status', (req, res) => {
     const status = sessionManager.getStatus(req.user.id);
-    const qrAvailable = !!sessionManager.getQRDataUrl(req.user.id);
+    // A shared workspace never gets the owner's QR code (it would link a phone).
+    const qrAvailable = !req.user.sharedAccess && !!sessionManager.getQRDataUrl(req.user.id);
     // Poll every ~4s from the frontend; only log on transitions or QR availability
     // so Render's logs stay readable.
     console.log(`[wa-route:${req.user.id}] GET /status — status=${status} qrAvailable=${qrAvailable}`);

@@ -11,12 +11,23 @@
 const { supabase } = require('./database/supabaseClient');
 
 const { isAllowedOrigin } = require('./utils/origins');
+const { resolveDataOwner, DataAccessError } = require('./security/dataOwner');
 
 const USER_ROOM_PREFIX = 'user:';
 
 function userRoom(userId) {
     return `${USER_ROOM_PREFIX}${userId}`;
 }
+
+// Users the owner shared their data with join this room instead of the
+// owner's own room, so owner-only events can be withheld from them.
+function sharedRoom(ownerUserId) {
+    return `${USER_ROOM_PREFIX}${ownerUserId}:shared`;
+}
+
+// Events that must reach the owner only: a WhatsApp QR code links a phone
+// to the owner's account and is never shown in a shared workspace.
+const OWNER_ONLY_EVENTS = new Set(['whatsapp:qr']);
 
 /**
  * Attach per-user room authentication to a Socket.IO server.
@@ -38,8 +49,17 @@ function attachRealtimeAuth(io) {
             if (error || !claims?.sub) return next(new Error('Session expired or invalid'));
 
             // Never trust a client-sent userId — derive it from the JWT.
-            socket.data.userId = claims.sub;
-            socket.join(userRoom(claims.sub));
+            // A shared workspace (auth.dataOwner) is joined only when the
+            // database confirms the owner shared their data with this user.
+            let roomUserId = claims.sub;
+            try {
+                roomUserId = await resolveDataOwner(claims.sub, socket.handshake.auth?.dataOwner || null);
+            } catch (accessError) {
+                return next(new Error(accessError instanceof DataAccessError ? accessError.message : 'Authentication failed'));
+            }
+            socket.data.userId = roomUserId;
+            socket.data.authUserId = claims.sub;
+            socket.join(roomUserId === claims.sub ? userRoom(roomUserId) : sharedRoom(roomUserId));
             next();
         } catch (err) {
             next(new Error('Authentication failed'));
@@ -48,10 +68,13 @@ function attachRealtimeAuth(io) {
 
     io.on('connection', (socket) => {
         const userId = socket.data.userId;
-        console.log(`[realtime] user ${userId} connected (room ${userRoom(userId)})`);
+        const shared = socket.data.authUserId && socket.data.authUserId !== userId;
+        console.log(`[realtime] user ${socket.data.authUserId || userId} connected (room ${shared ? sharedRoom(userId) : userRoom(userId)})`);
 
         // Send this user's own current state on connect — scoped emit only.
-        socket.emit('whatsapp:status', whatsappStatusPayloadFor(io, userId));
+        const statusPayload = whatsappStatusPayloadFor(io, userId);
+        if (shared) statusPayload.qrAvailable = false;
+        socket.emit('whatsapp:status', statusPayload);
 
         socket.on('disconnect', () => {
             console.log(`[realtime] user ${userId} disconnected`);
@@ -74,13 +97,17 @@ function whatsappStatusPayloadFor(_io, userId) {
     };
 }
 
-/** Emit only to a specific user's room. */
+/** Emit only to a specific user's room (and their shared viewers). */
 function emitToUser(io, userId, event, data) {
-    io?.to(userRoom(userId)).emit(event, data);
+    if (!io || !userId) return;
+    io.to(userRoom(userId)).emit(event, data);
+    if (!OWNER_ONLY_EVENTS.has(event)) io.to(sharedRoom(userId)).emit(event, data);
 }
 
 module.exports = {
     userRoom,
+    sharedRoom,
+    OWNER_ONLY_EVENTS,
     attachRealtimeAuth,
     whatsappStatusPayloadFor,
     emitToUser,

@@ -757,3 +757,25 @@ tr.row-warnings { background: rgba(245, 158, 11, 0.08); }
 .boq-issues em { font-style: normal; opacity: .8; }
 .boq-review-table .quote-input-short { min-width: 64px; }
 .boq-review-table input[aria-label="Item code"] { min-width: 96px; }
+
+/* Shared workspaces */
+.workspace-switcher { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 11px; color: var(--brand-steel); }
+.workspace-switcher select { width: 100%; min-height: 40px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--brand-steel-border); background: transparent; color: inherit; font-size: 12px; }
+.workspace-switcher option { color: #0f172a; }
+.shared-workspace-notice { margin: 8px 0 12px; }
+
+/* Campaign delivery dashboard */
+.campaign-progress {
+  height: 8px;
+  margin: 12px 0 4px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+.campaign-progress i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+.campaign-delivery-stats { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); margin: 8px 0 12px; }
+.sending-safety small { display: block; }
+@media (max-width: 640px) {
+  .campaign-delivery-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

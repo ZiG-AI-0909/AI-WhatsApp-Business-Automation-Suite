@@ -53,6 +53,47 @@ function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
     return false;
 }
 
+/**
+ * Delivery statuses (sent/delivered/read/failed) and phone-number quality
+ * updates. Errors are logged, never thrown: Meta retries a webhook that
+ * fails, and a status problem must not block message handling.
+ */
+async function applyDeliveryEvents(primaryUserId, primaryPhoneNumberId, events) {
+    const deliveryTracker = require('../campaigns/deliveryTracker');
+    for (const status of events.statuses) {
+        try {
+            const ownerId = !status.phoneNumberId || status.phoneNumberId === primaryPhoneNumberId
+                ? primaryUserId
+                : await businessApiProvider.findUserIdByPhoneNumberId(status.phoneNumberId);
+            if (!ownerId) continue;
+            await deliveryTracker.applyReceipt(ownerId, {
+                messageId: status.id,
+                status: status.status,
+                timestamp: status.timestamp,
+                errors: status.errors,
+                callbackData: status.callbackData,
+            });
+        } catch (error) {
+            console.error('[webhook] delivery status could not be applied:', error.message);
+        }
+    }
+    for (const update of events.qualityUpdates) {
+        try {
+            const ownerId = businessApiProvider.findUserIdByDisplayPhone(update.displayPhoneNumber) || primaryUserId;
+            if (!ownerId) continue;
+            businessApiProvider.noteQualityEvent(ownerId, update.event, update.currentLimit);
+            const event = String(update.event || '').toUpperCase();
+            if (event !== 'FLAGGED' && event !== 'DOWNGRADE') continue;
+            const message = event === 'FLAGGED'
+                ? 'WhatsApp flagged this number for low quality. Review message content and recipient consent before resuming.'
+                : `WhatsApp lowered this number's messaging limit${update.currentLimit ? ` to ${update.currentLimit}` : ''}. Review recent campaigns before resuming.`;
+            await require('../campaigns/messageQueue').pauseForProviderSignal(ownerId, null, 'quality_low', message);
+        } catch (error) {
+            console.error('[webhook] quality update could not be applied:', error.message);
+        }
+    }
+}
+
 // Meta webhook verification handshake (GET).
 router.get('/', async (req, res) => {
     try {
@@ -114,7 +155,12 @@ router.post('/', async (req, res) => {
             return res.sendStatus(400);
         }
         const { message, phoneNumberId } = businessApiProvider.normalizeWebhook(parsed);
-        const userId = phoneNumberId ? await businessApiProvider.findUserIdByPhoneNumberId(phoneNumberId) : null;
+        const events = businessApiProvider.extractWebhookEvents(parsed);
+        let userId = phoneNumberId ? await businessApiProvider.findUserIdByPhoneNumberId(phoneNumberId) : null;
+        // Quality updates carry the display number instead of a phone number id.
+        if (!userId && events.qualityUpdates.length) {
+            userId = businessApiProvider.findUserIdByDisplayPhone(events.qualityUpdates[0].displayPhoneNumber);
+        }
         const appSecret = (userId && await businessApiProvider.getAppSecret(userId))
             || process.env.WABA_APP_SECRET
             || process.env.META_APP_SECRET
@@ -127,11 +173,20 @@ router.post('/', async (req, res) => {
             console.warn('[webhook] invalid or missing X-Hub-Signature-256 â€” payload rejected');
             return res.sendStatus(401);
         }
-        if (!message || !userId) return res.sendStatus(200);
+        if (!userId) return res.sendStatus(200);
+        if (events.statuses.length || events.qualityUpdates.length) {
+            await applyDeliveryEvents(userId, phoneNumberId, events);
+        }
+        if (!message) return res.sendStatus(200);
 
         const sendMessage = (phone, body, jid, media, buttons) =>
             businessApiProvider.sendMessage(userId, phone, body, media, buttons);
-        await incomingMessageService.process(message, userId, req.app.get('io'), sendMessage);
+        // Official typing indicator while the AI drafts a reply (marks the
+        // customer's message as read). Off unless WABA_TYPING_INDICATOR=true.
+        const hooks = process.env.WABA_TYPING_INDICATOR === 'true'
+            ? { beforeAiReply: (incoming) => businessApiProvider.sendTypingIndicator(userId, incoming.messageId) }
+            : {};
+        await incomingMessageService.process(message, userId, req.app.get('io'), sendMessage, hooks);
         res.sendStatus(200);
     } catch (error) {
         console.error('WhatsApp Business webhook error:', error.message);

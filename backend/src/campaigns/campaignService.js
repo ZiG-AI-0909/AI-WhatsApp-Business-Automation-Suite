@@ -7,6 +7,7 @@ const messageQueue = require('./messageQueue');
 const { resolveCountryCode, findCountry } = require('../utils/countryCodes');
 const { parseJsonField } = require('../utils/jsonField');
 const { CAMPAIGN_MIGRATION_PENDING_MESSAGE, isMissingMigrationError } = require('../database/campaignReliabilityMigrationGuard');
+const { sanitizeCampaignSettings } = require('./campaignSettings');
 
 function translateCampaignMigrationError(error) {
     if (!isMissingMigrationError(error)) return error;
@@ -174,7 +175,7 @@ class CampaignService {
             name,
             template_message: templateMessage,
             total_contacts: validRows.length,
-            settings: JSON.stringify({ ...settings, countryCode: resolvedCode }),
+            settings: JSON.stringify({ ...sanitizeCampaignSettings(settings), countryCode: resolvedCode }),
             // Provider is resolved per user at creation time: business if
             // THIS user has the Cloud API connected, otherwise web.
             provider: require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected' ? 'business' : 'web',
@@ -430,7 +431,7 @@ class CampaignService {
                     throw new Error(`${limit} must be at least 1 to preserve WhatsApp safety limits.`);
                 }
             }
-            update.settings = JSON.stringify(settings);
+            update.settings = JSON.stringify(sanitizeCampaignSettings(settings));
         }
         if (Object.hasOwn(changes, 'buttons')) update.buttons = JSON.stringify(changes.buttons || []);
 
@@ -567,12 +568,28 @@ class CampaignService {
             const recipientCount = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ?', [campaignId, userId]);
             if (!recipientCount) throw new Error('This campaign has no recipients. Upload or add an Excel list before starting.');
             await this._assertOwnerConnected(userId, campaign.provider || 'web');
+            this._assertResumeAllowed(campaign);
 
             messageQueue.setIO(io);
             const settings = parseJsonField(campaign.settings, {});
             await messageQueue.start(campaignId, settings, userId);
         } catch (error) {
             throw translateCampaignMigrationError(error);
+        }
+    }
+
+    /**
+     * After a rate limit WhatsApp expects the sender to wait. A paused
+     * campaign carries resume_after (Retry-After, at least 15 minutes) and
+     * cannot be restarted before it.
+     */
+    _assertResumeAllowed(campaign) {
+        if (campaign?.status !== 'paused' || !campaign.resume_after) return;
+        const resumeAt = new Date(campaign.resume_after);
+        if (Number.isFinite(resumeAt.getTime()) && resumeAt.getTime() > Date.now()) {
+            const error = new Error(`WhatsApp rate-limited this campaign. You can resume it after ${resumeAt.toISOString().replace('T', ' ').slice(0, 16)} UTC.`);
+            error.statusCode = 409;
+            throw error;
         }
     }
 
@@ -672,14 +689,19 @@ class CampaignService {
         if (campaign.status !== 'paused') {
             throw new Error(`Cannot resume campaign in status: ${campaign.status}`);
         }
+        this._assertResumeAllowed(campaign);
         if (messageQueue.getCurrentOwnerUserId(userId) !== userId || messageQueue.getCurrentCampaignId(userId) !== campaignId) {
-            if (['whatsapp_disconnected', 'repeated_send_failures', 'media_upload_failed', 'media_load_failed'].includes(campaign.pause_reason)) {
-                await this._assertOwnerConnected(userId, campaign.provider || 'web');
-                messageQueue.setIO(io);
-                await messageQueue.start(campaignId, parseJsonField(campaign.settings, {}), userId);
-                return;
+            // Any automatic pause (disconnect, rate limit, restriction,
+            // failure rate, quality) unloads the worker. Resuming starts a
+            // fresh one that continues with the recipients still pending;
+            // recipients already sent are never sent again.
+            if (messageQueue.getCurrentCampaignId(userId) !== null) {
+                throw new Error('Another campaign is loaded in the queue. Pause or stop it first.');
             }
-            throw new Error('This campaign is not currently loaded in the queue.');
+            await this._assertOwnerConnected(userId, campaign.provider || 'web');
+            messageQueue.setIO(io);
+            await messageQueue.start(campaignId, parseJsonField(campaign.settings, {}), userId);
+            return;
         }
         await this._assertOwnerConnected(userId, campaign.provider || 'web');
         messageQueue.setIO(io);
@@ -863,6 +885,10 @@ class CampaignService {
             running: messageQueue.isRunning(userId),
             paused: messageQueue.isPaused(userId),
             currentCampaignId: messageQueue.getCurrentCampaignId(userId),
+            // Why the running campaign is not sending right now (limits,
+            // business hours, cooldown, retries) and quality warnings.
+            waiting: messageQueue.getWaiting(userId),
+            warning: messageQueue.getWarning(userId),
         };
     }
 }

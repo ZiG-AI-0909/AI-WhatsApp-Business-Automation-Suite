@@ -1,6 +1,7 @@
 // NOTE: env vars are loaded once by src/server.js from backend/.env —
 // do not add a dotenv.config() here.
 const { createClient } = require('@supabase/supabase-js');
+const { resolveDataOwner, DataAccessError, DATA_OWNER_HEADER } = require('../security/dataOwner');
 
 // ─── Supabase server-side client ──────────────────────────────────────────────
 // Uses the SECRET key — never exposed to the browser.
@@ -82,12 +83,28 @@ async function requireAuth(req, res, next) {
         if (error || !claims?.sub) {
             return res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
         }
+        // Shared workspaces: req.user.id is the user whose DATA this request
+        // acts on — the signed-in user, or an owner who shared their data
+        // with them (verified in the database, never trusted from the
+        // header). req.user.authId is always the signed-in user.
+        let dataOwnerId = claims.sub;
+        try {
+            const requestedOwner = (typeof req.get === 'function' ? req.get(DATA_OWNER_HEADER) : req.headers?.[DATA_OWNER_HEADER]) || null;
+            dataOwnerId = await resolveDataOwner(claims.sub, requestedOwner ? String(requestedOwner).trim() : null);
+        } catch (accessError) {
+            if (accessError instanceof DataAccessError) {
+                return res.status(accessError.statusCode).json({ error: accessError.message, code: accessError.code });
+            }
+            throw accessError;
+        }
         // Attach a clean user object — never trust IDs supplied in request bodies.
         // Claims carry the same identity fields the /user endpoint returned.
         req.user = {
-            id:    claims.sub,
-            email: claims.email,
-            role:  claims.role,
+            id:     dataOwnerId,
+            authId: claims.sub,
+            email:  claims.email,
+            role:   claims.role,
+            sharedAccess: dataOwnerId !== claims.sub,
         };
         next();
     } catch (err) {
@@ -96,4 +113,19 @@ async function requireAuth(req, res, next) {
     }
 }
 
-module.exports = { requireAuth };
+/**
+ * Owner-only routes: account credentials and connections (AI/email keys,
+ * WhatsApp linking, Business API tokens) are never managed through a
+ * shared workspace, even though shared users can work with the data.
+ */
+function requireDataOwnerSelf(req, res, next) {
+    if (req.user?.sharedAccess) {
+        return res.status(403).json({
+            error: 'Only the account owner can change settings or the WhatsApp connection of this workspace.',
+            code: 'OWNER_ONLY',
+        });
+    }
+    next();
+}
+
+module.exports = { requireAuth, requireDataOwnerSelf, supabaseAdmin };

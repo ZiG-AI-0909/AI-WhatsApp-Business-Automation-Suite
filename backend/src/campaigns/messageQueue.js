@@ -7,12 +7,42 @@
 // connected, the item fails with a clear error (retry/backoff per
 // rate limiter settings); there is no fallback path.
 // =============================================================
+const crypto = require('crypto');
 const db = require('../database/db');
 const contactService = require('../contacts/contactService');
 const RateLimiter = require('./rateLimiter');
 const { emitToUser } = require('../realtime');
 const { parseJsonField } = require('../utils/jsonField');
 const campaignMediaStorage = require('./campaignMediaStorage');
+const fieldRenderer = require('./fieldRenderer');
+const sendPolicy = require('./sendPolicy');
+const { nextSendWindow } = require('./recipientTime');
+const { sanitizeTemplate } = require('./campaignSettings');
+const { INTERRUPTED_PREFIX } = require('./deliveryTracker');
+const campaignLog = require('./campaignLog');
+const providerRegistry = require('../whatsapp/providerRegistry');
+const { isCampaignDeliveryMigrationAvailable } = require('../database/campaignDeliveryMigrationGuard');
+
+// A row left in 'processing' by a crash or restart may already have been
+// delivered, so it is never resent automatically.
+const INTERRUPTED_MESSAGE = `${INTERRUPTED_PREFIX} (server restart or crash) before WhatsApp confirmed it. It was not resent automatically because it may already have been delivered; use "Retry failed" only if the contact did not receive it.`;
+const NO_LOCAL_HOURS_MESSAGE = 'Skipped: your business hours never overlap with business hours in this recipient\'s country, so the message could not be sent at a reasonable local time.';
+// Minimum pause after a rate-limit response, even without Retry-After.
+const RATE_LIMIT_COOLDOWN_MS = 15 * 60_000;
+const HEALTH_CHECK_INTERVAL_MS = 10 * 60_000;
+
+// Same shape as Baileys' own ids (3EB0 + 18 hex). Assigned before sending
+// and reused for retries, so a receipt can prove an interrupted send went
+// out and WhatsApp treats a retried copy as the same message.
+function newWebMessageId() {
+    return `3EB0${crypto.randomBytes(9).toString('hex').toUpperCase()}`;
+}
+
+function renderTemplateParam(param, fields) {
+    return fieldRenderer.render(String(param ?? ''), fields, { strict: false })
+        .replace(/\{\{\s*\w+\s*\}\}/g, '')
+        .trim();
+}
 
 const OPT_OUT_PATTERNS = [
     /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\s*me\b/i,
@@ -75,10 +105,10 @@ function describeSendError(error) {
     return details.join(': ').slice(0, 1000);
 }
 
+// Kept for callers and tests: true when the error is temporary and the
+// recipient may be retried (see sendPolicy.classifySendError).
 function shouldRetrySendError(error) {
-    const status = error?.response?.status || error?.output?.statusCode;
-    if (status === 400) return false;
-    return !/WhatsApp number is not registered/i.test(error?.message || '');
+    return sendPolicy.classifySendError(error).kind === 'retry';
 }
 
 function isConnectionError(error) {
@@ -88,23 +118,6 @@ function isConnectionError(error) {
     }
     const status = error?.response?.status || error?.output?.statusCode;
     return !status && /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|socket (?:closed|ended)|connection (?:closed|lost|reset)/i.test(message);
-}
-
-function isProviderRestrictionError(error) {
-    const responseData = error?.response?.data;
-    const providerError = responseData?.error;
-    const code = providerError?.code || responseData?.error_code || error?.output?.payload?.code;
-    const status = error?.response?.status || error?.output?.statusCode;
-    const message = [
-        providerError?.message,
-        typeof providerError === 'string' ? providerError : null,
-        responseData?.message,
-        error?.output?.payload?.message,
-        error?.message,
-    ].filter(Boolean).join(' ');
-    return Number(status) === 429
-        || ['130429', '131048', '131056', '368'].includes(String(code))
-        || /temporarily\s+(?:been\s+)?(?:blocked|restricted|banned)|account.{0,40}(?:blocked|restricted)|(?:spam|rate)\s+limit/i.test(message);
 }
 
 function isNotRegisteredError(error) {
@@ -150,40 +163,68 @@ class MessageQueue {
     isPaused(userId) { return !!this._worker(userId)?._paused; }
     getCurrentCampaignId(userId) { return this._worker(userId)?._campaignId ?? null; }
     getCurrentOwnerUserId(userId) { return this._worker(userId)?._ownerUserId ?? null; }
+    /** Why the loaded campaign is not sending right now: { reason, until, since } or null. */
+    getWaiting(userId) { return this._worker(userId)?._waiting ?? null; }
+    getWarning(userId) { return this._worker(userId)?._warning ?? null; }
 
-    async start(campaignId, settings = {}, userId) {
-        if (!userId) throw new Error('Campaign must be started by its owner.');
-        if (this._worker(userId)?._running) throw new Error('A campaign is already running. Stop or pause it first.');
+    // Single clock for queue decisions (retry times, local hours); tests override it.
+    _now() { return new Date(); }
+
+    _createWorker(campaignId, userId, settings = {}, { provider = 'web', paused = false, mediaPath = null } = {}) {
         const worker = Object.create(this);
+        const rateLimiter = new RateLimiter(settings);
         Object.assign(worker, {
             _campaignId: campaignId,
             _ownerUserId: userId,
-            _provider: 'web',
+            _provider: providerRegistry.normalizeProvider(provider),
             _running: true,
-            _paused: false,
-            _rateLimiter: new RateLimiter(settings),
+            _paused: paused,
+            _rateLimiter: rateLimiter,
             _io: this._io,
             _processPromise: null,
             _consecutiveSendFailures: 0,
             _lastSendFailure: null,
             _consecutiveFailureContacts: [],
             _mediaBuffer: null,
-            _mediaPath: null,
+            _mediaPath: mediaPath,
+            _failureWindow: new sendPolicy.FailureWindow({
+                failureRate: rateLimiter.settings.failureRatePauseThreshold,
+                unregisteredRate: rateLimiter.settings.unregisteredRatePauseThreshold,
+            }),
+            _sentSinceCooldown: 0,
+            _cooldownUntil: 0,
+            _waiting: null,
+            _warning: null,
+            _health: null,
+            _healthCheckedAt: 0,
+            _initialQualityRating: undefined,
+            _template: sanitizeTemplate(settings.waTemplate),
         });
+        return worker;
+    }
+
+    async start(campaignId, settings = {}, userId) {
+        if (!userId) throw new Error('Campaign must be started by its owner.');
+        if (this._worker(userId)?._running) throw new Error('A campaign is already running. Stop or pause it first.');
+        const worker = this._createWorker(campaignId, userId, settings);
         try {
             const campaign = await db.getById('campaigns', campaignId, userId);
             if (!campaign) throw new Error('Campaign not found');
             if (!['draft', 'stopped', 'paused', 'queued'].includes(campaign.status)) {
                 throw new Error(`Cannot start campaign in status: ${campaign.status}`);
             }
-            worker._provider = campaign.provider || 'web';
+            worker._provider = providerRegistry.normalizeProvider(campaign.provider);
             await worker._loadCampaignMedia(campaign);
             const claimed = await db.claimCampaignToRun(userId, campaignId, campaign.status);
             if (!claimed.length) {
                 throw new Error('Another campaign is already running, or this campaign is no longer available to start.');
             }
             this._queues.set(userId, worker);
+            if (campaign.resume_after && isCampaignDeliveryMigrationAvailable()) {
+                await this._update(worker, 'campaigns', { resume_after: null }, 'id = ? AND user_id = ?', [campaignId, userId]);
+            }
             worker._emit('campaign:started', { campaignId, name: campaign.name });
+            campaignLog.info('campaign_started', { campaign: campaignId, user: userId, provider: worker._provider });
             this._startProcessor(worker);
         } catch (error) {
             worker._running = false;
@@ -278,52 +319,164 @@ class MessageQueue {
      * deliberately no fallback to any other user's connection.
      */
     async _getSender(userId, provider) {
-        if (provider === 'business') {
-            const businessApiProvider = require('../whatsapp/businessApiProvider');
-            if (businessApiProvider.getStatus(userId) !== 'connected') {
-                throw new Error('Your WhatsApp Business API is not connected. Reconnect it to continue this campaign.');
-            }
-            return (phone, body, media, buttons) => businessApiProvider.sendMessage(userId, phone, body, media, buttons);
+        // Sends only ever go through the owner's own connection; the web
+        // provider revives an idle session from stored auth before failing.
+        return providerRegistry.get(provider).getSender(userId);
+    }
+
+    /**
+     * Rows still marked 'processing' when a worker starts were being sent
+     * when the previous process stopped. WhatsApp may already have them, so
+     * they are held as failed with an explanation instead of being resent.
+     * A later delivery receipt for the same message confirms them as sent.
+     */
+    async _recoverInterruptedSends() {
+        const campaignId = this._campaignId;
+        const userId = this._ownerUserId;
+        const interrupted = Number(await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing'])) || 0;
+        if (!interrupted) return 0;
+        await this._update(this, 'campaign_contacts', {
+            status: 'failed',
+            last_error: INTERRUPTED_MESSAGE,
+            retry_at: null,
+        }, 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing']);
+        await this._recountCampaign(campaignId, userId);
+        campaignLog.warn('interrupted_sends_held', { campaign: campaignId, count: interrupted });
+        return interrupted;
+    }
+
+    /** Record why sending is on hold; emitted only when the reason changes. */
+    _setWaiting(reason, until = null) {
+        const untilIso = until ? new Date(until).toISOString() : null;
+        if (!reason && !this._waiting) return;
+        if (reason && this._waiting?.reason === reason && (this._waiting.until === untilIso || reason === 'scheduled_retries')) return;
+        this._waiting = reason ? { reason, until: untilIso, since: new Date().toISOString() } : null;
+        try {
+            this._emit('campaign:waiting', { campaignId: this._campaignId, waiting: this._waiting });
+        } catch (error) {
+            console.error('[messageQueue] failed to emit campaign:waiting:', error.message);
         }
-        const sessionManager = require('../whatsapp/sessionManager');
-        if (sessionManager.getStatus(userId) !== 'connected') {
-            // Unattended revival: a scheduled campaign may fire after the
-            // 2h idle timeout dropped the socket. Try reconnecting from the
-            // stored Supabase auth state BEFORE giving up — the existing
-            // error message stays so the queue's retry/backoff and any
-            // failure record look exactly like before when revival fails.
-            const revived = await sessionManager.ensureConnected(
-                userId,
-                Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000)
+    }
+
+    _setWarning(message) {
+        if (!message || this._warning === message) return;
+        this._warning = message;
+        try {
+            this._emit('campaign:warning', { campaignId: this._campaignId, message });
+        } catch (error) {
+            console.error('[messageQueue] failed to emit campaign:warning:', error.message);
+        }
+    }
+
+    _outcomeWindow() {
+        if (!this._failureWindow) {
+            this._failureWindow = new sendPolicy.FailureWindow({
+                failureRate: this._rateLimiter?.settings?.failureRatePauseThreshold ?? 0.5,
+                unregisteredRate: this._rateLimiter?.settings?.unregisteredRatePauseThreshold ?? 0.4,
+            });
+        }
+        return this._failureWindow;
+    }
+
+    /** Count a successful send toward the optional batch cooldown. */
+    _noteSent() {
+        const every = Number(this._rateLimiter?.settings?.cooldownEvery) || 0;
+        const minutes = Number(this._rateLimiter?.settings?.cooldownMinutes) || 0;
+        if (every <= 0 || minutes <= 0) return;
+        this._sentSinceCooldown = (this._sentSinceCooldown || 0) + 1;
+        if (this._sentSinceCooldown >= every) {
+            this._sentSinceCooldown = 0;
+            this._cooldownUntil = this._now().getTime() + minutes * 60_000;
+        }
+    }
+
+    /**
+     * Business API only: refresh the number's quality rating and messaging
+     * limit tier every 10 minutes. Pauses when the number is flagged or its
+     * rating drops to RED during this run. Returns true when it paused.
+     */
+    async _checkProviderHealth() {
+        this._healthCheckedAt = Date.now();
+        let health = null;
+        try {
+            health = await providerRegistry.get(this._provider).getHealth(this._ownerUserId);
+        } catch (error) {
+            campaignLog.warn('provider_health_unavailable', { campaign: this._campaignId, error: error.message });
+        }
+        this._health = health || this._health || null;
+        if (!health) return false;
+        const rating = health.qualityRating ? String(health.qualityRating).toUpperCase() : null;
+        if (this._initialQualityRating === undefined) this._initialQualityRating = rating;
+        const status = String(health.status || '').toUpperCase();
+        if (['FLAGGED', 'RESTRICTED', 'BANNED', 'RATE_LIMITED'].includes(status)) {
+            await this._pauseCampaign('quality_low', `WhatsApp reports this number's status as ${status}.`);
+            return true;
+        }
+        if (rating === 'RED' && this._initialQualityRating !== 'RED') {
+            await this._pauseCampaign('quality_low', 'WhatsApp lowered this number\'s quality rating to RED during the campaign.');
+            return true;
+        }
+        if (rating === 'RED') {
+            this._setWarning('This number\'s quality rating is RED. WhatsApp may lower its messaging limit; review content and consent before sending more.');
+        }
+        return false;
+    }
+
+    async _msUntilNextScheduledRow(campaignId, userId) {
+        try {
+            const [next] = await db.select(
+                'campaign_contacts',
+                'retry_at',
+                'campaign_id = ? AND user_id = ? AND status = ? AND retry_at IS NOT NULL',
+                [campaignId, userId, 'pending'],
+                'retry_at',
+                1,
+                0,
             );
-            if (!revived) {
-                throw new Error('Your WhatsApp session is not connected. Reconnect WhatsApp to continue this campaign.');
-            }
+            const at = next?.retry_at ? new Date(next.retry_at).getTime() : NaN;
+            return Number.isFinite(at) ? Math.max(0, at - this._now().getTime()) : 1000;
+        } catch {
+            return 1000;
         }
-        return (phone, body, media) => sessionManager.sendMessage(userId, phone, body, null, media);
     }
 
     async _process() {
+        await this._recoverInterruptedSends();
         while (this._running) {
             if (this._paused) { await this._sleep(500); continue; }
+            if (this._provider === 'business' && Date.now() - (this._healthCheckedAt || 0) >= HEALTH_CHECK_INTERVAL_MS) {
+                if (await this._checkProviderHealth()) return;
+            }
             const limitCheck = this._rateLimiter
-                ? await this._rateLimiter.checkDatabaseLimits(db, this._ownerUserId)
+                ? await this._rateLimiter.checkDatabaseLimits(db, this._ownerUserId, this._now(), {
+                    providerDailyLimit: this._health?.dailyRecipientLimit,
+                })
                 : { allowed: true };
-            if (!limitCheck.allowed) { await this._sleepResponsive(60000); continue; }
-            if (this._rateLimiter && !this._rateLimiter.isWithinBusinessHours()) {
-                await this._sleepResponsive(Math.min(this._rateLimiter.msUntilBusinessHours(), 60000));
+            if (!limitCheck.allowed) {
+                this._setWaiting(limitCheck.code || 'hourly_limit');
+                await this._sleepResponsive(60000);
+                continue;
+            }
+            if (this._rateLimiter && !this._rateLimiter.isWithinBusinessHours(this._now())) {
+                const waitMs = this._rateLimiter.msUntilBusinessHours(this._now());
+                this._setWaiting('outside_business_hours', new Date(this._now().getTime() + waitMs));
+                await this._sleepResponsive(Math.min(waitMs, 60000));
+                continue;
+            }
+            const cooldownMs = (this._cooldownUntil || 0) - this._now().getTime();
+            if (cooldownMs > 0) {
+                this._setWaiting('cooldown', new Date(this._cooldownUntil));
+                await this._sleepResponsive(Math.min(cooldownMs, 60000));
                 continue;
             }
 
             const campaignId = this._campaignId;
             const userId = this._ownerUserId;
-            await this._update(this, 'campaign_contacts', { status: 'pending' }, 'campaign_id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'processing']);
-
             const item = await db.select(
                 'campaign_contacts',
-                '*, contacts(phone), campaigns(media_path, media_type, media_filename, media_mimetype, buttons)',
+                '*, contacts(phone, name), campaigns(media_path, media_type, media_filename, media_mimetype, buttons)',
                 'campaign_id = ? AND user_id = ? AND status = ? AND (retry_at IS NULL OR retry_at <= ?)',
-                [campaignId, userId, 'pending', new Date()],
+                [campaignId, userId, 'pending', this._now()],
                 'id',
                 1,
                 0
@@ -331,7 +484,14 @@ class MessageQueue {
 
             if (!item || item.length === 0) {
                 const remaining = await db.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND status IN (\'pending\', \'processing\')', [campaignId, userId]);
-                if (remaining > 0) { await this._sleepResponsive(1000); continue; }
+                if (remaining > 0) {
+                    // Everything left is waiting for a retry time or for the
+                    // recipient's local business hours.
+                    const waitMs = await this._msUntilNextScheduledRow(campaignId, userId);
+                    this._setWaiting('scheduled_retries', waitMs > 1000 ? new Date(this._now().getTime() + waitMs) : null);
+                    await this._sleepResponsive(Math.max(1000, Math.min(waitMs, 60000)));
+                    continue;
+                }
                 const counters = await db.recountCampaignCounters(campaignId, userId);
                 const status = counters.sent === 0
                     ? 'failed'
@@ -346,6 +506,8 @@ class MessageQueue {
                     updated_at: new Date(),
                 }, 'id = ? AND user_id = ?', [campaignId, userId]);
                 this._emit(status === 'failed' ? 'campaign:error' : 'campaign:completed', { campaignId, status });
+                campaignLog.info('campaign_finished', { campaign: campaignId, status, sent: counters.sent, failed: counters.failed, opt_outs: counters.opt_outs, skipped: counters.skipped });
+                this._waiting = null;
                 this._running = false;
                 this._queues.delete(userId);
                 if (status === 'completed' || status === 'completed_with_errors') {
@@ -370,6 +532,8 @@ class MessageQueue {
                 provider_message_id: rawItem.provider_message_id,
                 retry_at: rawItem.retry_at,
                 phone: rawItem.contacts?.phone || '',
+                contact_name: rawItem.contacts?.name || '',
+                contact_data: rawItem.contact_data,
                 media_path: rawItem.campaigns?.media_path || null,
                 media_type: rawItem.campaigns?.media_type || null,
                 media_filename: rawItem.campaigns?.media_filename || null,
@@ -382,6 +546,23 @@ class MessageQueue {
                 await this._recountCampaign(campaignId, userId);
                 this._emitProgress(campaignId);
                 continue;
+            }
+
+            // Recipient's local time: only send inside the business-hours
+            // window in the recipient's country as well as the sender's.
+            const sendSettings = this._rateLimiter?.settings;
+            if (sendSettings?.respectRecipientTimezone && sendSettings.businessHoursEnabled) {
+                const window = nextSendWindow(sendSettings, contactItem.phone, this._now());
+                if (!window.at) {
+                    await this._update(this, 'campaign_contacts', { status: 'skipped', last_error: NO_LOCAL_HOURS_MESSAGE, retry_at: null }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+                    await this._recountCampaign(campaignId, userId);
+                    this._emitProgress(campaignId);
+                    continue;
+                }
+                if (window.at.getTime() - this._now().getTime() > 1000) {
+                    await this._update(this, 'campaign_contacts', { retry_at: window.at }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+                    continue;
+                }
             }
 
             const attempts = parseInt(contactItem.attempts) || 0;
@@ -398,9 +579,35 @@ class MessageQueue {
 
             let attemptStarted = false;
             let result;
+            const sendOptions = { callbackData: `cc:${contactItem.id}` };
             if (!sendError) {
-                await this._update(this, 'campaign_contacts', { status: 'processing', attempts: attempts + 1 }, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+                // Claim the row atomically (pending → processing). If another
+                // worker or instance already took it, skip it: never send the
+                // same recipient twice. WhatsApp Web messages get their id
+                // now, before sending, and keep it across retries.
+                const messageId = contactItem.provider_message_id || ((this._provider || 'web') === 'web' ? newWebMessageId() : null);
+                const claim = { status: 'processing', attempts: attempts + 1 };
+                if (messageId && messageId !== contactItem.provider_message_id) claim.provider_message_id = messageId;
+                const claimed = await this._update(this, 'campaign_contacts', claim, 'id = ? AND user_id = ? AND status = ?', [contactItem.id, userId, 'pending']);
+                if (Array.isArray(claimed) && claimed.length === 0) {
+                    campaignLog.warn('send_skipped_already_claimed', { campaign: campaignId, contact: contactItem.id });
+                    continue;
+                }
                 attemptStarted = true;
+                if (messageId) sendOptions.messageId = messageId;
+                const template = this._provider === 'business' ? this._template : null;
+                if (template) {
+                    const fields = {
+                        ...(parseJsonField(contactItem.contact_data, {}) || {}),
+                        phone: contactItem.phone,
+                    };
+                    if (contactItem.contact_name && !fields.name) fields.name = contactItem.contact_name;
+                    sendOptions.template = {
+                        name: template.name,
+                        language: template.language,
+                        bodyParams: template.bodyParams.map(param => renderTemplateParam(param, fields)),
+                    };
+                }
                 const buttons = parseJsonField(contactItem.buttons, []);
                 const media = contactItem.media_path ? {
                     buffer: this._mediaBuffer,
@@ -409,7 +616,7 @@ class MessageQueue {
                     mimetype: contactItem.media_mimetype,
                 } : null;
                 try {
-                    result = await send(contactItem.phone, contactItem.rendered_message, media, buttons);
+                    result = await send(contactItem.phone, contactItem.rendered_message, media, buttons, sendOptions);
                 } catch (error) {
                     sendError = error;
                 }
@@ -423,9 +630,12 @@ class MessageQueue {
                 continue;
             }
 
-            const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || null;
+            const providerMessageId = result?.key?.id || result?.id?._serialized || result?.id || result?.messages?.[0]?.id || sendOptions.messageId || null;
             this._consecutiveSendFailures = 0;
             this._lastSendFailure = null;
+            this._outcomeWindow().record('sent');
+            this._noteSent();
+            this._setWaiting(null);
             await this._update(this, 'campaign_contacts', { status: 'sent', provider_message_id: providerMessageId, sent_at: new Date(), retry_at: null }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
             await this._recountCampaign(campaignId, userId);
             this._emitProgress(campaignId);
@@ -435,22 +645,55 @@ class MessageQueue {
 
     async _handleSendFailure(error, contactItem, attempts, attemptStarted, campaignId, userId) {
         const lastError = describeSendError(error);
-        const retryable = shouldRetrySendError(error);
+        const policy = sendPolicy.classifySendError(error);
         const connectionError = isConnectionError(error);
         const attemptsAfterFailure = attempts + (attemptStarted ? 1 : 0);
-        const maxAttempts = Number(this._rateLimiter?.settings.retryCount ?? 2);
+        const settings = this._rateLimiter?.settings || {};
+        const maxAttempts = Number(settings.retryCount ?? 2);
         const hasMedia = !!contactItem.media_path;
         const mediaFailure = isMediaUploadError(error, hasMedia);
-        const notRegistered = isNotRegisteredError(error);
-        console.error(`[messageQueue] Send failed campaign=${campaignId} contact=${contactItem.id} class=${connectionError ? 'connection' : mediaFailure ? 'media' : 'contact'} provider=${this._provider || 'web'} retryable=${retryable}: ${lastError}`);
-        if (isProviderRestrictionError(error)) {
-            await this._pauseCampaignForSendFailure(lastError, 'provider_restriction', contactItem, attempts, campaignId, userId);
+        const notRegistered = policy.kind === 'not_registered' || isNotRegisteredError(error);
+        campaignLog.warn('send_failed', {
+            campaign: campaignId,
+            contact: contactItem.id,
+            phone: contactItem.phone,
+            provider: this._provider || 'web',
+            class: connectionError ? 'connection' : mediaFailure ? 'media' : policy.kind,
+            code: policy.code || undefined,
+            status: policy.status || undefined,
+            attempt: attemptsAfterFailure,
+            error: lastError,
+        });
+        // Rate limits, spam/policy restrictions, auth and template problems
+        // affect every recipient: stop sending instead of retrying.
+        if (policy.kind === 'pause') {
+            const resumeAfter = policy.pauseReason === 'rate_limited'
+                ? new Date(Date.now() + Math.max(Number(policy.retryAfterMs) || 0, RATE_LIMIT_COOLDOWN_MS))
+                : null;
+            await this._pauseCampaignForSendFailure(lastError, policy.pauseReason, contactItem, attempts, campaignId, userId, { resumeAfter });
             return true;
         }
         if (connectionError || mediaFailure) {
             const reason = connectionError ? 'whatsapp_disconnected' : 'media_upload_failed';
             await this._pauseCampaignForSendFailure(lastError, reason, contactItem, attempts, campaignId, userId);
             return true;
+        }
+        // WhatsApp says this person opted out of marketing messages (131050):
+        // record the opt-out so no campaign messages them again.
+        if (policy.kind === 'opt_out') {
+            try {
+                await contactService.setOptOut(contactItem.phone, userId, 'whatsapp');
+            } catch (optOutError) {
+                campaignLog.error('opt_out_record_failed', { campaign: campaignId, contact: contactItem.id, error: optOutError.message });
+            }
+            await this._update(this, 'campaign_contacts', {
+                status: 'opted_out',
+                attempts: attemptsAfterFailure,
+                last_error: lastError,
+                retry_at: null,
+            }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
+            await this._recountCampaign(campaignId, userId);
+            return false;
         }
 
         const configuredThreshold = Number(this._rateLimiter?.settings?.circuitBreakerThreshold ?? 5);
@@ -480,13 +723,22 @@ class MessageQueue {
             await this._pauseCampaignForSendFailure(lastError, 'repeated_send_failures', contactItem, attempts, campaignId, userId);
             return true;
         }
-        if (retryable && attemptsAfterFailure <= maxAttempts) {
-            const retryDelay = Number(this._rateLimiter?.settings.retryDelay ?? 30000);
+        // Temporary errors retry with exponential backoff (retryDelay × 2^n,
+        // capped, never sooner than a server Retry-After). Permanent errors
+        // (invalid number, unsupported message, …) are never retried.
+        if (policy.kind === 'retry' && attemptsAfterFailure <= maxAttempts) {
+            const delay = sendPolicy.backoffDelayMs({
+                baseMs: settings.retryDelay ?? 30000,
+                attempt: attemptsAfterFailure,
+                retryAfterMs: policy.retryAfterMs,
+                minDelayMs: policy.minDelayMs,
+                maxMs: settings.maxRetryDelay,
+            });
             await this._update(this, 'campaign_contacts', {
                 status: 'pending',
                 attempts: attemptsAfterFailure,
                 last_error: lastError,
-                retry_at: new Date(Date.now() + retryDelay),
+                retry_at: new Date(this._now().getTime() + delay),
             }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
         } else {
             await this._update(this, 'campaign_contacts', {
@@ -497,26 +749,108 @@ class MessageQueue {
             }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
             await this._recountCampaign(campaignId, userId, lastError);
         }
+
+        // Rising failure share (or many numbers not on WhatsApp) over the
+        // last attempts pauses the campaign before it hurts the number.
+        const outcomes = this._outcomeWindow();
+        outcomes.record(notRegistered ? 'not_registered' : 'failed');
+        const tripped = outcomes.check();
+        if (tripped) {
+            outcomes.reset();
+            await this._pauseCampaign(tripped.reason, `${tripped.message} Last error: ${lastError}`);
+            return true;
+        }
         return false;
     }
 
-    async _pauseCampaignForSendFailure(lastError, reason, contactItem, attempts, campaignId, userId) {
+    async _pauseCampaignForSendFailure(lastError, reason, contactItem, attempts, campaignId, userId, options = {}) {
         await this._update(this, 'campaign_contacts', {
             status: 'pending',
             attempts,
             retry_at: null,
         }, 'id = ? AND user_id = ?', [contactItem.id, userId]);
-        await this._update(this, 'campaigns', {
+        await this._pauseCampaign(reason, lastError, options, campaignId, userId);
+    }
+
+    /**
+     * Pause the campaign this worker is running and unload the worker.
+     * Resuming later starts a fresh worker that continues with the rows
+     * still pending; nothing already sent is sent again.
+     */
+    async _pauseCampaign(reason, lastError, { resumeAfter = null } = {}, campaignId = this._campaignId, userId = this._ownerUserId) {
+        const message = String(lastError || sendPolicy.describePauseReason(reason));
+        const data = {
             status: 'paused',
             pause_reason: reason,
-            last_error: lastError.slice(0, 500),
+            last_error: message.slice(0, 500),
             updated_at: new Date(),
-        }, 'id = ? AND user_id = ?', [campaignId, userId]);
-        await this._recountCampaign(campaignId, userId, lastError);
+        };
+        if (resumeAfter && isCampaignDeliveryMigrationAvailable()) data.resume_after = resumeAfter;
+        await this._update(this, 'campaigns', data, 'id = ? AND user_id = ?', [campaignId, userId]);
+        await this._recountCampaign(campaignId, userId, message);
         this._running = false;
         this._paused = true;
-        this._queues.delete(userId);
-        this._emit('campaign:paused', { campaignId, reason, error: lastError });
+        this._waiting = null;
+        if (!this._queues.get(userId) || this._queues.get(userId) === this) this._queues.delete(userId);
+        campaignLog.warn('campaign_paused', { campaign: campaignId, reason, resume_after: data.resume_after?.toISOString?.(), error: message });
+        this._emit('campaign:paused', {
+            campaignId,
+            reason,
+            error: message,
+            ...(data.resume_after ? { resumeAfter: data.resume_after.toISOString() } : {}),
+        });
+    }
+
+    /**
+     * Pause because of a signal from WhatsApp that arrived outside the send
+     * loop (delivery webhook failure, quality downgrade). Pauses the loaded
+     * worker, or marks the campaign row when it runs elsewhere.
+     */
+    async pauseForProviderSignal(userId, campaignId, reason, message, options = {}) {
+        if (!userId) return false;
+        const worker = this._worker(userId);
+        if (worker?._running && (campaignId == null || String(worker._campaignId) === String(campaignId))) {
+            await worker._pauseCampaign(reason, message, options);
+            return true;
+        }
+        if (campaignId == null) {
+            // Number-level signal (quality downgrade) with no worker loaded
+            // here: pause this owner's running Business API campaigns.
+            const running = await db.select('campaigns', 'id', 'user_id = ? AND status = ? AND provider = ?', [userId, 'running', 'business'], 'id', 20, 0);
+            let paused = false;
+            for (const row of running || []) {
+                paused = (await this.pauseForProviderSignal(userId, row.id, reason, message, options)) || paused;
+            }
+            return paused;
+        }
+        const data = {
+            status: 'paused',
+            pause_reason: reason,
+            last_error: String(message || '').slice(0, 500),
+            updated_at: new Date(),
+        };
+        if (options.resumeAfter && isCampaignDeliveryMigrationAvailable()) data.resume_after = options.resumeAfter;
+        const updated = await this._update(this, 'campaigns', data, 'id = ? AND user_id = ? AND status = ?', [campaignId, userId, 'running']);
+        if (Array.isArray(updated) && updated.length) {
+            campaignLog.warn('campaign_paused', { campaign: campaignId, reason, source: 'provider_signal', error: message });
+            emitToUser(this._io, userId, 'campaign:paused', { campaignId, reason, error: data.last_error });
+            return true;
+        }
+        return false;
+    }
+
+    /** A message accepted earlier was reported failed by WhatsApp. */
+    recordAsyncOutcome(userId, campaignId, outcome) {
+        const worker = this._worker(userId);
+        if (!outcome || !worker?._running || String(worker._campaignId) !== String(campaignId)) return;
+        const outcomes = worker._outcomeWindow();
+        outcomes.reclassify('sent', outcome);
+        const tripped = outcomes.check();
+        if (tripped) {
+            outcomes.reset();
+            worker._pauseCampaign(tripped.reason, `${tripped.message} (reported by WhatsApp after sending)`)
+                .catch(error => campaignLog.error('pause_failed', { campaign: campaignId, error: error.message }));
+        }
     }
 
     async _recountCampaign(campaignId, userId, lastError = null) {
@@ -571,16 +905,8 @@ class MessageQueue {
         if (!campaign) return null;
 
         try {
-            if ((campaign.provider || 'web') === 'business') {
-                const businessApiProvider = require('../whatsapp/businessApiProvider');
-                if (businessApiProvider.getStatus(userId) !== 'connected') return null;
-            } else {
-                const sessionManager = require('../whatsapp/sessionManager');
-                if (sessionManager.getStatus(userId) !== 'connected') {
-                    const connected = await sessionManager.ensureConnected(userId, Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000));
-                    if (!connected || sessionManager.getStatus(userId) !== 'connected') return null;
-                }
-            }
+            const providerApi = providerRegistry.get(campaign.provider);
+            if (!await providerApi.isConnected(userId) || providerApi.getStatus(userId) !== 'connected') return null;
             await this.start(campaign.id, parseJsonField(campaign.settings, {}), userId);
             return campaign.id;
         } catch (error) {
@@ -590,15 +916,7 @@ class MessageQueue {
     }
 
     async _ownerIsConnected(userId, provider) {
-        if (provider === 'business') {
-            return require('../whatsapp/businessApiProvider').getStatus(userId) === 'connected';
-        }
-        const sessionManager = require('../whatsapp/sessionManager');
-        if (sessionManager.getStatus(userId) === 'connected') return true;
-        return !!await sessionManager.ensureConnected(
-            userId,
-            Number(process.env.WA_SEND_REVIVE_TIMEOUT_MS || 45000)
-        );
+        return providerRegistry.get(provider).isConnected(userId);
     }
 
     async _pauseQueuedCampaign(campaign, reason, error) {
@@ -798,15 +1116,11 @@ class MessageQueue {
                 if (queuedId !== null) resumed = resumed ?? queuedId;
                 continue;
             }
-            const worker = Object.create(this);
             const settings = parseJsonField(activeCampaign.settings, {});
-            Object.assign(worker, { _campaignId: activeCampaign.id, _ownerUserId: userId, _running: true, _paused: activeCampaign.status === 'paused', _provider: activeCampaign.provider || 'web', _rateLimiter: new RateLimiter(settings), _io: this._io, _processPromise: null });
-            Object.assign(worker, {
-                _consecutiveSendFailures: 0,
-                _lastSendFailure: null,
-                _consecutiveFailureContacts: [],
-                _mediaBuffer: null,
-                _mediaPath: activeCampaign.media_path || null,
+            const worker = this._createWorker(activeCampaign.id, userId, settings, {
+                provider: activeCampaign.provider || 'web',
+                paused: activeCampaign.status === 'paused',
+                mediaPath: activeCampaign.media_path || null,
             });
             this._queues.set(userId, worker);
             try {
@@ -848,5 +1162,6 @@ class MessageQueue {
 module.exports = new MessageQueue();
 module.exports.OPT_OUT_PATTERNS = OPT_OUT_PATTERNS;
 module.exports.shouldRetrySendError = shouldRetrySendError;
+module.exports.INTERRUPTED_MESSAGE = INTERRUPTED_MESSAGE;
 module.exports.isConnectionError = isConnectionError;
 module.exports.describeSendError = describeSendError;

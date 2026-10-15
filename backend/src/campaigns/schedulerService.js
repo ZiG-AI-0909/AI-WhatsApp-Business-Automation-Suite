@@ -179,6 +179,12 @@ class SchedulerService {
             ms = Math.max(ms, (Math.ceil(contacts / s.maxPerHour) - 1) * 3600000 + (contacts % s.maxPerHour || s.maxPerHour) * delay * JITTER_EXPECTED);
         }
 
+        // Optional batch cooldown: a pause of cooldownMinutes after every
+        // cooldownEvery messages.
+        if (s.cooldownEvery > 0 && s.cooldownMinutes > 0 && contacts > s.cooldownEvery) {
+            ms += Math.floor((contacts - 1) / s.cooldownEvery) * s.cooldownMinutes * 60000;
+        }
+
         // Daily cap: batches that cannot fit under maxPerDay spill into
         // additional days.
         if (s.maxPerDay > 0 && contacts > s.maxPerDay) {

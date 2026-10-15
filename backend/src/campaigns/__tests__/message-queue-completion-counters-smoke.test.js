@@ -22,7 +22,7 @@ async function main() {
             Object.assign(counts, values);
             updates.length = 0;
             queue._queues.clear();
-            await queue._process.call({
+            await queue._process.call(Object.assign(Object.create(queue), {
                 _campaignId: campaignId,
                 _ownerUserId: USER_ID,
                 _running: true,
@@ -31,7 +31,7 @@ async function main() {
                 _queues: queue._queues,
                 _update: queue._update,
                 _emit: queue._emit,
-            });
+            }));
             return updates.find(update => ['completed', 'failed', 'completed_with_errors'].includes(update.status));
         };
 

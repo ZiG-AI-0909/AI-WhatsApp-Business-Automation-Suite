@@ -25,10 +25,13 @@ router.post('/', async (req, res) => {
         const created = await contactService.upsert(normalizedPhone, {
             name: req.body?.name || '',
             company: req.body?.company || '',
-            marketing_opt_in: req.body?.marketing_opt_in === true,
+            // Unchecked must not opt out an existing contact that is re-added.
+            marketing_opt_in: req.body?.marketing_opt_in === true ? true : undefined,
+            confirm_resubscribe: req.body?.confirm_resubscribe === true,
         }, req.user.id);
         res.status(201).json(created);
     } catch (err) {
+        if (err.statusCode) return res.status(err.statusCode).json({ error: err.message, code: err.code });
         console.error('[contacts] manual create failed:', err);
         res.status(500).json({ error: 'Could not save the contact. Please try again.' });
     }
@@ -83,7 +86,7 @@ router.put('/:id', async (req, res) => {
         if (!updated) return res.status(404).json({ error: 'Not found' });
         res.json(updated);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.status(err.statusCode || 500).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     }
 });
 
@@ -92,7 +95,7 @@ router.post('/:id/optout', async (req, res) => {
     try {
         const c = await contactService.findById(+req.params.id, req.user.id);
         if (!c) return res.status(404).json({ error: 'Not found' });
-        await contactService.setOptOut(c.phone, req.user.id);
+        await contactService.setOptOut(c.phone, req.user.id, 'manual');
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });

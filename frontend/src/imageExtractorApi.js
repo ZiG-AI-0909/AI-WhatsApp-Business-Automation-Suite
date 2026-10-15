@@ -5,6 +5,7 @@ const BACKEND_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').re
 export const API = `${BACKEND_URL}/api/image-extractor`
 
 import { supabase } from './supabaseClient.js'
+import { dataOwnerHeaders } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 
 export { friendlyErrorMessage }
@@ -21,7 +22,7 @@ export async function authHeaders() {
     } = await supabase.auth.getSession()
     if (error) console.error('Supabase session error:', error)
     if (session?.access_token) {
-      return { Authorization: `Bearer ${session.access_token}` }
+      return { Authorization: `Bearer ${session.access_token}`, ...dataOwnerHeaders(session) }
     }
   } catch (error) {
     console.error('Failed to get Supabase session:', error)

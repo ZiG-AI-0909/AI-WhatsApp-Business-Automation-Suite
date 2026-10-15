@@ -9,8 +9,11 @@ async function main() {
     const original = {
         select: db.select,
         update: db.update,
+        count: db.count,
         findByPhone: contactService.findByPhone,
     };
+    // No sends were interrupted before this run.
+    db.count = async () => 0;
     const updates = [];
     const emitted = [];
     let selected = false;
@@ -33,7 +36,7 @@ async function main() {
 
     try {
         queue._queues.clear();
-        await queue._process.call({
+        await queue._process.call(Object.assign(Object.create(queue), {
             _campaignId: 3,
             _ownerUserId: USER_ID,
             _provider: 'web',
@@ -48,7 +51,7 @@ async function main() {
             _getSender: async () => { throw new Error('Your WhatsApp session is not connected.'); },
             _emit: (event, payload) => emitted.push({ event, payload }),
             _emitProgress: () => {},
-        });
+        }));
 
         const contactUpdate = updates.find(update => update.table === 'campaign_contacts' && update.data.attempts !== undefined);
         const campaignUpdate = updates.find(update => update.table === 'campaigns');
@@ -65,7 +68,7 @@ async function main() {
         console.log('Message queue connection-pause smoke test passed');
     } finally {
         queue._queues.clear();
-        Object.assign(db, { select: original.select, update: original.update });
+        Object.assign(db, { select: original.select, update: original.update, count: original.count });
         contactService.findByPhone = original.findByPhone;
     }
 }

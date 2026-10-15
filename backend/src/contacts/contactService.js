@@ -1,6 +1,54 @@
 const db = require('../database/db');
 const { supabase, isAvailable } = require('../database/supabaseClient');
 const { parseJsonField } = require('../utils/jsonField');
+const { isCampaignDeliveryMigrationAvailable } = require('../database/campaignDeliveryMigrationGuard');
+
+const OPT_OUT_SOURCES = new Set(['reply', 'manual', 'whatsapp']);
+const OPT_OUT_HOW = {
+    reply: 'by replying STOP',
+    whatsapp: "through WhatsApp's marketing opt-out",
+    manual: 'when it was marked opted out',
+};
+
+/** True when the contact asked to stop and has not opted in since. */
+function optedOutByRequest(contact) {
+    if (!contact || Number(contact.marketing_opt_in) || !contact.opted_out_at) return false;
+    return !contact.opted_in_at || new Date(contact.opted_in_at) < new Date(contact.opted_out_at);
+}
+
+function optedOutError(contact) {
+    const when = new Date(contact.opted_out_at).toISOString().slice(0, 10);
+    const how = OPT_OUT_HOW[contact.opt_out_source] ? ` ${OPT_OUT_HOW[contact.opt_out_source]}` : '';
+    return Object.assign(
+        new Error(`This contact opted out on ${when}${how}. Only turn marketing messages back on if they asked to receive them again.`),
+        { statusCode: 409, code: 'OPTED_OUT' },
+    );
+}
+
+/**
+ * Consent columns for a requested marketing_opt_in change. Opting a
+ * contact back in after they asked to stop needs data.confirm_resubscribe;
+ * without it this throws (or, with lenient, leaves consent unchanged).
+ */
+function consentChanges(existing, data, { lenient = false } = {}) {
+    if (data.marketing_opt_in === undefined) return {};
+    const recordConsent = isCampaignDeliveryMigrationAvailable();
+    const now = new Date();
+    if (!data.marketing_opt_in) {
+        if (existing && Number(existing.marketing_opt_in) && recordConsent) {
+            return { marketing_opt_in: 0, opted_out_at: now, opt_out_source: 'manual' };
+        }
+        return { marketing_opt_in: 0 };
+    }
+    if (existing && Number(existing.marketing_opt_in)) return {};
+    if (optedOutByRequest(existing) && data.confirm_resubscribe !== true) {
+        if (lenient) return {};
+        throw optedOutError(existing);
+    }
+    return recordConsent
+        ? { marketing_opt_in: 1, opted_in_at: now, opt_in_source: data.opt_in_source || 'manual' }
+        : { marketing_opt_in: 1 };
+}
 
 class ContactService {
     async upsertMany(entries, userId) {
@@ -39,6 +87,8 @@ class ContactService {
                         tags: JSON.stringify(data.tags || []),
                         notes: data.notes || '',
                         marketing_opt_in: data.marketing_opt_in === true ? 1 : 0,
+                        ...(data.marketing_opt_in === true && isCampaignDeliveryMigrationAvailable()
+                            ? { opted_in_at: new Date(), opt_in_source: data.opt_in_source || 'import' } : {}),
                         jid: data.jid || null,
                         is_lid: data.is_lid ? 1 : 0,
                         user_id: userId,
@@ -53,7 +103,7 @@ class ContactService {
                 if (data.city !== undefined) changes.city = data.city;
                 if (data.tags !== undefined) changes.tags = JSON.stringify(data.tags);
                 if (data.notes !== undefined) changes.notes = data.notes;
-                if (data.marketing_opt_in !== undefined) changes.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
+                Object.assign(changes, consentChanges(existing, data, { lenient: true }));
                 if (data.jid) changes.jid = data.jid;
                 if (data.is_lid !== undefined) changes.is_lid = data.is_lid ? 1 : 0;
                 updates.push({ phone, existing, changes });
@@ -93,7 +143,7 @@ class ContactService {
             if (data.city !== undefined) updates.city = data.city;
             if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags);
             if (data.notes !== undefined) updates.notes = data.notes;
-            if (data.marketing_opt_in !== undefined) updates.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
+            Object.assign(updates, consentChanges(existing, data));
             if (data.last_message_at !== undefined) {
                 updates.last_message_at = new Date(data.last_message_at);
             }
@@ -117,6 +167,8 @@ class ContactService {
                 tags: JSON.stringify(data.tags || []),
                 notes: data.notes || '',
                 marketing_opt_in: data.marketing_opt_in === true ? 1 : 0,
+                ...(data.marketing_opt_in === true && isCampaignDeliveryMigrationAvailable()
+                    ? { opted_in_at: new Date(), opt_in_source: data.opt_in_source || 'manual' } : {}),
                 jid: data.jid || null,
                 is_lid: data.is_lid ? 1 : 0,
                 user_id: userId,
@@ -170,7 +222,7 @@ class ContactService {
         if (data.city !== undefined) updates.city = data.city;
         if (data.tags !== undefined) updates.tags = JSON.stringify(data.tags);
         if (data.notes !== undefined) updates.notes = data.notes;
-        if (data.marketing_opt_in !== undefined) updates.marketing_opt_in = data.marketing_opt_in ? 1 : 0;
+        Object.assign(updates, consentChanges(contact, data));
 
         await db.update('contacts', updates, 'id = ? AND user_id = ?', [id, userId]);
         const updated = await db.getById('contacts', id, userId);
@@ -188,15 +240,36 @@ class ContactService {
         }
     }
 
-    async setOptOut(phone, userId) {
+    /**
+     * Suppress marketing messages to this contact.
+     * @param {'reply'|'manual'|'whatsapp'} source STOP reply, a user action, or
+     *        WhatsApp's own marketing opt-out (Cloud API error 131050).
+     */
+    async setOptOut(phone, userId, source = 'manual') {
         if (!userId) throw new Error('userId is required to update contact opt-out status');
         const clean = this._cleanPhone(phone);
         const where = 'phone = ? AND user_id = ?';
         const params = [clean, userId];
-        await db.update('contacts', {
+        const changes = {
             marketing_opt_in: 0,
             updated_at: new Date(),
-        }, where, params);
+        };
+        if (isCampaignDeliveryMigrationAvailable()) {
+            changes.opted_out_at = new Date();
+            changes.opt_out_source = OPT_OUT_SOURCES.has(source) ? source : 'manual';
+        }
+        await db.update('contacts', changes, where, params);
+    }
+
+    /** The contact asked to receive messages (e.g. replied START). */
+    async setOptIn(phone, userId, source = 'reply') {
+        if (!userId) throw new Error('userId is required to update contact opt-in status');
+        const changes = { marketing_opt_in: 1, updated_at: new Date() };
+        if (isCampaignDeliveryMigrationAvailable()) {
+            changes.opted_in_at = new Date();
+            changes.opt_in_source = source;
+        }
+        await db.update('contacts', changes, 'phone = ? AND user_id = ?', [this._cleanPhone(phone), userId]);
     }
 
     importFromArray(rows, userId) {
@@ -248,3 +321,4 @@ class ContactService {
 }
 
 module.exports = new ContactService();
+module.exports.optedOutByRequest = optedOutByRequest;

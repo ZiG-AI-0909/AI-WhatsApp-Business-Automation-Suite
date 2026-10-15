@@ -76,7 +76,9 @@ class SessionManager {
     // ---- Room-scoped emit ------------------------------------
     _emitToUser(userId, event, data) {
         if (!this._io || !userId) return;
-        this._io.to(`user:${userId}`).emit(event, data);
+        // Lazy require: realtime.js lazily requires this module too.
+        // emitToUser keeps owner-only events (QR codes) out of shared rooms.
+        require('../realtime').emitToUser(this._io, userId, event, data);
     }
 
     _pushStatus(userId, status, extra = {}) {
@@ -316,6 +318,19 @@ class SessionManager {
             }
         });
 
+        // Delivery/read acks for messages this number sent (campaign receipts).
+        // Baileys status: 3 = delivered to the phone, 4 = read, 5 = played.
+        socket.ev.on('messages.update', (updates) => {
+            for (const { key, update } of updates || []) {
+                if (!key?.fromMe || !key.id || typeof update?.status !== 'number') continue;
+                const status = update.status >= 4 ? 'read' : update.status === 3 ? 'delivered' : null;
+                if (!status) continue;
+                require('../campaigns/deliveryTracker')
+                    .applyReceipt(userId, { messageId: key.id, status })
+                    .catch((error) => console.error(`[wa:${userId}] delivery receipt error:`, error.message));
+            }
+        });
+
         console.log(`[wa:${userId}] initialize: complete — waiting for connection.update events`);
         this._armIdleTimer(userId);
         return socket;
@@ -480,7 +495,7 @@ class SessionManager {
 
     // ---- Sending (own session only) ---------------------------
 
-    async sendMessage(userId, phone, body, jid = null, media = null) {
+    async sendMessage(userId, phone, body, jid = null, media = null, options = {}) {
         const session = this.sessions.get(userId);
         if (!session || session.status !== 'connected' || !session.socket) {
             throw new Error('WhatsApp is not connected');
@@ -497,7 +512,10 @@ class SessionManager {
         }
 
         const text = String(body).trim().substring(0, 4096);
-        if (!media) return session.socket.sendMessage(recipientJid, { text });
+        // A caller-assigned id (campaign queue) makes receipts traceable and
+        // lets a retry reuse the same message id.
+        const sendOptions = options?.messageId ? { messageId: String(options.messageId) } : undefined;
+        if (!media) return session.socket.sendMessage(recipientJid, { text }, sendOptions);
         const mediaBuffer = media.buffer;
         if (!Buffer.isBuffer(mediaBuffer)) {
             throw new Error('Campaign attachment is unavailable. Resume the campaign to reload it.');
@@ -508,12 +526,12 @@ class SessionManager {
                 mimetype: media.mimetype,
                 fileName: media.filename,
                 caption: text,
-            });
+            }, sendOptions);
         }
         return session.socket.sendMessage(recipientJid, {
             image: mediaBuffer,
             caption: text,
-        });
+        }, sendOptions);
     }
 
     // ---- Business API (per-user config, no shared state) -------

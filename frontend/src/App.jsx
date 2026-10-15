@@ -12,7 +12,7 @@ import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
 // API helpers (apiFetch, socketAuth, session-invalidation event) now live in
 // ./api.js — shared with the public landing page and onboarding checklist.
-import { BACKEND_URL, apiFetch, socketAuth, dispatchSessionInvalidated, SESSION_INVALIDATED_EVENT } from './api.js'
+import { BACKEND_URL, apiFetch, socketAuth, dispatchSessionInvalidated, SESSION_INVALIDATED_EVENT, DATA_OWNER_HEADER, WORKSPACE_CHANGED_EVENT, hasStoredDataOwnerChoice, setStoredDataOwner } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
 import { COUNTRIES } from './countries.js'
@@ -75,6 +75,64 @@ function MockInbox() {
 
 const defaultTemplate = `Hello {{name}} 👋\n\nThis is Sudarshan Pipes.\nWe wanted to know if {{company}} currently has any requirements for {{product}} in {{city}}.\n\nPlease let us know your required quantity.`
 
+// Why a campaign paused (mirrors backend/src/campaigns/sendPolicy.js).
+const PAUSE_REASON_TEXT = {
+  whatsapp_disconnected: 'WhatsApp is disconnected. Reconnect to continue; nothing is lost.',
+  provider_restriction: 'WhatsApp reported a sending restriction. Wait before resuming and review recent failures.',
+  rate_limited: 'WhatsApp asked us to slow down (rate limit). The campaign can resume after the cooldown.',
+  account_restricted: 'WhatsApp restricted this number (spam or policy limit). Do not resume until the restriction is lifted in WhatsApp Manager.',
+  quality_low: 'WhatsApp lowered or flagged this number’s quality rating. Review message content and recipient consent before resuming.',
+  provider_auth_failed: 'The WhatsApp Business API rejected the credentials. Update the access token in Settings, then resume.',
+  provider_account_issue: 'The WhatsApp Business account needs attention (payment, registration or certificate). Fix it in WhatsApp Manager, then resume.',
+  template_required: 'These recipients have not messaged you in the last 24 hours, so WhatsApp only allows an approved message template. Add an approved template to the campaign, then resume.',
+  template_error: 'WhatsApp rejected the message template (missing, paused, disabled or wrong variables). Fix the template settings, then resume.',
+  high_failure_rate: 'Too many recent messages failed. The campaign was paused to protect your number; review the errors before resuming.',
+  many_unregistered_numbers: 'Many recent numbers are not on WhatsApp. Messaging unknown numbers is a spam signal; clean the list before resuming.',
+  repeated_send_failures: 'The same error repeated several times in a row. Review it before resuming.',
+  media_upload_failed: 'The attachment could not be sent. Check the file, then resume.',
+  media_load_failed: 'The campaign attachment could not be loaded. Replace it or resume to retry.',
+  campaign_start_failed: 'The queued campaign could not start.',
+}
+const pauseReasonText = (reason) => PAUSE_REASON_TEXT[reason] || String(reason || '').replaceAll('_', ' ')
+
+// Why a running campaign is not sending right now.
+const WAITING_TEXT = {
+  hourly_limit: 'your hourly sending limit is reached',
+  daily_limit: 'your daily sending limit is reached',
+  provider_daily_limit: 'WhatsApp’s daily messaging limit for this number is reached',
+  outside_business_hours: 'outside your business hours',
+  cooldown: 'pausing between batches',
+  scheduled_retries: 'retries and recipients outside their local business hours are scheduled',
+}
+
+// One recipient's result, including WhatsApp delivery receipts when known.
+const RECIPIENT_STATUS_TEXT = { pending: 'Queued', processing: 'Sending', sent: 'Sent', failed: 'Failed', opted_out: 'Opted out', skipped: 'Skipped' }
+function recipientStatusLabel(contact) {
+  if (contact.status === 'sent' && contact.delivery_status === 'read') return 'Read'
+  if (contact.status === 'sent' && contact.delivery_status === 'delivered') return 'Delivered'
+  return RECIPIENT_STATUS_TEXT[contact.status] || String(contact.status || '').replaceAll('_', ' ')
+}
+
+const OPT_OUT_SOURCE_TEXT = { reply: 'replied STOP', manual: 'marked opted out', whatsapp: 'WhatsApp marketing opt-out' }
+function consentTitle(contact) {
+  if (contact.marketing_opt_in) {
+    return contact.opted_in_at ? `Opted in ${new Date(contact.opted_in_at).toLocaleDateString()}${contact.opt_in_source ? ` (${contact.opt_in_source})` : ''}` : undefined
+  }
+  if (contact.opted_out_at) return `Opted out ${new Date(contact.opted_out_at).toLocaleDateString()} (${OPT_OUT_SOURCE_TEXT[contact.opt_out_source] || contact.opt_out_source || 'unknown'})`
+  return 'No marketing consent recorded'
+}
+
+// Turning marketing back on for someone who asked to stop needs an explicit
+// confirmation; the server refuses it otherwise (409 OPTED_OUT).
+async function saveWithConsentCheck(request) {
+  try {
+    return await request({})
+  } catch (error) {
+    if (error?.code !== 'OPTED_OUT' || !window.confirm(`${error.message}\n\nDid this contact ask to receive marketing messages again?`)) throw error
+    return request({ confirm_resubscribe: true })
+  }
+}
+
 function CampaignsView({ onNavigate }) {
   const [campaignList, setCampaignList] = useState([])
   const [campaignEstimate, setCampaignEstimate] = useState(null)
@@ -133,6 +191,17 @@ function CampaignsView({ onNavigate }) {
   const [template, setTemplate] = useState(defaultTemplate)
   const [name, setName] = useState('')
   const [circuitBreakerThreshold, setCircuitBreakerThreshold] = useState('5')
+  const [queueStatus, setQueueStatus] = useState(null)
+  // When the list was last loaded (every 30 s and after each action); used to
+  // hold Resume until a rate-limit cooldown has passed.
+  const [listLoadedAt, setListLoadedAt] = useState(() => Date.now())
+  const [respectRecipientHours, setRespectRecipientHours] = useState(true)
+  const [failureRatePause, setFailureRatePause] = useState('0.5')
+  const [cooldownEvery, setCooldownEvery] = useState('0')
+  const [cooldownMinutes, setCooldownMinutes] = useState('10')
+  const [waTemplateName, setWaTemplateName] = useState('')
+  const [waTemplateLanguage, setWaTemplateLanguage] = useState('en')
+  const [waTemplateParams, setWaTemplateParams] = useState('')
   const [scheduleType, setScheduleType] = useState('now')
   const [runAt, setRunAt] = useState('')
   const [recurrenceMode, setRecurrenceMode] = useState('daily')
@@ -260,11 +329,13 @@ function CampaignsView({ onNavigate }) {
   }
 
   const loadCampaigns = async () => {
+    setListLoadedAt(Date.now())
     try {
       const data = await apiFetch('/campaigns?limit=1000')
       const campaigns = data.data || []
       setCampaignList(campaigns)
       setQueueEstimates(await apiFetch('/campaigns/queue-estimates'))
+      apiFetch('/campaigns/queue-status').then(setQueueStatus).catch(() => {})
       if (selectedCampaign) {
         const current = (data.data || []).find((item) => item.id === selectedCampaign.id)
         if (current) setSelectedCampaign(current)
@@ -349,6 +420,15 @@ function CampaignsView({ onNavigate }) {
     socket.on('campaign:stopped', campaignStatusChange)
     socket.on('campaign:completed', campaignStatusChange)
     socket.on('campaign:error', campaignStatusChange)
+    // Why the running campaign is on hold (limits, hours, cooldown, retries)
+    // and quality warnings from WhatsApp.
+    const campaignWaiting = (event) => setQueueStatus((current) => ({ ...(current || {}), currentCampaignId: event.campaignId, waiting: event.waiting || null }))
+    const campaignWarning = (event) => {
+      setQueueStatus((current) => ({ ...(current || {}), warning: event.message }))
+      setMessage({ type: 'warning', text: event.message })
+    }
+    socket.on('campaign:waiting', campaignWaiting)
+    socket.on('campaign:warning', campaignWarning)
 
     return () => {
       socket.off('schedule:failed', scheduleFailed)
@@ -360,6 +440,8 @@ function CampaignsView({ onNavigate }) {
       socket.off('campaign:stopped', campaignStatusChange)
       socket.off('campaign:completed', campaignStatusChange)
       socket.off('campaign:error', campaignStatusChange)
+      socket.off('campaign:waiting', campaignWaiting)
+      socket.off('campaign:warning', campaignWarning)
       socket.disconnect()
       window.clearInterval(interval)
     }
@@ -514,6 +596,13 @@ function CampaignsView({ onNavigate }) {
         retryCount: 2,
         retryDelay: 30000,
         circuitBreakerThreshold: Number(circuitBreakerThreshold),
+        respectRecipientTimezone: respectRecipientHours,
+        failureRatePauseThreshold: Number(failureRatePause),
+        cooldownEvery: Number(cooldownEvery) || 0,
+        cooldownMinutes: Number(cooldownMinutes) || 10,
+        ...(whatsappStatus.businessStatus === 'connected' && waTemplateName.trim()
+          ? { waTemplate: { name: waTemplateName.trim(), language: waTemplateLanguage.trim() || 'en', bodyParams: waTemplateParams.split('\n').map((line) => line.trim()).filter(Boolean) } }
+          : {}),
         excludeMessaged,
         excludeCampaignIds,
       }
@@ -666,6 +755,23 @@ function CampaignsView({ onNavigate }) {
       setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaign queue' }) })
     }
   }
+  // Delivery dashboard for the selected campaign.
+  const resumeLocked = selectedCampaign?.status === 'paused' && !!selectedCampaign?.resume_after && new Date(selectedCampaign.resume_after).getTime() > listLoadedAt
+  const selectedWaiting = selectedCampaign?.status === 'running' && queueStatus?.currentCampaignId === selectedCampaign?.id ? queueStatus.waiting : null
+  const deliveryTracked = selectedCampaign?.delivered !== undefined && selectedCampaign?.delivered !== null
+  const campaignTotal = Number(selectedCampaign?.total_contacts) || 0
+  const campaignProcessed = Number(selectedCampaign?.processed) || 0
+  const campaignPercent = campaignTotal ? Math.min(100, Math.round((campaignProcessed / campaignTotal) * 100)) : 0
+  const campaignTiles = selectedCampaign ? [
+    ['Recipients', campaignTotal, 'blue'],
+    ['Queued', Math.max(0, campaignTotal - campaignProcessed), 'violet'],
+    ['Sent', Number(selectedCampaign.sent) || 0, 'green'],
+    ['Delivered', deliveryTracked ? Number(selectedCampaign.delivered) || 0 : '—', 'green'],
+    ['Read', deliveryTracked ? Number(selectedCampaign.read_count) || 0 : '—', 'blue'],
+    ['Failed', Number(selectedCampaign.failed) || 0, 'amber'],
+    ['Opted out', Number(selectedCampaign.opt_outs) || 0, 'amber'],
+    ['Skipped', Number(selectedCampaign.skipped) || 0, 'violet'],
+  ] : []
   const selectedProviderConnected = selectedCampaign?.provider === 'business'
     ? whatsappStatus.businessStatus === 'connected'
     : whatsappStatus.status === 'connected'
@@ -717,14 +823,29 @@ function CampaignsView({ onNavigate }) {
         <section className="panel campaign-builder">
           <div className="panel-header"><h2>1. Build campaign</h2><span className="file-note">{file?.name || 'No file selected'}</span></div>
           <form onSubmit={createCampaign}>
-            {whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">Sending via WhatsApp Web carries a real risk of your number being banned for bulk sends. For business-critical campaigns, connect the WhatsApp Business API instead. <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
+            {whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">WhatsApp Web is an unofficial linked-device connection. WhatsApp can restrict or ban numbers that send bulk messages through it, and it gives no quality or rate-limit warnings. For campaigns, connect the official WhatsApp Business Platform (Cloud API). <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
             <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
             <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
             <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Start now</option><option value="queue">Add to queue</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
             <label className="form-label">Pause after identical send errors<input type="number" min="1" step="1" value={circuitBreakerThreshold} onChange={(event) => setCircuitBreakerThreshold(event.target.value)} required /><small>Default: 5. “Number is not registered” remains a contact-level error.</small></label>
+            <div className="field-panel inline-fields sending-safety">
+              <h3>Sending safety</h3>
+              <label className="check-label"><input type="checkbox" checked={respectRecipientHours} onChange={(event) => setRespectRecipientHours(event.target.checked)} /> Send only during business hours in each recipient’s country</label>
+              <label className="form-label">Pause the campaign when recent failures reach<select value={failureRatePause} onChange={(event) => setFailureRatePause(event.target.value)}><option value="0.3">30% of the last 20 messages</option><option value="0.5">50% of the last 20 messages (default)</option><option value="0.7">70% of the last 20 messages</option><option value="0">Never</option></select></label>
+              <label className="form-label">Pause after every … messages<input type="number" min="0" max="1000" step="1" value={cooldownEvery} onChange={(event) => setCooldownEvery(event.target.value)} /><small>0 = no pauses between batches.</small></label>
+              <label className="form-label">Pause length (minutes)<input type="number" min="1" max="240" step="1" value={cooldownMinutes} onChange={(event) => setCooldownMinutes(event.target.value)} disabled={!(Number(cooldownEvery) > 0)} /></label>
+              <small>Messages go out one at a time with your delay and hourly and daily limits. WhatsApp rate limits, restriction warnings and quality drops pause the campaign automatically, and only opted-in contacts are messaged.</small>
+            </div>
             {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
             {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
             <label className="form-label">Message template<textarea value={template} onChange={(event) => setTemplate(event.target.value)} required /></label>
+            {whatsappStatus.businessStatus === 'connected' && <div className="field-panel inline-fields">
+              <h3>Approved template (Business API)</h3>
+              <small>Outside the 24-hour customer service window WhatsApp only delivers approved templates. When you name one, recipients get that template instead of the message text above.</small>
+              <label className="form-label">Template name<input value={waTemplateName} onChange={(event) => setWaTemplateName(event.target.value)} placeholder="dealer_offer_october" /></label>
+              <label className="form-label">Language code<input value={waTemplateLanguage} onChange={(event) => setWaTemplateLanguage(event.target.value)} placeholder="en" /></label>
+              <label className="form-label">Template variables, one per line ({'{{1}}'}, {'{{2}}'} …)<textarea value={waTemplateParams} onChange={(event) => setWaTemplateParams(event.target.value)} placeholder={'{{name}}\n{{company}}'} /><small>Use your Excel columns, for example {'{{name}}'}.</small></label>
+            </div>}
             <div className="field-panel inline-fields">
               <h3>Detected fields</h3>
               {upload?.dynamicFields?.length ? <div className="field-list">{upload.dynamicFields.map((field) => <button key={field} type="button" className="field-chip" onClick={() => setTemplate((current) => `${current} {{${field}}}`)}>{`{{${field}}}`}</button>)}</div> : <small>Upload an XLSX file to detect every header automatically.</small>}
@@ -779,7 +900,7 @@ function CampaignsView({ onNavigate }) {
             <button className="secondary-btn" onClick={() => controlCampaign('start')} disabled={busy || !selectedProviderConnected || !['draft', 'paused', 'stopped'].includes(selectedCampaign.status)} title={!selectedProviderConnected ? 'Connect WhatsApp before starting this campaign.' : undefined}>Start</button>
             <button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || !['failed', 'completed_with_errors', 'completed', 'stopped'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button>
             <button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button>
-            <button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused'}>Resume</button>
+            <button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused' || resumeLocked} title={resumeLocked ? `WhatsApp rate-limited this campaign. Resume after ${new Date(selectedCampaign.resume_after).toLocaleTimeString()}.` : undefined}>Resume</button>
             <button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button>
           </div>}
         </div>
@@ -797,7 +918,7 @@ function CampaignsView({ onNavigate }) {
               <td data-label="Campaign"><strong>{campaign.name}</strong><small>Created {campaign.created_at}</small>{campaign.pause_reason && <small className="campaign-error">Paused: {campaign.pause_reason.replaceAll('_', ' ')}</small>}{campaign.last_error && <small className="campaign-error">{campaign.last_error}</small>}{campaign.pause_reason === 'whatsapp_disconnected' && <small>WhatsApp disconnected — reconnect to continue</small>}</td>
               <td data-label="Provider">{campaign.provider || 'web'}</td>
               <td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status.replaceAll('_', ' ')}</span></td>
-              <td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td>
+              <td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}{campaign.delivered != null && <small>{campaign.delivered} delivered</small>}</td><td data-label="Failed">{campaign.failed}</td>
               <td data-label="Queue">{campaign.status === 'queued' ? <div onClick={(event) => event.stopPropagation()}><strong>#{campaign.queue_position}</strong>{queueStartEstimate(campaign) && <small>Est. start {queueStartEstimate(campaign).toLocaleString()}</small>}<div className="button-row"><button className="secondary-btn" aria-label="Move up" disabled={campaign.queue_position <= 1} onClick={(event) => moveQueuedCampaign(campaign, -1, event)}>↑</button><button className="secondary-btn" aria-label="Move down" disabled={campaign.queue_position >= queuedCampaigns.length} onClick={(event) => moveQueuedCampaign(campaign, 1, event)}>↓</button><button className="secondary-btn" onClick={(event) => removeQueuedCampaign(campaign, event)}>Remove</button></div></div> : '—'}</td>
               <td data-label="Actions" onClick={(event) => event.stopPropagation()}>{campaign.status === 'draft' && <button className="secondary-btn" onClick={(event) => editCampaignDraft(campaign, event)}>Edit</button>}{['completed', 'completed_with_errors', 'failed', 'stopped'].includes(campaign.status) && <button className="secondary-btn" onClick={(event) => openDuplicateDialog(campaign, event)}>Duplicate</button>}</td>
             </tr>)}</tbody>
@@ -814,6 +935,11 @@ function CampaignsView({ onNavigate }) {
               {campaignEstimate && !campaignEstimate.endAt && <small>Paused — reconnect/resume to estimate finish</small>}
             </div>
           </div>
+          <div className="campaign-progress" role="progressbar" aria-label="Campaign progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={campaignPercent}><i style={{ width: `${campaignPercent}%` }} /></div>
+          <div className="stats-grid campaign-delivery-stats">{campaignTiles.map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label} title={['Delivered', 'Read'].includes(label) && !deliveryTracked ? 'Run supabase-campaign-delivery-migration.sql to track delivery receipts.' : undefined}><span>{label}</span><strong>{value}</strong></article>)}</div>
+          {selectedCampaign.status === 'paused' && selectedCampaign.pause_reason && <div className="notice warning" role="status"><strong>Paused: </strong>{pauseReasonText(selectedCampaign.pause_reason)}{resumeLocked ? ` You can resume after ${new Date(selectedCampaign.resume_after).toLocaleTimeString()}.` : ''}</div>}
+          {selectedWaiting && <div className="notice info" role="status"><strong>Waiting: </strong>{WAITING_TEXT[selectedWaiting.reason] || selectedWaiting.reason}{selectedWaiting.until ? `; sending resumes around ${new Date(selectedWaiting.until).toLocaleTimeString()}.` : '.'}</div>}
+          {selectedCampaign.status === 'running' && queueStatus?.warning && queueStatus.currentCampaignId === selectedCampaign.id && <div className="notice warning" role="status">{queueStatus.warning}</div>}
           {draftEdit && selectedCampaign.status === 'draft' && draftEditCampaignId === selectedCampaign.id ? <div className="field-panel draft-editor">
             <h3>Edit draft</h3>
             <label className="form-label">Campaign name<input value={draftEdit.name} onChange={(event) => setDraftEdit({ ...draftEdit, name: event.target.value })} /></label>
@@ -822,6 +948,17 @@ function CampaignsView({ onNavigate }) {
               <label className="form-label">Delay between messages (ms)<input type="number" min="17500" value={draftEdit.settings.delayBetweenMessages ?? 17500} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, delayBetweenMessages: Number(event.target.value) } })} /></label>
               <label className="form-label">Max per hour<input type="number" min="1" value={draftEdit.settings.maxPerHour ?? 50} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, maxPerHour: Number(event.target.value) } })} /></label>
               <label className="form-label">Max per day<input type="number" min="1" value={draftEdit.settings.maxPerDay ?? 175} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, maxPerDay: Number(event.target.value) } })} /></label>
+            </div>
+            <div className="field-panel inline-fields">
+              <h4>Sending safety</h4>
+              <label className="check-label"><input type="checkbox" checked={draftEdit.settings.respectRecipientTimezone !== false} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, respectRecipientTimezone: event.target.checked } })} /> Send only during business hours in each recipient’s country</label>
+              <label className="form-label">Pause after every … messages<input type="number" min="0" max="1000" value={draftEdit.settings.cooldownEvery ?? 0} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, cooldownEvery: Number(event.target.value) } })} /></label>
+              <label className="form-label">Pause length (minutes)<input type="number" min="1" max="240" value={draftEdit.settings.cooldownMinutes ?? 10} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, cooldownMinutes: Number(event.target.value) } })} /></label>
+              {selectedCampaign.provider === 'business' && <>
+                <label className="form-label">Approved template name<input value={draftEdit.settings.waTemplate?.name || ''} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, waTemplate: { language: 'en', bodyParams: [], ...(draftEdit.settings.waTemplate || {}), name: event.target.value } } })} placeholder="Leave empty to send the message text" /></label>
+                <label className="form-label">Template language<input value={draftEdit.settings.waTemplate?.language || 'en'} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, waTemplate: { name: '', bodyParams: [], ...(draftEdit.settings.waTemplate || {}), language: event.target.value } } })} /></label>
+                <label className="form-label">Template variables, one per line<textarea value={(draftEdit.settings.waTemplate?.bodyParams || []).join('\n')} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, waTemplate: { name: '', language: 'en', ...(draftEdit.settings.waTemplate || {}), bodyParams: event.target.value.split('\n') } } })} /></label>
+              </>}
             </div>
             <div className="field-panel inline-fields">
               <div className="panel-header"><h4>Recipients</h4><label className="secondary-btn upload-btn">Upload Excel<input type="file" accept=".xlsx" onChange={uploadDraftExcel} disabled={busy} /></label></div>
@@ -841,7 +978,7 @@ function CampaignsView({ onNavigate }) {
             </div>
             <div className="button-row"><button className="primary-btn" disabled={busy} onClick={() => saveCampaignDraft('save')}>Save draft</button><button className="secondary-btn" disabled={busy || !selectedProviderConnected || (!Number(selectedCampaign.total_contacts) && !draftExcelPath)} title={!selectedProviderConnected ? 'Connect WhatsApp before starting.' : undefined} onClick={() => saveCampaignDraft('start')}>Save and Start</button><button className="secondary-btn" disabled={busy || (!Number(selectedCampaign.total_contacts) && !draftExcelPath)} onClick={() => saveCampaignDraft('queue')}>Save and Add to queue</button></div>
           </div> : <p className="detail-template">{selectedCampaign.template_message}</p>}
-          <div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{contact.status}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div>
+          <div className="campaign-table-wrap"><table><thead><tr><th>Contact</th><th>Phone</th><th>Result</th><th>Error</th></tr></thead><tbody>{campaignContacts.map((contact) => <tr key={contact.id}><td data-label="Contact">{contact.name || 'Unknown'}</td><td data-label="Phone">{contact.phone}</td><td data-label="Result"><span className={statusClass(contact.status)}>{recipientStatusLabel(contact)}</span></td><td data-label="Error">{contact.last_error || ''}</td></tr>)}</tbody></table></div>
         </div>}
       </section>
       <section className="panel queue-panel"><div className="panel-header"><div><h2>Scheduled campaigns</h2><span className="file-note">{schedules.length} schedules</span></div></div>{selectedScheduleIds.length > 0 && <div className="button-row"><span>{selectedScheduleIds.length} selected</span><button className="danger-btn" onClick={bulkDeleteSchedules}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all schedules" checked={schedules.length > 0 && selectedScheduleIds.length === schedules.length} onChange={toggleAllSchedules} /></th><th>Name</th><th>Type</th><th>Next run</th><th>Est. one campaign run</th><th>Status</th><th>Last run</th><th>Actions</th></tr></thead><tbody>{schedules.map((schedule) => <tr key={schedule.id} title={schedule.last_error || undefined}><td data-label="Select"><input type="checkbox" aria-label={`Select ${schedule.name}`} checked={selectedScheduleIds.includes(schedule.id)} onChange={() => toggleSchedule(schedule.id)} /></td><td data-label="Name"><strong>{schedule.name}</strong>{schedule.last_error && <small className="schedule-error">{schedule.last_error}</small>}</td><td data-label="Type">{schedule.schedule_type}</td><td data-label="Next run">{formatDate(schedule.next_run_at)}</td><td data-label="Est. one campaign run">{scheduleEstimateCell(schedule)}</td><td data-label="Status"><span className={statusClass(schedule.status)}>{schedule.status}</span></td><td data-label="Last run">{formatDate(schedule.last_run_at)}</td><td data-label="Actions"><div className="button-row">{schedule.status === 'failed' && <button className="secondary-btn" onClick={() => retrySchedule(schedule.id)}>Retry now</button>}{['active', 'pending'].includes(schedule.status) && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'pause')}>Pause</button>}{schedule.status === 'paused' && <button className="secondary-btn" onClick={() => scheduleAction(schedule.id, 'resume')}>Resume</button>}{!['cancelled', 'completed', 'failed'].includes(schedule.status) && <button className="danger-btn" onClick={() => scheduleAction(schedule.id, 'cancel', 'POST')}>Cancel</button>}<button className="danger-btn" onClick={() => deleteSchedule(schedule.id)}>Delete</button></div></td></tr>)}</tbody></table>{!schedules.length && <EmptyState icon="🗓️" title="No scheduled campaigns yet" description="When you create a campaign with “Schedule once” or “Recurring” timing, it will show up here." />}</div></section>
@@ -1130,11 +1267,12 @@ function ContactsView({ onNavigate }) {
     if (!addForm.phone.trim()) return
     setBusy(true)
     try {
-      await apiFetch('/contacts', {
+      const payload = { ...addForm, phone: addForm.phone.trim() }
+      await saveWithConsentCheck((extra) => apiFetch('/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...addForm, phone: addForm.phone.trim() }),
-      })
+        body: JSON.stringify({ ...payload, ...extra }),
+      }))
       setNotice({ type: 'success', text: 'Contact added.' })
       setAddForm({ phone: '', name: '', company: '', marketing_opt_in: false })
       setShowAddForm(false)
@@ -1148,7 +1286,8 @@ function ContactsView({ onNavigate }) {
     event.preventDefault()
     setBusy(true)
     try {
-      await apiFetch(`/contacts/${selected.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...form, tags: form.tags.split(',').map((tag) => tag.trim()).filter(Boolean) }) })
+      const body = { ...form, tags: form.tags.split(',').map((tag) => tag.trim()).filter(Boolean) }
+      await saveWithConsentCheck((extra) => apiFetch(`/contacts/${selected.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, ...extra }) }))
       setNotice({ type: 'success', text: 'Contact updated.' }); setSelected(null); await load()
     } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) }
   }
@@ -1179,7 +1318,7 @@ function ContactsView({ onNavigate }) {
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
     <div className="stats-grid compact-stats">{[['Total contacts', stats.total, 'green'], ['Opted in', stats.optedIn, 'blue'], ['Opted out', stats.optedOut, 'amber']].map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
     {selected && <section className="panel editor-panel"><div className="panel-header"><div><p className="eyebrow">Editing contact</p><h2>{selected.name || selected.phone}</h2></div><button className="secondary-btn" onClick={() => setSelected(null)}>Close</button></div><CopilotPanel contactId={selected.id} identity={selected.name || selected.phone} /><form className="form-grid" onSubmit={save}><label className="form-label">Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label className="form-label">Email<input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="name@example.com" /><small>Optional — used for email campaigns.</small></label><label className="form-label">Company<input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></label><label className="form-label">City<input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></label><label className="form-label">Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="dealer, priority" /></label><label className="form-label full-field">Notes<textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label><label className="check-label full-field"><input type="checkbox" checked={form.marketing_opt_in} onChange={(event) => setForm({ ...form, marketing_opt_in: event.target.checked })} /> Marketing opt-in</label><div className="button-row full-field"><button className="primary-btn" disabled={busy}>Save changes</button></div></form></section>}
-    <section className="panel"><div className="panel-header"><h2>All contacts</h2><span className="file-note">{total} records</span></div>{selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all contacts on this page" checked={contacts.length > 0 && selectedIds.length === contacts.length} onChange={toggleAllContacts} /></th><th>Phone number</th><th>Name</th><th>Email</th><th>Company</th><th>City</th><th>Opt-in</th><th>Last message</th><th>Actions</th></tr></thead><tbody>{contacts.map((contact) => <tr key={contact.id} onClick={() => selectContact(contact)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${contact.name || contact.phone}`} checked={selectedIds.includes(contact.id)} onChange={() => toggleContact(contact.id)} /></td><td data-label="Phone">{contact.phone}</td><td data-label="Name">{contact.name || 'Unknown'}</td><td data-label="Email">{contact.email || '-'}</td><td data-label="Company">{contact.company || '-'}</td><td data-label="City">{contact.city || '-'}</td><td data-label="Consent"><span className={`campaign-status ${contact.marketing_opt_in ? 'running' : 'stopped'}`}>{contact.marketing_opt_in ? 'Opted in' : 'Opted out'}</span></td><td data-label="Last message">{formatDate(contact.last_message_at)}</td><td data-label="Actions"><div className="button-row" onClick={(event) => event.stopPropagation()}><button className="secondary-btn" onClick={() => optOut(contact)} disabled={busy || !contact.marketing_opt_in}>Opt out</button><button className="danger-btn" onClick={() => remove(contact)} disabled={busy}>{deleteId === contact.id ? 'Confirm delete' : 'Delete'}</button></div></td></tr>)}</tbody></table>{!contacts.length && (search
+    <section className="panel"><div className="panel-header"><h2>All contacts</h2><span className="file-note">{total} records</span></div>{selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}<div className="campaign-table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all contacts on this page" checked={contacts.length > 0 && selectedIds.length === contacts.length} onChange={toggleAllContacts} /></th><th>Phone number</th><th>Name</th><th>Email</th><th>Company</th><th>City</th><th>Opt-in</th><th>Last message</th><th>Actions</th></tr></thead><tbody>{contacts.map((contact) => <tr key={contact.id} onClick={() => selectContact(contact)}><td data-label="Select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`Select ${contact.name || contact.phone}`} checked={selectedIds.includes(contact.id)} onChange={() => toggleContact(contact.id)} /></td><td data-label="Phone">{contact.phone}</td><td data-label="Name">{contact.name || 'Unknown'}</td><td data-label="Email">{contact.email || '-'}</td><td data-label="Company">{contact.company || '-'}</td><td data-label="City">{contact.city || '-'}</td><td data-label="Consent"><span className={`campaign-status ${contact.marketing_opt_in ? 'running' : 'stopped'}`} title={consentTitle(contact)}>{contact.marketing_opt_in ? 'Opted in' : contact.opted_out_at ? 'Opted out' : 'No consent'}</span></td><td data-label="Last message">{formatDate(contact.last_message_at)}</td><td data-label="Actions"><div className="button-row" onClick={(event) => event.stopPropagation()}><button className="secondary-btn" onClick={() => optOut(contact)} disabled={busy || !contact.marketing_opt_in}>Opt out</button><button className="danger-btn" onClick={() => remove(contact)} disabled={busy}>{deleteId === contact.id ? 'Confirm delete' : 'Delete'}</button></div></td></tr>)}</tbody></table>{!contacts.length && (search
                 ? <EmptyState icon="🔍" title="No matching contacts" description={`No contacts match “${search}”. Try a different name, phone number, or company.`} />
                 : <EmptyState
                     icon="👥"
@@ -1346,6 +1485,8 @@ function App() {
   const [dashboard, setDashboard] = useState(null)
   const [recentConversations, setRecentConversations] = useState(null)
   const [dashboardError, setDashboardError] = useState('')
+  // Shared workspaces: { self, active, sharedAccess, shared: [{ id, email }] }
+  const [workspaces, setWorkspaces] = useState(null)
 
   // ── Minimal hash-based routing ────────────────────────────────────────
   // ''          → public landing page (default for logged-out visitors)
@@ -1455,6 +1596,7 @@ function App() {
       }
     }
 
+    setWorkspaces(null)
     if (supabase && !accessToken) {
       // Session already dead/expired locally — the backend call would be a
       // guaranteed 401 (it still gets one if a race happens; harmless).
@@ -1462,7 +1604,8 @@ function App() {
       try { await supabase.auth._removeSession() } catch { /* best effort */ }
     } else {
       try {
-        await apiFetch('/whatsapp/logout', { method: 'POST' })
+        // Always the signed-in user's own WhatsApp — never a shared owner's.
+        await apiFetch('/whatsapp/logout', { method: 'POST', headers: { [DATA_OWNER_HEADER]: '' } })
         console.log('[signout] backend WhatsApp logout completed while token was still valid')
       } catch (error) {
         console.error('Backend WhatsApp logout failed (continuing sign-out):', error)
@@ -1682,6 +1825,50 @@ function App() {
   useEffect(() => {
     if (session && route !== '/app') navigate('/app')  }, [session?.user?.id, route])
 
+  // Load the workspaces shared with this user. On first sign-in with a
+  // shared workspace (and no remembered choice) open the shared data, which
+  // is why the share exists; the switcher can go back to the user's own data.
+  useEffect(() => {
+    const authUserId = session?.user?.id
+    if (!authUserId) return
+    let cancelled = false
+    apiFetch('/workspaces')
+      .then((data) => {
+        if (cancelled) return
+        if (!hasStoredDataOwnerChoice(authUserId) && data?.shared?.length) {
+          setStoredDataOwner(authUserId, data.shared[0].id, { silent: true })
+          window.location.reload()
+          return
+        }
+        setWorkspaces(data)
+      })
+      .catch((error) => { if (!cancelled) console.warn('[workspaces] could not load shared workspaces:', error?.message) })
+    return () => { cancelled = true }
+  }, [session?.user?.id])
+
+  // Switching workspace (or a revoked share) reloads so every view, poll
+  // and socket starts cleanly against the newly selected data.
+  useEffect(() => {
+    const onWorkspaceChanged = () => window.location.reload()
+    window.addEventListener(WORKSPACE_CHANGED_EVENT, onWorkspaceChanged)
+    return () => window.removeEventListener(WORKSPACE_CHANGED_EVENT, onWorkspaceChanged)
+  }, [])
+
+  const activeSharedWorkspace = workspaces?.sharedAccess ? workspaces.shared?.find((item) => item.id === workspaces.active) : null
+  const workspaceSwitcher = workspaces?.shared?.length ? (
+    <label className="workspace-switcher">
+      <span>Workspace</span>
+      <select
+        value={workspaces.active}
+        onChange={(event) => setStoredDataOwner(session?.user?.id, event.target.value)}
+        aria-label="Choose whose data to work with"
+      >
+        <option value={workspaces.self.id}>My data ({workspaces.self.email || 'you'})</option>
+        {workspaces.shared.map((item) => <option key={item.id} value={item.id}>Shared: {item.email || item.id}</option>)}
+      </select>
+    </label>
+  ) : null
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 font-sans">
@@ -1739,6 +1926,7 @@ function App() {
         </nav>
 
         <div className="sidebar-footer" style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid rgba(148, 163, 184, 0.28)' }}>
+          {workspaceSwitcher}
           <div style={{ fontSize: '11px', color: 'var(--brand-steel)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={session?.user?.email}>
             👤 {session?.user?.email || 'Logged In'}
           </div>
@@ -1792,6 +1980,10 @@ function App() {
         <main className="main-panel">
           <p className="eyebrow">Good afternoon</p>
           <h1>{activeView}</h1>
+
+          {activeSharedWorkspace && <div className="notice info shared-workspace-notice" role="status">
+            You are working in <strong>{activeSharedWorkspace.email || 'a shared'}</strong>'s workspace (shared with you). Records you add or change here belong to that workspace. Settings and the WhatsApp connection can only be changed by its owner.
+          </div>}
 
           <div className="backend-status">
             Backend: <strong>{backendStatus}</strong>

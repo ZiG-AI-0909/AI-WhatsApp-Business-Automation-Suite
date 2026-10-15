@@ -17,8 +17,12 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 // Key by user id for authenticated requests; for anything unauthenticated
 // (should only be the webhook), key by subnet-normalized IP so IPv6
 // clients can't sidestep the limit by rotating within a /64.
+// In a shared workspace req.user.id is the data owner; limits follow the
+// signed-in person (authId) so a colleague neither uses up nor escapes the
+// owner's budget.
 function keyByUser(req) {
-    return req.user?.id ? `u:${req.user.id}` : `ip:${ipKeyGenerator(req.ip)}`;
+    const actor = req.user?.authId || req.user?.id;
+    return actor ? `u:${actor}` : `ip:${ipKeyGenerator(req.ip)}`;
 }
 const json429 = (msg) => ({
     standardHeaders: 'draft-7',

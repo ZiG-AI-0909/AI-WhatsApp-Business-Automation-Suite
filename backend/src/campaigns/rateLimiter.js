@@ -16,14 +16,22 @@ function resolveTimezone(settings = {}) {
  * Get { hour, minute, weekday } in an explicit IANA timezone using only
  * built-in Intl — no new dependency. weekday follows getDay() 0=Sun…6=Sat.
  */
+const zonedFormatters = new Map();
+
 function zonedParts(date, timeZone) {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone,
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        weekday: 'short',
-    });
+    // Constructing Intl.DateTimeFormat is expensive and window searches
+    // call this thousands of times, so keep one formatter per timezone.
+    let fmt = zonedFormatters.get(timeZone);
+    if (!fmt) {
+        fmt = new Intl.DateTimeFormat('en-US', {
+            timeZone,
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            weekday: 'short',
+        });
+        zonedFormatters.set(timeZone, fmt);
+    }
     const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
     const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const hour = parseInt(parts.hour === '24' ? '0' : parts.hour, 10); // en-US can emit 24 for midnight
@@ -66,6 +74,21 @@ function resolveSendSettings(settings = {}) {
         maxPerHour: Number(settings.maxPerHour ?? 50),
         maxPerDay: Number(settings.maxPerDay ?? 175),
         circuitBreakerThreshold: Number(settings.circuitBreakerThreshold ?? settings.consecutiveFailureLimit ?? 5),
+        // Only send when it is also business hours where the recipient is.
+        respectRecipientTimezone: settings.respectRecipientTimezone ?? true,
+        // Optional cooldown: after `cooldownEvery` messages, wait
+        // `cooldownMinutes` before continuing (0 = off).
+        cooldownEvery: Math.max(0, Math.floor(Number(settings.cooldownEvery ?? 0)) || 0),
+        cooldownMinutes: Math.max(0, Number(settings.cooldownMinutes ?? 10) || 0),
+        // Pause when this share of the last 20 attempts failed (0 = off).
+        failureRatePauseThreshold: Number(settings.failureRatePauseThreshold ?? 0.5),
+        unregisteredRatePauseThreshold: Number(settings.unregisteredRatePauseThreshold ?? 0.4),
+        // retryCount/retryDelay were read by the queue but never copied
+        // here, so campaign values were silently replaced by defaults.
+        retryCount: Number.isFinite(Number(settings.retryCount ?? 2)) ? Math.max(0, Math.floor(Number(settings.retryCount ?? 2))) : 2,
+        retryDelay: Math.max(1000, Number(settings.retryDelay ?? 30000) || 30000),
+        // Upper bound for exponential retry backoff.
+        maxRetryDelay: Number(settings.maxRetryDelay ?? 3600000),
     };
 }
 
@@ -107,8 +130,18 @@ class RateLimiter {
         return delay * (JITTER_MIN + Math.random() * (JITTER_MAX - JITTER_MIN));
     }
 
-    async checkDatabaseLimits(db, userId, now = new Date()) {
+    /**
+     * @param {object} [overrides]
+     * @param {number} [overrides.providerDailyLimit] WhatsApp's messaging-limit
+     *   tier for the sending number (Business API); the stricter of it and
+     *   maxPerDay applies.
+     * @returns {{ allowed: boolean, reason: string, code?: string }}
+     */
+    async checkDatabaseLimits(db, userId, now = new Date(), overrides = {}) {
         if (!userId) throw new Error('userId is required to check campaign send limits.');
+        const providerDaily = Number(overrides?.providerDailyLimit) > 0 ? Number(overrides.providerDailyLimit) : 0;
+        const ownDaily = this.settings.maxPerDay > 0 ? this.settings.maxPerDay : 0;
+        const maxPerDay = ownDaily && providerDaily ? Math.min(ownDaily, providerDaily) : (ownDaily || providerDaily);
         const checks = [];
         if (this.settings.maxPerHour > 0) {
             checks.push(db.count(
@@ -119,7 +152,7 @@ class RateLimiter {
         } else {
             checks.push(Promise.resolve(0));
         }
-        if (this.settings.maxPerDay > 0) {
+        if (maxPerDay > 0) {
             checks.push(db.count(
                 'campaign_contacts',
                 'user_id = ? AND status = ? AND sent_at >= ?',
@@ -130,10 +163,13 @@ class RateLimiter {
         }
         const [hourCount, dayCount] = await Promise.all(checks);
         if (this.settings.maxPerHour > 0 && hourCount >= this.settings.maxPerHour) {
-            return { allowed: false, reason: 'Hourly limit reached' };
+            return { allowed: false, reason: 'Hourly limit reached', code: 'hourly_limit' };
         }
-        if (this.settings.maxPerDay > 0 && dayCount >= this.settings.maxPerDay) {
-            return { allowed: false, reason: 'Daily limit reached' };
+        if (maxPerDay > 0 && dayCount >= maxPerDay) {
+            const providerCap = providerDaily > 0 && maxPerDay === providerDaily && (!ownDaily || providerDaily < ownDaily);
+            return providerCap
+                ? { allowed: false, reason: 'WhatsApp daily messaging limit reached', code: 'provider_daily_limit' }
+                : { allowed: false, reason: 'Daily limit reached', code: 'daily_limit' };
         }
         return { allowed: true, reason: '' };
     }
@@ -144,8 +180,8 @@ class RateLimiter {
      * Asia/Kolkata), never the server's local zone (UTC on Render).
      * @returns {boolean}
      */
-    isWithinBusinessHours() {
-        return zonedWithinBusinessHours(this.settings, new Date(), resolveTimezone(this.settings));
+    isWithinBusinessHours(at = new Date()) {
+        return zonedWithinBusinessHours(this.settings, at, resolveTimezone(this.settings));
     }
 
     /**

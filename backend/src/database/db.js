@@ -63,7 +63,7 @@ async function select(table, columns = '*', where = '', params = [], orderBy = '
         // Use Postgres parameterized queries via Supabase's .or()/.eq()/.gte() etc.
         // For complex WHERE clauses, we use .rpc() or raw SQL via .rpc() with a Postgres function.
         // For simplicity, we build the query using Supabase's filter methods.
-        query = applyWhere(query, table, where, params);
+        query = applyWhere(query, table, where, [...params]);
     }
 
     if (orderBy) {
@@ -326,7 +326,7 @@ async function update(table, data, where = '', params = [], { allowAll = false }
     let query = supabase.from(table).update(data);
 
     if (where) {
-        query = applyWhere(query, table, where, params);
+        query = applyWhere(query, table, where, [...params]);
     }
 
     const { data: result, error } = await query.select();
@@ -346,7 +346,7 @@ async function del(table, where = '', params = [], { allowAll = false } = {}) {
     let query = supabase.from(table).delete();
 
     if (where) {
-        query = applyWhere(query, table, where, params);
+        query = applyWhere(query, table, where, [...params]);
     }
 
     const { data, error } = await query.select();
@@ -411,7 +411,7 @@ async function count(table, where = '', params = []) {
     let query = supabase.from(table).select('*', { count: 'exact', head: true });
 
     if (where) {
-        query = applyWhere(query, table, where, params);
+        query = applyWhere(query, table, where, [...params]);
     }
 
     const { count, error } = await query;
@@ -478,6 +478,30 @@ async function recountCampaignCounters(campaignId, userId) {
     )));
     const [sent, failed, opt_outs, skipped] = counts.map(value => Number(value) || 0);
     const counters = { sent, failed, opt_outs, skipped, processed: sent + failed + opt_outs + skipped };
+    await module.exports.update('campaigns', counters, 'id = ? AND user_id = ?', [campaignId, userId]);
+    return counters;
+}
+
+/**
+ * Refresh a campaign's delivered/read counters from its recipients'
+ * delivery receipts. Needs supabase-campaign-delivery-migration.sql.
+ */
+async function recountCampaignDelivery(campaignId, userId) {
+    if (!userId) throw new Error('[db] userId is required to recount campaign delivery.');
+    if (isAvailable() && typeof supabase.rpc === 'function') {
+        const { data, error } = await supabase.rpc('recount_campaign_delivery', {
+            p_campaign_id: campaignId,
+            p_user_id: userId,
+        });
+        if (error) throw error;
+        const row = Array.isArray(data) ? data[0] : data;
+        return { delivered: Number(row?.delivered) || 0, read_count: Number(row?.read_count) || 0 };
+    }
+    const [delivered, read] = await Promise.all([
+        module.exports.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND delivery_status IN (?)', [campaignId, userId, ['delivered', 'read']]),
+        module.exports.count('campaign_contacts', 'campaign_id = ? AND user_id = ? AND delivery_status = ?', [campaignId, userId, 'read']),
+    ]);
+    const counters = { delivered: Number(delivered) || 0, read_count: Number(read) || 0 };
     await module.exports.update('campaigns', counters, 'id = ? AND user_id = ?', [campaignId, userId]);
     return counters;
 }
@@ -705,6 +729,7 @@ module.exports = {
     getOne,
     count,
     recountCampaignCounters,
+    recountCampaignDelivery,
     enqueueCampaign,
     unqueueCampaign,
     reorderCampaignQueue,
