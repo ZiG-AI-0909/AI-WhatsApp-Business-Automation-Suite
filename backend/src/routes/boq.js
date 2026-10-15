@@ -1004,9 +1004,9 @@ function rfqRows(doc) {
     }));
 }
 
-function requireConfirmedDocument(doc, res) {
+function requireConfirmedDocument(doc, res, message = 'Confirm the requirement sheet before exporting an RFQ.') {
     if (doc.status === 'confirmed') return false;
-    res.status(409).json({ error: 'Confirm the requirement sheet before exporting an RFQ.' });
+    res.status(409).json({ error: message });
     return true;
 }
 
@@ -1140,4 +1140,4 @@ function serializeDoc(doc) {
     };
 }
 
-module.exports = { router, buildRfqPdf, rfqRows, sanitizeFilename };
+module.exports = { router, buildRfqPdf, rfqRows, sanitizeFilename, requireConfirmedDocument, parseJsonArray };
