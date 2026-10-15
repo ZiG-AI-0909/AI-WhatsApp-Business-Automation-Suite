@@ -45,29 +45,6 @@ function SourceMarker({ source }) {
   return <span className={`source-marker ${source}`}>{source === 'verified' ? '✓ Verified scan' : '◌ Review scanned contact'}</span>
 }
 
-const editCampaignDraft = (campaign, event) => {
-  event?.stopPropagation()
-  const parse = (value, fallback) => {
-    if (typeof value !== 'string') return value || fallback
-    try { return JSON.parse(value) } catch { return fallback }
-  }
-  setSelectedCampaign(campaign)
-  setDraftEditCampaignId(campaign.id)
-  setDraftEdit({
-    name: campaign.name,
-    template_message: campaign.template_message || '',
-    settings: parse(campaign.settings, {}),
-    buttons: parse(campaign.buttons, []),
-    media_path: campaign.media_path || '',
-    media_bucket: campaign.media_bucket || '',
-    media_object_path: campaign.media_object_path || '',
-    media_type: campaign.media_type || '',
-    media_filename: campaign.media_filename || '',
-    media_mimetype: campaign.media_mimetype || '',
-  })
-  setDraftExcelPath('')
-}
-
 function LeadPriorityDashboard() {
   const [filter, setFilter] = useState('all')
   const [composer, setComposer] = useState(null)
@@ -113,6 +90,28 @@ function CampaignsView({ onNavigate }) {
   const [draftEdit, setDraftEdit] = useState(null)
   const [draftEditCampaignId, setDraftEditCampaignId] = useState(null)
   const [draftExcelPath, setDraftExcelPath] = useState('')
+  const editCampaignDraft = (campaign, event) => {
+    event?.stopPropagation()
+    const parse = (value, fallback) => {
+      if (typeof value !== 'string') return value || fallback
+      try { return JSON.parse(value) } catch { return fallback }
+    }
+    setSelectedCampaign(campaign)
+    setDraftEditCampaignId(campaign.id)
+    setDraftEdit({
+      name: campaign.name,
+      template_message: campaign.template_message || '',
+      settings: parse(campaign.settings, {}),
+      buttons: parse(campaign.buttons, []),
+      media_path: campaign.media_path || '',
+      media_bucket: campaign.media_bucket || '',
+      media_object_path: campaign.media_object_path || '',
+      media_type: campaign.media_type || '',
+      media_filename: campaign.media_filename || '',
+      media_mimetype: campaign.media_mimetype || '',
+    })
+    setDraftExcelPath('')
+  }
   const [draftRecipientsMode, setDraftRecipientsMode] = useState('replace')
   const [excludeMessaged, setExcludeMessaged] = useState(false)
   const [excludeCampaignIds, setExcludeCampaignIds] = useState([])

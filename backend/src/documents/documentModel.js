@@ -298,7 +298,104 @@ function mergeVisualLineIntoRow(target, line, descriptionIndex) {
     return true;
 }
 
+
+// ── Fragment attachment for vertically-centred scanned rows ───────────────
+// In a scanned table the numeric cells are vertically centred in tall rows
+// while the description wraps over many lines, so OCR emits description-only
+// lines ABOVE the line that carries the row's S.No/quantity (e.g. a
+// "Mechanical Means -" heading). Taken in reading order those lines look
+// like a trailing continuation of the previous row. Decide by geometry:
+// a fragment joins the neighbouring row whose cells (values + description) are
+// vertically closest.
+// Page furniture (seal/signature/"Page x of y" footers) is not table data
+// and is dropped, never merged into an item.
+const PAGE_FURNITURE_PATTERN = /(seal|si?ng?nature|executive\s+en|civil\s+contractor|page\s*\d*\s*of\s*\d+)/i;
+const STAMP_PATTERN = /(contractor|dharwad|class|civil)/i; // short rubber-stamp text only
+
+function unionBounds(cellBounds, column) {
+    const boxes = (cellBounds || []).filter((cell) => cell.bounds && (column == null || cell.column === column)).map((cell) => cell.bounds);
+    if (!boxes.length) return null;
+    return {
+        top: Math.min(...boxes.map((box) => box.top)),
+        bottom: Math.max(...boxes.map((box) => box.bottom)),
+    };
+}
+
+function verticalGap(a, b) {
+    if (!a || !b) return Number.POSITIVE_INFINITY;
+    return Math.max(0, a.top - b.bottom, b.top - a.bottom);
+}
+
+function attachFragmentLines(lines, columnMap) {
+    const descriptionIndex = columnMap.description?.index;
+    if (descriptionIndex == null) return { lines, discarded: [] };
+    const identityIndexes = ['serialNumber', 'itemCode'].map((field) => columnMap[field]?.index).filter((index) => index != null);
+    const measureIndexes = ['quantity', 'unit', 'rate', 'amount'].map((field) => columnMap[field]?.index).filter((index) => index != null);
+    const filled = (cells, indexes) => indexes.some((index) => String(cells[index] ?? '').trim());
+    // A row anchor carries a real identifier (S.No./code always has a digit) or
+    // measures; alphabetic scraps in those columns are stamps/furniture.
+    const hasIdentifier = (cells) => identityIndexes.some((index) => /\d/.test(String(cells[index] ?? '')));
+    const isAnchor = (line) => hasIdentifier(line.cells) || filled(line.cells, measureIndexes);
+
+    const anchorPositions = lines.map((line, index) => (isAnchor(line) ? index : -1)).filter((index) => index >= 0);
+    if (!anchorPositions.length) return { lines, discarded: [] };
+
+    const discarded = [];
+    const leading = new Map(); // anchor line index -> fragment lines that precede it
+    const dropped = new Set();
+    lines.forEach((line, index) => {
+        if (isAnchor(line)) return;
+        const text = line.cells.map((cell) => String(cell ?? '').trim()).filter(Boolean).join(' ');
+        if (!text) return;
+        if (PAGE_FURNITURE_PATTERN.test(text) || (text.length <= 60 && STAMP_PATTERN.test(text))) {
+            discarded.push({ text, source: line.source });
+            dropped.add(index);
+            return;
+        }
+        const prevAnchor = [...anchorPositions].reverse().find((position) => position < index);
+        const nextAnchor = anchorPositions.find((position) => position > index);
+        if (nextAnchor == null) return;
+        let toNext = prevAnchor == null;
+        if (!toNext) {
+            const fragmentBox = unionBounds(line.source.cellBounds);
+            const prevBox = unionBounds(lines[prevAnchor].source.cellBounds);
+            const nextBox = unionBounds(lines[nextAnchor].source.cellBounds);
+            toNext = verticalGap(fragmentBox, nextBox) < verticalGap(fragmentBox, prevBox);
+        }
+        if (toNext) {
+            if (!leading.has(nextAnchor)) leading.set(nextAnchor, []);
+            leading.get(nextAnchor).push(line);
+            dropped.add(index);
+        }
+    });
+    if (!dropped.size) return { lines, discarded };
+
+    const output = [];
+    lines.forEach((line, index) => {
+        if (dropped.has(index)) return;
+        const fragments = leading.get(index);
+        if (!fragments?.length) { output.push(line); return; }
+        const cells = [...line.cells];
+        const cellBounds = [...line.source.cellBounds];
+        const rawOcrDetections = [...line.source.rawOcrDetections];
+        const reviewWarnings = [...(line.source.reviewWarnings || [])];
+        for (const fragment of [...fragments].reverse()) {
+            fragment.cells.forEach((value, column) => {
+                const text = String(value ?? '').trim();
+                if (!text) return;
+                cells[column] = [text, String(cells[column] ?? '').trim()].filter(Boolean).join(' ');
+            });
+            cellBounds.unshift(...fragment.source.cellBounds);
+            rawOcrDetections.unshift(...fragment.source.rawOcrDetections);
+        }
+        reviewWarnings.push('Description lines above the row values were attached to this row by geometry; verify row association.');
+        output.push({ ...line, cells, source: { ...line.source, cellBounds, rawOcrDetections, reviewWarnings } });
+    });
+    return { lines: output, discarded };
+}
+
 function groupVisualLinesIntoSourceRows(lines, columnMap, pageNumber, tableNumber) {
+    lines = attachFragmentLines(lines, columnMap).lines;
     const descriptionIndex = columnMap.description?.index;
     const identityIndexes = ['serialNumber', 'itemCode']
         .map((field) => columnMap[field]?.index)
@@ -370,8 +467,111 @@ function groupVisualLinesIntoSourceRows(lines, columnMap, pageNumber, tableNumbe
     return output.map(({ cells, source }) => ({ cells, source }));
 }
 
+
+// ── Header repair for scanned multi-page tables ───────────────────────────
+// A scanned table repeats the same header (same column x-positions, within
+// scan skew) on every page, but OCR reads each page's header differently:
+// one page drops "Unit", another garbles "Item Name" or loses "S.No.". Column
+// boundaries are derived ONLY from the header cells found, so a missing
+// header shifts every column to its right by one (unit lands in quantity,
+// quantity in rate, ...). We therefore pick the most complete header in the
+// document as a reference and re-align incomplete page headers to it.
+function headerAnchorsFromCells(headerCells) {
+    const headers = (headerCells || []).map((cell) => String(cell?.text ?? '').trim());
+    if (!isHeaderRow(headers)) return null;
+    const anchors = (headerCells || []).map((cell, index) => ({
+        index,
+        text: headers[index],
+        bounds: detectionBounds(cell),
+    })).filter((cell) => cell.text && cell.bounds);
+    if (anchors.length < 2 || anchors.length !== headers.filter(Boolean).length) return null;
+    return anchors.sort((a, b) => a.bounds.left - b.bounds.left);
+}
+
+function findReferenceHeaderAnchors(pages) {
+    let best = null;
+    let bestScore = 0;
+    for (const page of pages || []) {
+        for (const row of page.rows || []) {
+            const anchors = headerAnchorsFromCells(row);
+            if (!anchors) continue;
+            const mapped = Object.keys(mapHeaders(anchors.map((anchor) => anchor.text)).columns).length;
+            const score = anchors.length * 10 + mapped;
+            if (score > bestScore) { best = anchors; bestScore = score; }
+        }
+    }
+    return best;
+}
+
+const HEADER_MATCH_MAX_DISTANCE = 0.04; // normalized page width
+
+function repairHeaderAnchors(anchors, reference) {
+    if (!reference || anchors.length >= reference.length) return anchors;
+    const center = (anchor) => (anchor.bounds.left + anchor.bounds.right) / 2;
+    const used = new Set();
+    const matches = [];
+    for (const anchor of anchors) {
+        let bestIndex = -1;
+        let bestDistance = Infinity;
+        reference.forEach((ref, index) => {
+            if (used.has(index)) return;
+            const distance = Math.abs(center(ref) - center(anchor));
+            if (distance < bestDistance) { bestDistance = distance; bestIndex = index; }
+        });
+        // Every page header must map to a distinct reference column, or this
+        // is a different table and we leave it alone.
+        if (bestIndex < 0 || bestDistance > HEADER_MATCH_MAX_DISTANCE) return anchors;
+        // A header OCR recognised as one field must not be matched to a
+        // reference column of another field (garbled/unrecognised ones may).
+        const pageField = Object.keys(mapHeaders([anchor.text]).columns)[0];
+        const refField = Object.keys(mapHeaders([reference[bestIndex].text]).columns)[0];
+        if (pageField && refField && pageField !== refField) return anchors;
+        used.add(bestIndex);
+        matches.push({ anchor, ref: reference[bestIndex], refIndex: bestIndex });
+    }
+    for (let i = 1; i < matches.length; i++) {
+        if (matches[i].refIndex <= matches[i - 1].refIndex) return anchors;
+    }
+    if (matches.length < 2) return anchors;
+    // Fit page_x = scale * ref_x + offset (scan shift/zoom) to project the
+    // reference columns that this page's OCR dropped.
+    const xs = matches.map((m) => center(m.ref));
+    const ys = matches.map((m) => center(m.anchor));
+    const meanX = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const meanY = ys.reduce((a, b) => a + b, 0) / ys.length;
+    const varX = xs.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+    let scale = varX > 1e-9 ? xs.reduce((sum, x, i) => sum + (x - meanX) * (ys[i] - meanY), 0) / varX : 1;
+    if (!(scale > 0.8 && scale < 1.25)) scale = 1;
+    const offset = meanY - scale * meanX;
+    const matchedByRef = new Map(matches.map((m) => [m.refIndex, m.anchor]));
+    return reference.map((ref, index) => {
+        const matched = matchedByRef.get(index);
+        if (matched) return { ...matched, text: ref.text };
+        const width = (ref.bounds.right - ref.bounds.left) * scale;
+        const mid = scale * center(ref) + offset;
+        return {
+            index: -1,
+            text: ref.text,
+            inferred: true,
+            bounds: { left: mid - width / 2, right: mid + width / 2, top: ref.bounds.top, bottom: ref.bounds.bottom },
+        };
+    });
+}
+
+// Digit-free text with two or more real words ("Mechanical Means-") is prose,
+// not an S.No./Item Code ("16.28.1", "PWD SR V5 Page No.201 Item No 16.40").
+// Four or more real words is a sentence regardless of digits.
+function looksLikeProse(text) {
+    const value = String(text ?? '');
+    const words = (value.match(/[A-Za-z]{4,}/g) || []).length;
+    if (words >= 4) return true; // a sentence, even one with measurements in it
+    if (/\d/.test(value)) return false;
+    return words >= 2;
+}
+
 function reconstructTablesFromLayoutPages(pages) {
     const pageTables = [];
+    const referenceAnchors = findReferenceHeaderAnchors(pages);
     for (const page of pages || []) {
         const rows = page.rows || [];
         let cursor = 0;
@@ -384,7 +584,7 @@ function reconstructTablesFromLayoutPages(pages) {
                 continue;
             }
 
-            const anchors = headerCells.map((cell, index) => ({
+            let anchors = headerCells.map((cell, index) => ({
                 index,
                 text: headers[index],
                 bounds: detectionBounds(cell),
@@ -394,6 +594,7 @@ function reconstructTablesFromLayoutPages(pages) {
                 continue;
             }
             anchors.sort((a, b) => a.bounds.left - b.bounds.left);
+            anchors = repairHeaderAnchors(anchors, referenceAnchors);
             const orderedHeaders = anchors.map((anchor) => anchor.text);
             const headerMap = mapHeaders(orderedHeaders);
             const boundaries = anchors.slice(1).map((anchor, index) => {
@@ -431,7 +632,17 @@ function reconstructTablesFromLayoutPages(pages) {
                         continue;
                     }
                     const column = boundaries.findIndex((boundary) => bounds.left < boundary);
-                    const columnIndex = column < 0 ? anchors.length - 1 : column;
+                    let columnIndex = column < 0 ? anchors.length - 1 : column;
+                    // Column boundaries sit midway between header TEXTS, but a
+                    // left-aligned description starts left of that midpoint and
+                    // would be read as an S.No./Item Code. Identifiers carry
+                    // digits or are short tokens; digit-free multi-word prose is
+                    // description text (or page furniture) wherever it landed.
+                    const descriptionColumn = headerMap.columns.description?.index;
+                    const identityColumns = ['serialNumber', 'itemCode'].map((field) => headerMap.columns[field]?.index);
+                    if (descriptionColumn != null && identityColumns.includes(columnIndex) && looksLikeProse(text)) {
+                        columnIndex = descriptionColumn;
+                    }
                     values[columnIndex] = [values[columnIndex], text].filter(Boolean).join(' ');
                     const y = (bounds.top + bounds.bottom) / 2;
                     centerTotal += y;

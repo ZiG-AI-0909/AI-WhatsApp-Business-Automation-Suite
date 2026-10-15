@@ -685,7 +685,15 @@ router.post('/process', aiExtractLimiter, upload.single('file'), async (req, res
                         matrix: hasCellLayout ? layoutMatrix : boqExtractor.matrixFromDelimitedText(page.text || ''),
                     };
                 });
-                document.tables = documentModel.extractTablesAcrossPages(pageMatrices);
+                // Prefer POSITIONAL reconstruction: the OCR response carries a bounding
+                // box per detection, and a scanned tender's columns can only be told
+                // apart by x-position (cell ORDER in a text matrix shifts every column
+                // whenever one header or value is missed). Fall back to the text
+                // matrix only when no page yields a header-aligned positional table.
+                const positionalTables = documentModel.reconstructTablesFromLayoutPages(document.pages);
+                document.tables = positionalTables.length
+                    ? positionalTables
+                    : documentModel.extractTablesAcrossPages(pageMatrices);
                 usedOcr = true;
                 console.log(`[boq:${userId}] OCR fallback produced ${documentText.trim().length} chars in ${Date.now() - ocrStart}ms (cap ${BOQ_OCR_MAX_PAGES} pages, ${ocr.failedPages.length} failed page(s))`);
             } catch (ocrError) {
