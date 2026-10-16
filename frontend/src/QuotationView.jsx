@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 
@@ -54,7 +54,10 @@ function sameValue(a, b) {
   return a === b
 }
 
-export default function QuotationView({ initialQuote = null }) {
+// initialQuoteId: reopen this quotation (after a page refresh).
+// onOpenChange(id | null): the open quotation changed (remembered per tab).
+// dirtyRef: set to true while there are unsaved changes (refresh warning).
+export default function QuotationView({ initialQuote = null, initialQuoteId = null, onOpenChange, dirtyRef }) {
   const [quotes, setQuotes] = useState([])
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
@@ -111,8 +114,13 @@ export default function QuotationView({ initialQuote = null }) {
   }, [header, quote])
 
   const dirty = dirtyLines.length > 0 || Object.keys(dirtyHeader).length > 0
+  const DISCARD = 'This quotation has changes that are not saved. Leave them without saving?'
+  useEffect(() => { if (dirtyRef) dirtyRef.current = dirty }, [dirty, dirtyRef])
+  useEffect(() => () => { if (dirtyRef) dirtyRef.current = false }, [dirtyRef])
+  useEffect(() => { onOpenChange?.(quote?.id ?? null) }, [quote?.id, onOpenChange])
 
   const openQuote = async (id, nextStep = 'edit') => {
+    if (dirty && quote && quote.id !== id && !window.confirm(DISCARD)) return
     setBusy(true)
     try {
       applyQuote(await apiFetch(`/quotations/${id}`), nextStep)
@@ -121,6 +129,15 @@ export default function QuotationView({ initialQuote = null }) {
       setNotice({ type: 'error', text: errorText(error, 'Quotation') })
     } finally { setBusy(false) }
   }
+
+  // Reopen the quotation that was open before a page refresh (once).
+  const reopen = useEffectEvent(() => {
+    if (initialQuoteId && !initialQuote) openQuote(initialQuoteId)
+  })
+  useEffect(() => {
+    const timer = setTimeout(reopen, 0)
+    return () => clearTimeout(timer)
+  }, [])
 
   // Saves header then lines; returns the server view (with server totals).
   const save = async ({ quiet = false } = {}) => {
@@ -314,7 +331,7 @@ export default function QuotationView({ initialQuote = null }) {
         </div>
         <div className="button-row">
           {!readOnly && <button type="button" className="secondary-btn" onClick={() => setStep('review')}>Back to line selection</button>}
-          <button type="button" className="secondary-btn" onClick={() => setQuote(null)}>Close</button>
+          <button type="button" className="secondary-btn" onClick={() => { if (!dirty || window.confirm(DISCARD)) setQuote(null) }}>Close</button>
         </div>
       </div>
       {readOnly && <div className="notice info">This quotation is {quote.status} and read-only. Use Duplicate to make changes.</div>}

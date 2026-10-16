@@ -45,6 +45,34 @@ export function setTheme(theme) {
   window.dispatchEvent(new CustomEvent(THEME_CHANGED_EVENT, { detail: { theme: next } }))
 }
 
+/** The person's choice: 'light', 'dark' or 'system' (follow the device). */
+export function themePreference() {
+  return storedTheme() || 'system'
+}
+
+/** Set 'light', 'dark' or 'system'. 'system' forgets the stored choice. */
+export function setThemePreference(preference) {
+  if (preference === 'light' || preference === 'dark') {
+    setTheme(preference)
+    return
+  }
+  try { window.localStorage.removeItem(THEME_STORAGE_KEY) } catch { /* storage unavailable */ }
+  const next = systemTheme()
+  applyTheme(next)
+  window.dispatchEvent(new CustomEvent(THEME_CHANGED_EVENT, { detail: { theme: next, preference: 'system' } }))
+}
+
+/** [preference, setPreference] for the Light / Dark / Match my device control. */
+export function useThemePreference() {
+  const [preference, setPreferenceState] = useState(themePreference)
+  useEffect(() => {
+    const onChange = () => setPreferenceState(themePreference())
+    window.addEventListener(THEME_CHANGED_EVENT, onChange)
+    return () => window.removeEventListener(THEME_CHANGED_EVENT, onChange)
+  }, [])
+  return [preference, setThemePreference]
+}
+
 /** [theme, toggleTheme] — re-renders when the theme changes anywhere. */
 export function useTheme() {
   const [theme, setThemeState] = useState(currentTheme)

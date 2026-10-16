@@ -592,7 +592,9 @@ tbody tr.quote-section-row > td { background: var(--surface-muted); color: var(-
 .boq-show-ok { align-self: flex-start; }
 
 /* Editor panel */
-.boq-editor-panel { position: sticky; top: var(--space-3); max-height: calc(100vh - var(--space-6)); overflow-y: auto; padding: var(--space-4); }
+/* Ends above the sticky confirm bar (about 80px) and below the top bar, so
+   nothing in the editor is ever hidden behind the bar; the rest scrolls inside. */
+.boq-editor-panel { position: sticky; top: var(--space-3); max-height: max(360px, calc(100vh - 230px)); max-height: max(360px, calc(100dvh - 230px)); overflow-y: auto; overscroll-behavior: contain; padding: var(--space-4); }
 .boq-editor { display: flex; flex-direction: column; gap: var(--space-3); }
 .boq-editor-head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-3); }
 .boq-editor-head > div:first-child { min-width: 0; }
@@ -660,6 +662,8 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 /* Confirm bar + toast */
 .boq-confirm-bar { position: sticky; bottom: var(--space-3); z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; padding: var(--space-3) var(--space-4); border-color: var(--success-border); background: var(--surface-glass); -webkit-backdrop-filter: blur(var(--blur)); backdrop-filter: blur(var(--blur)); box-shadow: var(--shadow-lg); }
 .boq-confirm-bar.is-blocked { border-color: var(--danger-border); }
+/* Focus and scroll-into-view stop above the sticky confirm bar. */
+.main-panel:has(.kept-view:not([hidden]) .boq-confirm-bar), html:has(.kept-view:not([hidden]) .boq-confirm-bar) { scroll-padding-bottom: 120px; }
 .boq-confirm-bar p { margin: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--text-primary); }
 .boq-confirm-bar.is-blocked p { color: var(--danger-text); }
 .boq-confirm-bar.is-blocked .link-btn { color: var(--danger-text); }
@@ -772,7 +776,7 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .landing-header { position: sticky; top: 0; z-index: 30; background: var(--surface-glass); backdrop-filter: blur(var(--blur)) saturate(1.2); -webkit-backdrop-filter: blur(var(--blur)) saturate(1.2); border-bottom: 1px solid var(--border-subtle); }
 .landing-header-inner { max-width: 1120px; margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; gap: 18px; }
 .landing-brand { display: flex; align-items: center; gap: 12px; font-family: var(--font-display); font-weight: 700; font-size: var(--text-sm); color: var(--text-secondary); min-width: 0; }
-.landing-brand > span:not(.brand-chip) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.landing-brand > span:not(.brand-logo) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .landing-header-nav { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .landing-header-nav button { border: 0; background: transparent; color: var(--text-secondary); min-height: var(--touch); padding: 8px 12px; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--text-sm); font-weight: 500; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
 .landing-header-nav button:hover { background: var(--surface-muted); color: var(--text-primary); }
@@ -893,7 +897,7 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 @media (max-width: 560px) {
   .landing-steps, .landing-feature-grid { grid-template-columns: 1fr; }
   .landing-header-inner { padding: 8px 14px; gap: 10px; }
-  .landing-brand > span:not(.brand-chip) { display: none; }
+  .landing-brand > span:not(.brand-logo) { display: none; }
   .landing-cta-row .landing-btn-primary, .landing-cta-row .landing-btn-secondary { width: 100%; }
   .landing-hero-points { flex-direction: column; align-items: center; gap: 8px; }
   .analytics-stats { grid-template-columns: 1fr 1fr; }
@@ -907,3 +911,27 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .landing-loading { display: grid; place-items: center; }
 .landing-header .theme-toggle { flex-shrink: 0; }
 .landing-header-nav + .theme-toggle { margin-left: 0; }
+
+/* Light / Dark choice (top bar, Settings › Appearance) */
+.theme-choice { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-subtle); }
+.theme-choice-option { position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 14px; border-radius: var(--radius-pill); color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600; cursor: pointer; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.theme-choice-option:hover { color: var(--text-primary); }
+.theme-choice-option input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.theme-choice-option.active { background: var(--surface); color: var(--text-primary); box-shadow: var(--shadow-sm), 0 0 0 1px var(--accent-border); }
+.theme-choice-option.active .icon { color: var(--accent-text); }
+.theme-choice-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.appearance-panel .theme-choice-option { min-height: var(--touch); padding: 8px 18px; }
+@media (max-width: 767px) {
+  .appearance-panel .theme-choice { display: flex; border-radius: var(--radius-md); }
+  .appearance-panel .theme-choice-option { flex: 1 1 auto; justify-content: center; border-radius: var(--radius-sm); }
+}
+
+/* Sidebar badge: a BOQ is being read / finished while on another tab */
+.nav-badge { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--radius-pill); border: 1px solid var(--cool-border); background: var(--cool-bg); color: var(--cool-text); font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
+.nav-badge-dot { width: 7px; height: 7px; border-radius: var(--radius-pill); background: currentColor; }
+.nav-badge.is-reading .nav-badge-dot { animation: badge-pulse 1.4s ease-in-out infinite; }
+.nav-badge.is-ready { border-color: var(--success-border); background: var(--success-bg); color: var(--success-text); }
+.nav-badge.is-failed { border-color: var(--danger-border); background: var(--danger-bg); color: var(--danger-text); }
+.app-shell.sidebar-collapsed .nav-badge { position: absolute; top: 4px; right: 4px; padding: 0; width: 10px; height: 10px; border: 0; }
+.app-shell.sidebar-collapsed .nav-badge-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.app-shell.sidebar-collapsed .nav-badge-dot { width: 10px; height: 10px; }

@@ -18,6 +18,7 @@ import EmptyState from './components/EmptyState.jsx'
 import Icon from './components/Icon.jsx'
 import BrandLogo from './components/BrandLogo.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
+import ThemeChoice from './components/ThemeChoice.jsx'
 import Modal from './components/Modal.jsx'
 import SkeletonPanel from './components/Skeleton.jsx'
 import { COUNTRIES } from './countries.js'
@@ -1540,6 +1541,10 @@ function SettingsView({ userEmail }) {
   return <div className="view-workspace">
     <div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update your AI connection, email sender, business details, quotation company profile, and default country code.</p></div>
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
+    <section className="panel settings-panel appearance-panel">
+      <div className="panel-header"><div><h2>Appearance</h2><p className="muted-copy">Choose light or dark. "Match my device" follows your phone or computer setting. This is saved on this device only.</p></div></div>
+      <ThemeChoice withSystem label="Appearance" />
+    </section>
     <form onSubmit={save}>
       <section className="panel settings-panel">
         <div className="panel-header"><h2>AI assistant</h2><span className={`campaign-status ${settings.ai.available ? 'running' : 'stopped'}`}>{settings.ai.available ? 'Available' : 'Unavailable'}</span></div>
@@ -1592,6 +1597,12 @@ function App() {
   const [authChecking, setAuthChecking] = useState(true)
   const [resetPasswordMode, setResetPasswordMode] = useState(false)
   const [activeView, setActiveView] = useState('Dashboard')
+  // "BOQ & quotations" stays mounted (hidden) once opened, so an upload in
+  // progress, the open BOQ, unsaved edits and the open quotation survive a
+  // tab change. boqActivity drives the sidebar badge ('reading' | 'ready').
+  const [boqKept, setBoqKept] = useState(false)
+  const [boqActivity, setBoqActivity] = useState(null)
+  if (activeView === 'Document Intelligence' && !boqKept) setBoqKept(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [backendStatus, setBackendStatus] = useState('Checking...')
   const [isConnected, setIsConnected] = useState(false)
@@ -1767,6 +1778,7 @@ function App() {
   const selectView = (item) => {
     setActiveView(item)
     setDrawerOpen(false)
+    if (item === 'Document Intelligence' && boqActivity && boqActivity !== 'reading') setBoqActivity(null)
   }
 
   // Lock background scrolling while the mobile navigation drawer is open
@@ -1989,7 +2001,7 @@ function App() {
     if (activeView === 'Templates') return <TemplatesView />
     if (activeView === 'Knowledge Base') return <KnowledgeBaseView />
     if (activeView === 'Ask AI') return <AskAiView />
-    if (activeView === 'Document Intelligence') return <DocumentIntelView />
+    if (activeView === 'Document Intelligence') return null // kept mounted below
     if (activeView === 'Analytics') return <AnalyticsView onNavigate={setActiveView} />
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
@@ -2103,7 +2115,7 @@ function App() {
         <button type="button" className="icon-btn drawer-close" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)}><Icon name="close" /></button>
         <div className="sidebar-brand">
           <div className="sidebar-brand-text brand-full">
-            <BrandLogo height={30} />
+            <BrandLogo height={34} />
             <span className="sidebar-product">AI Assistant</span>
           </div>
           <span className="brand-mark-only"><BrandLogo variant="mark" height={32} /></span>
@@ -2126,6 +2138,12 @@ function App() {
                 >
                   <Icon name={NAV_META[item]?.icon} />
                   <span className="nav-label">{navLabel(item)}</span>
+                  {item === 'Document Intelligence' && boqActivity && (
+                    <span className={`nav-badge is-${boqActivity}`} role="status">
+                      <span className="nav-badge-dot" aria-hidden="true" />
+                      <span className="nav-badge-text">{{ reading: 'Reading…', ready: 'Ready', failed: 'Needs a look' }[boqActivity]}</span>
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -2153,7 +2171,7 @@ function App() {
             <h1>{pageTitle}</h1>
           </div>
           <div className="topbar-actions">
-            <ThemeToggle />
+            <ThemeChoice />
           </div>
         </header>
 
@@ -2163,6 +2181,11 @@ function App() {
               You are working in <strong>{activeSharedWorkspace.email || 'a shared'}</strong>'s workspace (shared with you). Records you add or change here belong to that workspace. Settings and the WhatsApp connection can only be changed by its owner.
             </div>}
 
+            {boqKept && (
+              <div className="kept-view" hidden={activeView !== 'Document Intelligence'}>
+                <DocumentIntelView active={activeView === 'Document Intelligence'} onActivity={setBoqActivity} />
+              </div>
+            )}
             {renderView()}
           </div>
           <footer className="page-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · AI Assistant</footer>

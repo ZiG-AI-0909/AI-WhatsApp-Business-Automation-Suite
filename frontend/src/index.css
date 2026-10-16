@@ -644,19 +644,12 @@ progress::-moz-progress-bar { background: linear-gradient(90deg, var(--cool), va
    ═══════════════════════════════════════════════════════════════════ */
 .app-shell { display: flex; min-height: 100vh; }
 
-.brand-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  background: var(--logo-chip-bg);
-  box-shadow: 0 0 0 1px rgba(25, 68, 148, 0.14), 0 6px 18px -10px rgba(0, 0, 0, 0.6);
-}
-.brand-chip-mark { padding: 5px; border-radius: var(--radius-sm); }
-.brand-window { position: relative; display: block; overflow: hidden; }
-.brand-window img { position: absolute; max-width: none; user-select: none; }
+/* Logo (transparent PNG): the light-theme file on light, the dark-theme
+   file (white lettering) on dark. See components/BrandLogo.jsx. */
+.brand-logo { display: inline-flex; align-items: center; flex-shrink: 0; max-width: 100%; line-height: 0; }
+.brand-logo img { display: block; max-width: 100%; height: auto; user-select: none; }
+:root[data-theme='dark'] .brand-logo-for-light,
+:root:not([data-theme='dark']) .brand-logo-for-dark { display: none; }
 
 .sidebar {
   position: sticky;
@@ -944,7 +937,7 @@ nav, .sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
   .main-panel { overflow: visible; padding: var(--space-4) var(--space-4) var(--space-6); }
   .topbar { position: static; padding: var(--space-4) var(--space-4) 0; background: transparent; border-bottom: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
   .topbar-title h1 { white-space: normal; }
-  .topbar-actions .conn-chip, .topbar-actions .theme-toggle, .topbar-actions .sign-out-btn { display: none; }
+  .topbar-actions .conn-chip, .topbar-actions .theme-toggle, .topbar-actions .theme-choice, .topbar-actions .sign-out-btn { display: none; }
 
   .mobile-topbar {
     position: sticky;

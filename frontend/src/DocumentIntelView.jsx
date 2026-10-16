@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
@@ -10,6 +10,20 @@ import BoqDone from './boq/BoqDone.jsx'
 import { rowStatus } from './boq/boqReview.js'
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : ''
+
+// What to restore after a page refresh (this browser tab only): the open
+// BOQ, the open quotation and a BOQ that was still being read. The file
+// itself is never stored. Storage may be unavailable (private mode).
+const SESSION_KEY = 'sp-boq-session'
+function readSession() {
+  try { return JSON.parse(window.sessionStorage.getItem(SESSION_KEY) || 'null') || {} } catch { return {} }
+}
+function writeSession(changes) {
+  try { window.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...readSession(), ...changes })) } catch { /* storage unavailable */ }
+}
+const rememberQuote = (quoteId) => writeSession({ quoteId: quoteId ?? null })
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const DISCARD_QUESTION = 'You have a change in the row you are checking that is not saved yet. Leave it without saving?'
 
 const STEPS = [
   { id: 'upload', label: 'Upload' },
@@ -55,7 +69,11 @@ function StepHeader({ step, doc, extracting, onUploadAnother }) {
 
 // Document Intelligence — 1 Upload a BOQ, 2 Check the rows against the scan,
 // 3 Use it (quotation / RFQ). Past BOQs stay available below.
-export default function DocumentIntelView() {
+// App.jsx keeps this view mounted (hidden) while other tabs are open, so
+// an upload keeps running and nothing typed here is lost on a tab change.
+// active: this tab is showing; onActivity('reading' | 'ready' | 'failed' |
+// null) drives the sidebar badge while the user is elsewhere.
+export default function DocumentIntelView({ active = true, onActivity }) {
   const [documents, setDocuments] = useState([])
   const [selected, setSelected] = useState(null)
   const [file, setFile] = useState(null)
@@ -73,6 +91,13 @@ export default function DocumentIntelView() {
   const activeExtraction = useRef(null)
   const quotationRef = useRef(null)
   const scanRef = useRef(null)
+  const activeRef = useRef(active)
+  const boqDirtyRef = useRef(false)
+  const quoteDirtyRef = useRef(false)
+  const [resumed, setResumed] = useState(null) // { name, size } of a BOQ read before a refresh
+  // Read once, before any effect writes to it: what this tab had open before a refresh.
+  const [savedSession] = useState(readSession)
+  const restoredQuoteId = savedSession.quoteId || null
 
   const load = async () => {
     try {
@@ -82,8 +107,23 @@ export default function DocumentIntelView() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { writeSession({ docId: selected?.id ?? null }) }, [selected?.id])
+  useEffect(() => { activeRef.current = active }, [active])
   useEffect(() => () => scanRef.current?.handle?.close(), [])
+  // A refresh or closing the tab would lose typed changes or stop a BOQ
+  // that is being read: the browser asks first.
+  useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!activeExtraction.current && !boqDirtyRef.current && !quoteDirtyRef.current) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
+  const report = (outcome) => onActivity?.(activeRef.current ? null : outcome)
+  const confirmDiscard = () => !boqDirtyRef.current || window.confirm(DISCARD_QUESTION)
 
   const attachScan = async (pdfFile, docId) => {
     try {
@@ -102,14 +142,18 @@ export default function DocumentIntelView() {
     }
   }
 
-  const open = async (id) => {
+  const open = async (id, { restoring = false } = {}) => {
+    if (!restoring && selected && selected.id !== id && !confirmDiscard()) return
     setBusy(true)
     try {
       setSelected(await apiFetch(`/boq/${id}`))
-      setNotice({ type: '', text: '' })
-      window.scrollTo?.({ top: 0 })
+      if (!restoring) {
+        setNotice({ type: '', text: '' })
+        window.scrollTo?.({ top: 0 })
+      }
     } catch (error) {
-      setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Document Intelligence' }) })
+      if (restoring && error?.status === 404) writeSession({ docId: null })
+      else setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Document Intelligence' }) })
     } finally {
       setBusy(false)
     }
@@ -129,6 +173,9 @@ export default function DocumentIntelView() {
     activeExtraction.current = { jobId, requestController, progressController }
     setProgress({ status: 'reading', totalBatches: 0, completedBatches: 0, currentBatch: 0, totalSourceRows: 0, handledRows: 0, reviewCount: 0, percent: 0 })
     setNotice({ type: '', text: '' })
+    writeSession({ job: { jobId, fileName: file.name, fileSize: file.size, startedAt: Date.now() } })
+    onActivity?.('reading')
+    let outcome = 'failed'
     let keepPolling = true
     const progressTask = (async () => {
       for (let attempt = 0; keepPolling && attempt < 420; attempt++) {
@@ -162,6 +209,7 @@ export default function DocumentIntelView() {
       keepPolling = false
       progressController.abort()
       setProgress((current) => ({ ...current, status: 'completed', percent: 100 }))
+      outcome = 'ready'
     } catch (error) {
       if (requestController.signal.aborted) {
         let cancelAccepted = true
@@ -200,8 +248,46 @@ export default function DocumentIntelView() {
       progressController.abort()
       await progressTask
       if (activeExtraction.current?.jobId === jobId) activeExtraction.current = null
+      writeSession({ job: null })
+      report(outcome)
       setExtracting(false)
       setBusy(false)
+    }
+  }
+
+  // After a refresh: the page that sent the upload is gone, and the server
+  // stops reading when the browser disconnects (it keeps what was already
+  // read). Follow the job's progress until it ends, then open the result.
+  // No second upload and no second reading are started.
+  const resumeJob = async (job) => {
+    setExtracting(true)
+    setBusy(true)
+    setResumed({ name: job.fileName || 'Your BOQ', size: job.fileSize })
+    activeExtraction.current = { jobId: job.jobId, requestController: null, progressController: null, resumed: true }
+    let final = null
+    for (let attempt = 0; attempt < 300; attempt++) {
+      try {
+        const snapshot = await apiFetch(`/boq/progress/${job.jobId}`, { cache: 'no-store' })
+        setProgress(snapshot)
+        if (['completed', 'cancelled', 'failed'].includes(snapshot.status)) { final = snapshot; break }
+      } catch (error) {
+        if (error?.status && error.status < 500) break // the server no longer knows this job
+      }
+      await sleep(1000)
+    }
+    writeSession({ job: null })
+    activeExtraction.current = null
+    setExtracting(false)
+    setBusy(false)
+    setResumed(null)
+    if (final?.documentId) {
+      await open(final.documentId, { restoring: true })
+      await load()
+      setNotice(final.status === 'completed'
+        ? { type: 'success', text: 'Your BOQ finished reading. Here it is.' }
+        : { type: 'warning', text: 'The page was reloaded while the BOQ was being read, so reading stopped. What was read before that is saved below for checking.' })
+    } else if (final) {
+      setNotice({ type: 'warning', text: 'The page was reloaded while the BOQ was being read, so reading stopped before anything was saved. Please upload the file again.' })
     }
   }
 
@@ -209,7 +295,7 @@ export default function DocumentIntelView() {
     const active = activeExtraction.current
     if (!active) return
     setProgress((current) => current ? { ...current, status: 'cancelling' } : current)
-    active.requestController.abort()
+    active.requestController?.abort()
     apiFetch(`/boq/progress/${active.jobId}`, { method: 'DELETE' })
       .then(setProgress)
       .catch(() => {})
@@ -326,6 +412,16 @@ export default function DocumentIntelView() {
     }
   }
 
+  // Once per mount (the view stays mounted across tab changes): the list,
+  // then whatever this browser tab had open before a refresh.
+  const startUp = useEffectEvent(() => {
+    load()
+    const saved = savedSession
+    if (saved.job?.jobId) resumeJob(saved.job)
+    else if (saved.docId) open(saved.docId, { restoring: true })
+  })
+  useEffect(() => { startUp() }, [])
+
   const step = extracting || !selected ? 'upload' : selected.status === 'confirmed' ? 'use' : 'check'
   const selectedScan = scan && selected && scan.docId === selected.id ? scan.handle : null
   const isPdf = /\.pdf$/i.test(selected?.file_ext || selected?.filename || '')
@@ -337,13 +433,13 @@ export default function DocumentIntelView() {
         <h2>{selected && step !== 'upload' ? selected.filename : 'Check a BOQ'}</h2>
       </div>
 
-      <StepHeader step={step} doc={selected} extracting={extracting} onUploadAnother={() => { setSelected(null); setNotice({ type: '', text: '' }) }} />
+      <StepHeader step={step} doc={selected} extracting={extracting} onUploadAnother={() => { if (!confirmDiscard()) return; setSelected(null); setNotice({ type: '', text: '' }) }} />
 
       {notice.text && <div className={`notice ${notice.type || 'info'}`} role={notice.type === 'error' ? 'alert' : 'status'}>{notice.text}</div>}
 
       {step === 'upload' && (
         <BoqUpload
-          file={file}
+          file={extracting && resumed ? resumed : file}
           setFile={(next) => { setFile(next); setUploadError(null) }}
           extracting={extracting}
           progress={progress}
@@ -365,6 +461,7 @@ export default function DocumentIntelView() {
           acceptRows={acceptRows}
           confirmDoc={confirmDoc}
           busy={busy}
+          dirtyRef={boqDirtyRef}
         />
       )}
 
@@ -381,7 +478,13 @@ export default function DocumentIntelView() {
       )}
 
       <div ref={quotationRef}>
-        <QuotationView key={openedQuote ? `quote-${openedQuote.id}-${openedQuote.updated_at}` : 'quotes'} initialQuote={openedQuote} />
+        <QuotationView
+          key={openedQuote ? `quote-${openedQuote.id}-${openedQuote.updated_at}` : 'quotes'}
+          initialQuote={openedQuote}
+          initialQuoteId={openedQuote ? null : restoredQuoteId}
+          onOpenChange={rememberQuote}
+          dirtyRef={quoteDirtyRef}
+        />
       </div>
 
       <section className="panel">

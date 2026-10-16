@@ -1,40 +1,31 @@
-// The Sudarshan Pipes & Fittings logo, used exactly as supplied
-// (public/sudarshan-logo.jpg, 1660×422). It is never recoloured, redrawn or
-// stretched: both variants show the original image through a window that
-// keeps its aspect ratio — `full` trims only the empty white margin around
-// the wordmark, `mark` shows just the circle-and-pipe symbol. The image has
-// a white background, so it always sits on a white rounded chip; that keeps
-// it visible on the dark theme without editing the logo.
+// The Sudarshan Pipes & Fittings logo, from "SEPL Main Logo (1).png"
+// (transparent background). Files in public/, made from it with only the
+// empty margin trimmed:
+//   sudarshan-logo.png       light theme — exactly as supplied
+//   sudarshan-logo-dark.png  dark theme — the blue lettering is white so it
+//                            reads on navy; the orange mark is unchanged
+//   sudarshan-mark.png       the circle-and-pipe mark alone
+// Both full versions are in the page; CSS shows the one for the active theme
+// (see .brand-logo in index.css), so switching themes never flashes.
 
-const LOGO_SRC = '/sudarshan-logo.jpg'
-const LOGO_W = 1660
-const LOGO_H = 422
-// Measured from the image pixels (see README "Branding").
-const FULL_CROP = { x: 92, y: 88, w: 1528, h: 298 }
-const MARK_CROP = { x: 103, y: 96.5, w: 276, h: 276 }
 const ALT = 'Sudarshan Pipes & Fittings'
-
-function LogoWindow({ crop, height, decorative }) {
-  const scale = height / crop.h
-  return (
-    <span className="brand-window" style={{ width: Math.round(crop.w * scale), height }}>
-      <img
-        src={LOGO_SRC}
-        alt={decorative ? '' : ALT}
-        width={Math.round(LOGO_W * scale)}
-        height={Math.round(LOGO_H * scale)}
-        style={{ left: Math.round(-crop.x * scale), top: Math.round(-crop.y * scale) }}
-        draggable="false"
-      />
-    </span>
-  )
-}
+const FULL_RATIO = 485 / 91 // width / height of the trimmed logo
+const MARK_RATIO = 92 / 87
 
 export default function BrandLogo({ variant = 'full', height = 30, className = '', decorative = false }) {
-  const crop = variant === 'mark' ? MARK_CROP : FULL_CROP
+  const alt = decorative ? '' : ALT
+  if (variant === 'mark') {
+    return (
+      <span className={`brand-logo brand-logo-mark ${className}`.trim()}>
+        <img src="/sudarshan-mark.png" alt={alt} width={Math.round(height * MARK_RATIO)} height={height} draggable="false" />
+      </span>
+    )
+  }
+  const width = Math.round(height * FULL_RATIO)
   return (
-    <span className={`brand-chip brand-chip-${variant} ${className}`.trim()}>
-      <LogoWindow crop={crop} height={height} decorative={decorative} />
+    <span className={`brand-logo brand-logo-full ${className}`.trim()}>
+      <img className="brand-logo-for-light" src="/sudarshan-logo.png" alt={alt} width={width} height={height} draggable="false" />
+      <img className="brand-logo-for-dark" src="/sudarshan-logo-dark.png" alt={alt} width={width} height={height} draggable="false" />
     </span>
   )
 }

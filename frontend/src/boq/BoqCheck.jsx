@@ -311,7 +311,7 @@ function RowEditor({ item, priced, draft, setDraft, onSave, onLooksFine, onKeep,
  * Step 2: check the rows. Parent callbacks persist to the server and
  * return the updated document (or null on failure; the parent shows why).
  */
-export default function BoqCheck({ doc, scan, isPdf, onAttachScan, saveItems, acceptRows, confirmDoc, busy }) {
+export default function BoqCheck({ doc, scan, isPdf, onAttachScan, saveItems, acceptRows, confirmDoc, busy, dirtyRef }) {
   const items = useMemo(() => doc.items || [], [doc.items])
   const priced = useMemo(() => hasPriceColumns(items), [items])
   const phone = useIsPhone()
@@ -352,6 +352,10 @@ export default function BoqCheck({ doc, scan, isPdf, onAttachScan, saveItems, ac
   const draftKey = selected ? [selected.lineItemId, selected.quantity, selected.rate, selected.amount, selected.unit].join('|') : ''
   const draft = selected ? (draftState?.key === draftKey ? draftState.values : draftOf(selected)) : null
   const setDraft = (values) => setDraftState({ key: draftKey, values })
+  // Typed but not saved yet: the parent warns before a refresh discards it.
+  const unsaved = Boolean(selected && draft && draftDirty(selected, draft))
+  useEffect(() => { if (dirtyRef) dirtyRef.current = unsaved }, [unsaved, dirtyRef])
+  useEffect(() => () => { if (dirtyRef) dirtyRef.current = false }, [dirtyRef])
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), [])
 
