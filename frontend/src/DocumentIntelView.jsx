@@ -2,43 +2,77 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage, isTechnicalError } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
+import Icon from './components/Icon.jsx'
 import QuotationView from './QuotationView.jsx'
+import BoqUpload from './boq/BoqUpload.jsx'
+import BoqCheck from './boq/BoqCheck.jsx'
+import BoqDone from './boq/BoqDone.jsx'
+import { rowStatus } from './boq/boqReview.js'
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : ''
-const formatSource = (source = {}) => [
-  source.page ? `Page ${source.page}` : '',
-  source.sheet ? `Sheet ${source.sheet}` : '',
-  source.table ? `Table ${source.table}` : '',
-  source.row ? `Row ${source.row}` : '',
-].filter(Boolean).join(' · ') || 'Not available'
 
-const EMPTY_ITEM = { product: '', size: '', specification: '', quantity: '', unit: '', application: '', notes: '' }
-const money = (value) => value === null || value === undefined || value === '' ? '-' : `Rs ${Number(value).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-// Corrections that need a human look (info-level normalisations do not).
-const fieldFlags = (item, field) => (item.corrections || []).filter((entry) => entry.field === field && entry.level !== 'info')
-// Editing these on a flagged row withdraws its "Reviewed" tick (the server does the same).
-const REVIEWED_FIELDS = new Set(['quantity', 'rate', 'amount', 'unit'])
+const STEPS = [
+  { id: 'upload', label: 'Upload' },
+  { id: 'check', label: 'Check' },
+  { id: 'use', label: 'Use' },
+]
 
-// Document Intelligence — upload a BOQ / project requirement document,
-// review the extracted requirement sheet (editable, warnings inline),
-// then export an RFQ in Excel or PDF. Past extractions stay available.
+// One plain sentence: where am I and what do I do next.
+function nextSentence(step, doc, extracting) {
+  if (extracting) return 'We are reading your BOQ. A scanned PDF takes up to about 2 minutes.'
+  if (step === 'upload') return 'Choose the BOQ file (PDF, Excel or Word) and press "Read this BOQ".'
+  if (step === 'use') return 'The BOQ is confirmed. Create the quotation or download the RFQ.'
+  const items = doc?.items || []
+  const fix = items.filter((item) => rowStatus(item) === 'fix').length
+  const glance = items.filter((item) => rowStatus(item) === 'glance').length
+  if (fix) return `Fix the ${fix} ${fix === 1 ? 'item' : 'items'} with wrong numbers (red), then confirm the BOQ.`
+  if (glance) return `No wrong numbers. Glance at the ${glance} amber ${glance === 1 ? 'row' : 'rows'} or accept them all, then confirm.`
+  return 'Everything checks out. Press "Confirm BOQ".'
+}
+
+function StepHeader({ step, doc, extracting, onUploadAnother }) {
+  const current = STEPS.findIndex((entry) => entry.id === step)
+  return (
+    <div className="boq-steps-wrap">
+      <ol className="boq-steps" aria-label="BOQ steps">
+        {STEPS.map((entry, index) => {
+          const state = index < current ? 'done' : index === current ? 'current' : 'todo'
+          return (
+            <li key={entry.id} className={`boq-step ${state}`} aria-current={state === 'current' ? 'step' : undefined}>
+              <span className="boq-step-dot" aria-hidden="true">{state === 'done' ? <Icon name="check" size={14} /> : index + 1}</span>
+              <span className="boq-step-label">{entry.label}<span className="visually-hidden">{state === 'done' ? ' (done)' : state === 'current' ? ' (you are here)' : ''}</span></span>
+            </li>
+          )
+        })}
+      </ol>
+      <p className="boq-next" role="status"><Icon name="info" size={17} /> {nextSentence(step, doc, extracting)}</p>
+      {step !== 'upload' && !extracting && (
+        <button type="button" className="ghost-btn boq-upload-another" onClick={onUploadAnother}><Icon name="upload" size={16} /> Upload another BOQ</button>
+      )}
+    </div>
+  )
+}
+
+// Document Intelligence — 1 Upload a BOQ, 2 Check the rows against the scan,
+// 3 Use it (quotation / RFQ). Past BOQs stay available below.
 export default function DocumentIntelView() {
   const [documents, setDocuments] = useState([])
   const [selected, setSelected] = useState(null)
   const [file, setFile] = useState(null)
-  const [notice, setNotice] = useState({ type: '', text: '', retryable: false })
+  const [notice, setNotice] = useState({ type: '', text: '' })
+  const [uploadError, setUploadError] = useState(null)
   const [busy, setBusy] = useState(false)
   const [extracting, setExtracting] = useState(false)
   const [exporting, setExporting] = useState('')
   const [progress, setProgress] = useState(null)
   const [openedQuote, setOpenedQuote] = useState(null)
-  const [onlyFlagged, setOnlyFlagged] = useState(false)
-  // Object URL of the PDF uploaded in this session, so page links can open
-  // the scan at the row's page (the file itself is not stored server-side).
-  const [sourcePdf, setSourcePdf] = useState(null)
+  // The scanned PDF, opened in the browser only (never stored server-side),
+  // so each row can be shown next to its place on the scan.
+  const [scan, setScan] = useState(null)
   const [creatingQuote, setCreatingQuote] = useState(false)
   const activeExtraction = useRef(null)
   const quotationRef = useRef(null)
+  const scanRef = useRef(null)
 
   const load = async () => {
     try {
@@ -49,12 +83,31 @@ export default function DocumentIntelView() {
   }
 
   useEffect(() => { load() }, [])
+  useEffect(() => () => scanRef.current?.handle?.close(), [])
+
+  const attachScan = async (pdfFile, docId) => {
+    try {
+      // Loaded on demand: only needed when a scanned PDF is open.
+      const { openScan } = await import('./boq/pdfScan.js')
+      const handle = await openScan(pdfFile)
+      if (!handle) {
+        setNotice({ type: 'error', text: `"${pdfFile.name}" does not look like a PDF.` })
+        return
+      }
+      scanRef.current?.handle?.close()
+      scanRef.current = { docId, handle, name: pdfFile.name }
+      setScan(scanRef.current)
+    } catch {
+      setNotice({ type: 'error', text: 'This PDF could not be opened here. You can still check the rows by their page number.' })
+    }
+  }
 
   const open = async (id) => {
     setBusy(true)
     try {
       setSelected(await apiFetch(`/boq/${id}`))
       setNotice({ type: '', text: '' })
+      window.scrollTo?.({ top: 0 })
     } catch (error) {
       setNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Document Intelligence' }) })
     } finally {
@@ -62,19 +115,20 @@ export default function DocumentIntelView() {
     }
   }
 
-  // Extraction shares the form handler and the Retry button. The chosen
-  // file stays in state on failure (setFile(null) runs on success only) so
-  // a transient 504 can be retried without re-picking the document.
+  // Extraction shares the Start and the Retry buttons. The chosen file
+  // stays in state on failure (setFile(null) runs on success only) so a
+  // transient 504 can be retried without re-picking the document.
   const runExtraction = async () => {
     if (!file) return
     setBusy(true)
     setExtracting(true)
+    setUploadError(null)
     const jobId = window.crypto?.randomUUID?.() || `boq-${Date.now()}-${Math.random().toString(36).slice(2)}`
     const requestController = new AbortController()
     const progressController = new AbortController()
     activeExtraction.current = { jobId, requestController, progressController }
     setProgress({ status: 'reading', totalBatches: 0, completedBatches: 0, currentBatch: 0, totalSourceRows: 0, handledRows: 0, reviewCount: 0, percent: 0 })
-    setNotice({ type: '', text: '', retryable: false })
+    setNotice({ type: '', text: '' })
     let keepPolling = true
     const progressTask = (async () => {
       for (let attempt = 0; keepPolling && attempt < 420; attempt++) {
@@ -100,19 +154,14 @@ export default function DocumentIntelView() {
         signal: requestController.signal,
       })
       setSelected(doc)
-      if (/\.pdf$/i.test(file.name)) {
-        setSourcePdf((current) => {
-          if (current) URL.revokeObjectURL(current.url)
-          return { docId: doc.id, url: URL.createObjectURL(file) }
-        })
-      }
+      if (/\.pdf$/i.test(file.name)) await attachScan(file, doc.id)
       setFile(null)
       await load()
-      const flagged = doc.items.filter((item) => item.needsReview).length
-      setNotice({ type: 'success', text: `Extracted ${doc.items.length} line item(s) from ${doc.filename}.${flagged ? ` ${flagged} row(s) are flagged for review: each must be checked before the sheet can be confirmed.` : ' Review the rows below.'}`, retryable: false })
+      const fix = doc.items.filter((item) => rowStatus(item) === 'fix').length
+      setNotice({ type: 'success', text: `We read ${doc.items.length} items from ${doc.filename}.${fix ? ` Start with the ${fix} marked in red.` : ''}` })
       keepPolling = false
       progressController.abort()
-      setProgress((current) => ({ ...current, status: 'completed', completedBatches: current?.totalBatches || current?.completedBatches || 0, handledRows: current?.totalSourceRows || current?.handledRows || doc.items.length, reviewCount: doc.warnings.flat().filter((warnings) => warnings?.length).length, percent: 100 }))
+      setProgress((current) => ({ ...current, status: 'completed', percent: 100 }))
     } catch (error) {
       if (requestController.signal.aborted) {
         let cancelAccepted = true
@@ -130,22 +179,22 @@ export default function DocumentIntelView() {
           try {
             const partialDoc = await apiFetch(`/boq/${finalProgress.documentId}`)
             setSelected(partialDoc)
+            if (/\.pdf$/i.test(file.name)) await attachScan(file, partialDoc.id)
             setFile(null)
             await load()
           } catch { /* progress still reports cancellation if the partial sheet cannot be loaded */ }
         }
         setProgress(finalProgress || ((current) => ({ ...current, status: 'cancelled' })))
-        setNotice({ type: 'error', text: finalProgress?.documentId ? 'Extraction cancelled. Completed work was saved for review; unprocessed sections were not included.' : 'Extraction cancelled before a review sheet could be saved.' })
+        setNotice({ type: finalProgress?.documentId ? 'warning' : 'error', text: finalProgress?.documentId ? 'Stopped. What was already read is saved below for checking; the rest of the file was not included.' : 'Stopped before anything could be saved.' })
         return
       }
-      // Backend messages for this endpoint are already user-facing
-      // ("Section 1 of 1 of \"x.xlsx\" could not be extracted: …") — show
+      // Backend messages for this endpoint are already user-facing — show
       // them verbatim instead of the generic friendly fallback.
       const raw = error?.message || ''
       const message = raw && !isTechnicalError(raw)
         ? raw
         : friendlyErrorMessage(error, { context: 'Document Intelligence · extraction' })
-      setNotice({ type: 'error', text: message, retryable: !!error?.retryable })
+      setUploadError({ text: message, retryable: !!error?.retryable })
     } finally {
       keepPolling = false
       progressController.abort()
@@ -166,56 +215,66 @@ export default function DocumentIntelView() {
       .catch(() => {})
   }
 
-  const process = async (event) => {
-    event.preventDefault()
-    await runExtraction()
+  const showSaveError = (error, context) => {
+    const raw = error?.message || ''
+    setNotice({ type: 'error', text: [400, 409].includes(error?.status) && raw && !isTechnicalError(raw) ? raw : friendlyErrorMessage(error, { context }) })
   }
 
-  const editItem = (index, field, value) => {
-    const changes = field === 'notes' ? { notes: value, remarks: value } : { [field]: value }
-    setSelected((current) => ({
-      ...current,
-      items: current.items.map((item, i) => {
-        if (i !== index) return item
-        const next = { ...item, ...changes }
-        if (REVIEWED_FIELDS.has(field) && item.needsReview) next.reviewConfirmed = false
-        return next
-      }),
-    }))
-  }
-
-  const removeItem = (index) => {
-    setSelected((current) => ({
-      ...current,
-      items: current.items.filter((_, i) => i !== index),
-    }))
-  }
-
-  const addItem = () => {
-    setSelected((current) => ({ ...current, items: [...current.items, { ...EMPTY_ITEM }] }))
-  }
-
-  const saveReview = async (status) => {
+  // Save edited rows. accept: [{ lineItemId, reason }] rows the person
+  // checked; unaccept: [lineItemId] (Undo). The server stamps who and when.
+  const saveItems = async (items, { accept = [], unaccept = [], status, quiet = false } = {}) => {
+    if (!selected) return null
     setBusy(true)
     try {
       const doc = await apiFetch(`/boq/${selected.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: selected.items, status }),
+        body: JSON.stringify({ items, status: status || selected.status, accept, unaccept }),
       })
       setSelected(doc)
-      await load()
-      setNotice({ type: 'success', text: status === 'confirmed' ? 'Requirement sheet confirmed. RFQ exports are ready.' : 'Changes saved.' })
+      setDocuments((list) => list.map((entry) => (entry.id === doc.id ? doc : entry)))
+      if (!quiet) setNotice({ type: '', text: '' })
+      if (status && status !== selected.status) await load()
+      return doc
     } catch (error) {
-      const raw = error?.message || ''
-      setNotice({ type: 'error', text: [400, 409].includes(error?.status) && raw && !isTechnicalError(raw) ? raw : friendlyErrorMessage(error, { context: 'Document Intelligence · save' }) })
+      showSaveError(error, 'Document Intelligence · save')
+      return null
     } finally {
       setBusy(false)
     }
   }
 
+  const acceptRows = async (lineItemIds, reason) => {
+    if (!selected) return null
+    setBusy(true)
+    try {
+      const doc = await apiFetch(`/boq/${selected.id}/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: lineItemIds, reason }),
+      })
+      setSelected(doc)
+      setDocuments((list) => list.map((entry) => (entry.id === doc.id ? doc : entry)))
+      setNotice({ type: '', text: '' })
+      return doc
+    } catch (error) {
+      showSaveError(error, 'Document Intelligence · accept')
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmDoc = async () => {
+    const doc = await saveItems(selected.items, { status: 'confirmed' })
+    if (doc) window.scrollTo?.({ top: 0, behavior: 'smooth' })
+    return doc
+  }
+
+  const reopen = () => saveItems(selected.items, { status: 'review' })
+
   const remove = async (id) => {
-    if (!window.confirm('Delete this processed document and its extracted rows?')) return
+    if (!window.confirm('Delete this BOQ and its rows? This cannot be undone.')) return
     try {
       await apiFetch(`/boq/${id}`, { method: 'DELETE' })
       if (selected?.id === id) setSelected(null)
@@ -258,159 +317,67 @@ export default function DocumentIntelView() {
     try {
       const quote = await apiFetch(`/boq/${selected.id}/quotation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
       setOpenedQuote(quote)
-      setNotice({ type: 'success', text: quote.created ? 'Quotation draft created. Check which BOQ lines are pipes, then enter your rates.' : 'Opened the existing quotation for this BOQ.' })
+      setNotice({ type: 'success', text: quote.created ? 'Quotation draft created below. Check which lines are pipes, then enter your rates.' : 'Opened the existing quotation for this BOQ below.' })
       window.setTimeout(() => quotationRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
     } catch (error) {
-      const raw = error?.message || ''
-      setNotice({ type: 'error', text: [400, 409].includes(error?.status) && raw && !isTechnicalError(raw) ? raw : friendlyErrorMessage(error, { context: 'Create quotation' }) })
+      showSaveError(error, 'Create quotation')
     } finally {
       setCreatingQuote(false)
     }
   }
 
-  const warnCount = selected ? selected.warnings.flat().filter((list) => list && list.length).length : 0
-  const flaggedCount = selected ? selected.items.filter((item) => item.needsReview).length : 0
-  const pendingReview = selected ? selected.items.filter((item) => item.needsReview && !item.reviewConfirmed).length : 0
-  const validation = selected?.extraction_metadata?.validation || null
-  const sourcePdfUrl = sourcePdf && selected && sourcePdf.docId === selected.id ? sourcePdf.url : null
+  const step = extracting || !selected ? 'upload' : selected.status === 'confirmed' ? 'use' : 'check'
+  const selectedScan = scan && selected && scan.docId === selected.id ? scan.handle : null
+  const isPdf = /\.pdf$/i.test(selected?.file_ext || selected?.filename || '')
 
   return (
-    <div className="view-workspace">
-      <div>
-        <p className="eyebrow">Requirement to RFQ</p>
-        <h2>Document Intelligence</h2>
-        <p className="muted-copy">Upload a BOQ or project requirement document (XLSX, DOCX, PDF, TXT, CSV). The AI extracts sizes, quantities, and specifications into an editable requirement sheet, flags likely errors, and produces a ready-to-review RFQ.</p>
+    <div className="view-workspace boq-flow">
+      <div className="boq-intro">
+        <p className="eyebrow">BOQ to quotation</p>
+        <h2>{selected && step !== 'upload' ? selected.filename : 'Check a BOQ'}</h2>
       </div>
 
-      {notice.text && (
-        <div className={`notice ${notice.type}`}>
-          <span>{notice.text}</span>
-          {notice.retryable && file && !busy && (
-            <button type="button" className="secondary-btn" onClick={runExtraction}>Retry extraction</button>
-          )}
-        </div>
+      <StepHeader step={step} doc={selected} extracting={extracting} onUploadAnother={() => { setSelected(null); setNotice({ type: '', text: '' }) }} />
+
+      {notice.text && <div className={`notice ${notice.type || 'info'}`} role={notice.type === 'error' ? 'alert' : 'status'}>{notice.text}</div>}
+
+      {step === 'upload' && (
+        <BoqUpload
+          file={file}
+          setFile={(next) => { setFile(next); setUploadError(null) }}
+          extracting={extracting}
+          progress={progress}
+          onStart={runExtraction}
+          onCancel={cancelExtraction}
+          error={uploadError}
+          onRetry={runExtraction}
+        />
       )}
 
-      <section className="panel">
-        <form className="form-stack" onSubmit={process}>
-          <label className="upload-dropzone">
-            {file ? file.name : 'Choose an XLSX, DOCX, PDF, TXT, or CSV document'}
-            <small>Scanned/image-only PDFs are now supported (OCR, up to 20 pages per upload) — text-based files are still fastest.</small>
-            <input type="file" accept=".xlsx,.docx,.pdf,.txt,.csv,.md" onChange={(event) => setFile(event.target.files?.[0] || null)} />
-          </label>
-          <div className="button-row">
-            <button type="submit" className="primary-btn" disabled={busy || !file}>{busy ? 'Extracting…' : 'Extract requirements'}</button>
-            {extracting && (
-              <button type="button" className="secondary-btn" onClick={cancelExtraction}>Cancel Extraction</button>
-            )}
-          </div>
-        </form>
-      </section>
-
-      {(busy || progress?.status === 'cancelled') && progress && (
-        <section className="panel" role="status" aria-live="polite">
-          <div className="panel-header">
-            <strong>{progress.status === 'cancelled' ? 'Extraction cancelled — review partial results' : progress.status === 'cancelling' ? 'Cancelling extraction…' : progress.totalBatches ? `Processing BOQ — Batch ${progress.currentBatch || 0} of ${progress.totalBatches}` : 'Reading BOQ…'}</strong>
-            <span className="file-note">{progress.percent || 0}%</span>
-          </div>
-          <progress value={progress.percent || 0} max="100" style={{ width: '100%' }} />
-          <div className="panel-header">
-            <span className="file-note">{progress.handledRows || 0} / {progress.totalSourceRows || 0} rows processed</span>
-            <span className="file-note">{progress.reviewCount || 0} row(s) needing review</span>
-          </div>
-        </section>
+      {step === 'check' && (
+        <BoqCheck
+          key={selected.id}
+          doc={selected}
+          scan={selectedScan}
+          isPdf={isPdf}
+          onAttachScan={(pdfFile) => attachScan(pdfFile, selected.id)}
+          saveItems={saveItems}
+          acceptRows={acceptRows}
+          confirmDoc={confirmDoc}
+          busy={busy}
+        />
       )}
 
-      {selected && (
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Requirement sheet</p>
-              <h2>{selected.filename}</h2>
-              <span className="file-note">{selected.items.length} items · {warnCount} row(s) with warnings · {formatDate(selected.created_at)}</span>
-            </div>
-            <div className="button-row">
-              <button type="button" className="secondary-btn" onClick={() => exportRfq('excel')} disabled={!!exporting || !selected.items.length || selected.status !== 'confirmed'}>{exporting === 'excel' ? 'Building…' : 'Export RFQ (Excel)'}</button>
-              <button type="button" className="secondary-btn" onClick={() => exportRfq('pdf')} disabled={!!exporting || !selected.items.length || selected.status !== 'confirmed'}>{exporting === 'pdf' ? 'Building…' : 'Export RFQ (PDF)'}</button>
-              <button type="button" className="primary-btn" onClick={createQuotation} disabled={creatingQuote || !selected.items.length || selected.status !== 'confirmed'} title={selected.status === 'confirmed' ? 'Build a supply-only quotation for the pipe lines in this BOQ' : 'Confirm the requirement sheet first'}>{creatingQuote ? 'Preparing…' : 'Create quotation'}</button>
-            </div>
-          </div>
-
-          {validation && (
-            <div className={`notice ${validation.totalOk === false || pendingReview ? 'warning' : 'info'} boq-validation`}>
-              <span>
-                {validation.items} item(s) from {validation.rowsIn} source row(s)
-                {validation.dropped?.length ? ` · ${validation.dropped.length} footer/stamp/blank row(s) dropped` : ''}
-                {typeof validation.verifiedRows === 'number' ? ` · ${validation.verifiedRows} verified by qty × rate = amount` : ''}
-                {validation.printedTotal ? ` · printed total ${money(validation.printedTotal)}, sum of amounts ${money(validation.amountSum)}${validation.totalOk ? ' (matches)' : ` (differs by ${money(validation.difference)}: some amounts are misread, see flagged rows)`}` : ''}
-              </span>
-              {validation.dropped?.length > 0 && (
-                <details><summary>Dropped rows</summary><ul className="warning-list">{validation.dropped.map((row, dIndex) => <li key={dIndex}>p.{row.page ?? '?'} · {row.reason}: “{row.text || 'blank'}”</li>)}</ul></details>
-              )}
-            </div>
-          )}
-          <div className="button-row boq-review-tools">
-            <label className="boq-toggle"><input type="checkbox" checked={onlyFlagged} onChange={(event) => setOnlyFlagged(event.target.checked)} /> Show only rows needing review ({flaggedCount})</label>
-            {!sourcePdfUrl && <small className="file-note">Page links open the scan only right after an upload in this session; otherwise use the page number.</small>}
-          </div>
-
-          <div className="quote-table-scroll">
-            <table className="quote-table boq-review-table">
-              <thead>
-                <tr><th>Reviewed</th><th>BOQ S.No / Code</th><th>Description</th><th>Size</th><th>Specification</th><th className="num">Qty</th><th>Unit</th><th className="num">Rate</th><th className="num">Amount</th><th>Page</th><th>Checks</th><th /></tr>
-              </thead>
-              <tbody>
-                {selected.items.map((item, index) => {
-                  if (onlyFlagged && !(item.needsReview && !item.reviewConfirmed)) return null
-                  const rowWarnings = selected.warnings?.[index] || item.warnings || []
-                  const flagged = (field) => fieldFlags(item, field)
-                  const cell = (field) => {
-                    const flags = flagged(field)
-                    return flags.length ? { className: 'boq-cell-flagged', title: flags.map((entry) => `${entry.reason} (OCR: ${entry.original})`).join('\n') } : {}
-                  }
-                  const issues = [
-                    ...(item.corrections || []).filter((entry) => entry.level !== 'info'),
-                    ...(item.checks || []).map((check) => ({ ...check, isCheck: true })),
-                  ]
-                  return (
-                    <tr key={item.lineItemId || index} className={item.needsReview && !item.reviewConfirmed ? 'boq-row-flagged' : (rowWarnings.length ? 'row-warnings' : '')}>
-                      <td>{item.needsReview
-                        ? <label className="boq-toggle"><input type="checkbox" aria-label={`Reviewed row ${item.serialNumber || index + 1}`} checked={!!item.reviewConfirmed} onChange={(event) => editItem(index, 'reviewConfirmed', event.target.checked)} /> {item.reviewConfirmed ? 'Yes' : 'Check'}</label>
-                        : <small className="quote-muted">{item.verified ? '✓ verified' : '-'}</small>}</td>
-                      <td {...cell('serialNumber')}><input className="quote-input-short" aria-label="BOQ S.No" value={item.serialNumber ?? ''} onChange={(event) => editItem(index, 'serialNumber', event.target.value)} /><input aria-label="Item code" className={flagged('itemCode').length || (item.checks || []).some((check) => check.code === 'item_code_suspicious') ? 'boq-input-flagged' : ''} value={item.itemCode ?? ''} onChange={(event) => editItem(index, 'itemCode', event.target.value)} /></td>
-                      <td className="quote-desc"><textarea rows={2} value={item.description ?? item.product ?? ''} title={item.rawDescription ? `OCR text: ${item.rawDescription}` : ''} onChange={(event) => editItem(index, 'description', event.target.value)} />
-                        {item.rawDescription && item.rawDescription !== item.description && <details><summary>Raw OCR text</summary><p className="quote-muted">{item.rawDescription}</p></details>}</td>
-                      <td {...cell('size')}><input className="quote-input-short" value={item.size ?? ''} onChange={(event) => editItem(index, 'size', event.target.value)} /></td>
-                      <td><input value={item.specification ?? ''} onChange={(event) => editItem(index, 'specification', event.target.value)} /></td>
-                      <td className="num" {...cell('quantity')}><input className="quote-input-num" value={item.quantity ?? ''} onChange={(event) => editItem(index, 'quantity', event.target.value)} /></td>
-                      <td {...cell('unit')}><input className="quote-input-short" value={item.unit ?? ''} onChange={(event) => editItem(index, 'unit', event.target.value)} /></td>
-                      <td className="num" {...cell('rate')}><input className="quote-input-num" value={item.rate ?? ''} onChange={(event) => editItem(index, 'rate', event.target.value)} /></td>
-                      <td className="num" {...cell('amount')}><input className="quote-input-num" value={item.amount ?? ''} onChange={(event) => editItem(index, 'amount', event.target.value)} /></td>
-                      <td>{item.provenance?.page
-                        ? (sourcePdfUrl ? <a href={`${sourcePdfUrl}#page=${item.provenance.page}`} target="_blank" rel="noreferrer">p.{item.provenance.page}</a> : `p.${item.provenance.page}`)
-                        : formatSource(item.provenance)}</td>
-                      <td className="boq-issues">
-                        {issues.map((entry, eIndex) => (
-                          <span key={eIndex} className={entry.level === 'error' ? 'quote-flag-error' : 'quote-flag-warning'}>
-                            {entry.isCheck ? entry.message : <><strong>{entry.field}</strong>: {String(entry.original)} → {String(entry.corrected)} <em>({entry.reason})</em></>}
-                          </span>
-                        ))}
-                        {rowWarnings.filter((warning) => !/^Missing size$/.test(warning) && !(item.verified && /over 100x the document median/.test(warning))).map((warning, wIndex) => <span key={`w${wIndex}`} className="quote-muted">{warning}</span>)}
-                      </td>
-                      <td><button type="button" className="danger-btn" onClick={() => removeItem(index)}>Remove</button></td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="button-row" style={{ marginTop: '8px' }}>
-            <button type="button" className="secondary-btn" onClick={addItem}>Add row</button>
-            <button type="button" className="secondary-btn" onClick={() => saveReview('review')} disabled={busy}>Save changes</button>
-            <button type="button" className="primary-btn" onClick={() => saveReview('confirmed')} disabled={busy || pendingReview > 0} title={pendingReview ? 'Review every flagged row first' : ''}>Confirm requirement sheet</button>
-            {pendingReview > 0 && <small className="file-note">{pendingReview} flagged row(s) still need review: check each against the scan, correct it if needed, then tick “Reviewed”.</small>}
-          </div>
-        </section>
+      {step === 'use' && (
+        <BoqDone
+          doc={selected}
+          onCreateQuotation={createQuotation}
+          creatingQuote={creatingQuote}
+          onExport={exportRfq}
+          exporting={exporting}
+          onReopen={reopen}
+          busy={busy}
+        />
       )}
 
       <div ref={quotationRef}>
@@ -419,26 +386,25 @@ export default function DocumentIntelView() {
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Processed documents</h2>
+          <h2>Your BOQs</h2>
           <span className="file-note">{documents.length} saved</span>
         </div>
         <div className="campaign-table-wrap">
           <table>
             <thead>
-              <tr><th>Document</th><th>Type</th><th>Items</th><th>Warnings</th><th>Status</th><th>Processed</th><th /></tr>
+              <tr><th>Document</th><th>Items</th><th>To check</th><th>Status</th><th>Read on</th><th /></tr>
             </thead>
             <tbody>
               {documents.map((doc) => (
-                <tr key={doc.id}>
+                <tr key={doc.id} className={selected?.id === doc.id ? 'selected-row' : ''}>
                   <td data-label="Document"><strong>{doc.filename}</strong></td>
-                  <td data-label="Type">{(doc.file_ext || '').replace('.', '').toUpperCase() || '-'}</td>
                   <td data-label="Items">{(doc.items || []).length}</td>
-                  <td data-label="Warnings">{(doc.warnings || []).flat().filter((list) => list && list.length).length}</td>
-                  <td data-label="Status"><span className={`campaign-status ${doc.status === 'confirmed' ? 'completed' : 'paused'}`}>{doc.status}</span></td>
-                  <td data-label="Processed"><small>{formatDate(doc.created_at)}</small></td>
+                  <td data-label="To check">{doc.review ? (doc.review.error ? `${doc.review.error} wrong · ${doc.review.glance} glance` : doc.review.glance ? `${doc.review.glance} glance` : 'Nothing') : '-'}</td>
+                  <td data-label="Status"><span className={`campaign-status ${doc.status === 'confirmed' ? 'completed' : 'paused'}`}>{doc.status === 'confirmed' ? 'Confirmed' : 'Checking'}</span></td>
+                  <td data-label="Read on"><small>{formatDate(doc.created_at)}</small></td>
                   <td data-label="Actions">
                     <div className="button-row">
-                      <button type="button" className="secondary-btn" onClick={() => open(doc.id)}>Review</button>
+                      <button type="button" className="secondary-btn" onClick={() => open(doc.id)}>Open</button>
                       <button type="button" className="danger-btn" onClick={() => remove(doc.id)}>Delete</button>
                     </div>
                   </td>
@@ -449,8 +415,8 @@ export default function DocumentIntelView() {
           {!documents.length && (
             <EmptyState
               icon="📋"
-              title="No documents processed yet"
-              description="Upload a BOQ or requirement file above — extracted sizes, quantities, and standards will appear here as an editable sheet you can export as an RFQ."
+              title="No BOQs yet"
+              description="Upload a BOQ above. Its rows appear here, ready to check and turn into a quotation or an RFQ."
             />
           )}
         </div>

@@ -5,6 +5,7 @@ const db = require('../database/db');
 const boqExtractor = require('../documents/boqExtractor');
 const documentModel = require('../documents/documentModel');
 const boqRowRepair = require('../documents/boqRowRepair');
+const reviewState = require('../documents/boqReviewState');
 const { respondIfInvalidUpload, validateUploadBuffer } = require('../middleware/fileValidation');
 const { aiExtractLimiter } = require('../middleware/rateLimiterMiddleware');
 const { resolveAiConfig } = require('../utils/aiConfig');
@@ -32,6 +33,17 @@ function extOf(filename) {
 function parseJsonArray(value) {
     const parsed = parseJsonField(value, []);
     return Array.isArray(parsed) ? parsed : [];
+}
+
+// Who accepted / changed a row: the signed-in person (not the data owner).
+function actorOf(req) {
+    return req.user?.email || req.user?.authId || req.user?.id || 'user';
+}
+
+function sendReviewError(res, error) {
+    const body = { error: error.message };
+    if (error.errorRows) body.errorRows = error.errorRows;
+    return res.status(error.status || 400).json(body);
 }
 
 async function loadUserSettings(userId) {
@@ -838,7 +850,7 @@ router.post('/process', aiExtractLimiter, upload.single('file'), async (req, res
             documentText,
             mergeContinuations: usedOcr || usedVisualOcr,
         });
-        items = repaired.items;
+        items = reviewState.annotateItems(repaired.items);
         console.log(`[boq:${userId}] row repair: ${repaired.summary.rowsIn} source row(s) -> ${repaired.summary.items} item(s), ${repaired.summary.dropped.length} dropped, ${repaired.summary.verifiedRows} verified by qty x rate = amount, ${repaired.summary.needsReview} need review${repaired.summary.difference !== null ? `, sum vs printed total differs by ${repaired.summary.difference}` : ''}`);
         const warnings = boqExtractor.flagAll(items);
         const extractionMetadata = {
@@ -970,14 +982,35 @@ router.put('/:id', async (req, res) => {
         const cleaned = (Array.isArray(req.body?.items) ? req.body.items : []).map(boqExtractor.cleanItem);
         if (!cleaned.length) return res.status(400).json({ error: 'items must be a non-empty array.' });
         const status = ['review', 'confirmed'].includes(req.body?.status) ? req.body.status : doc.status;
-        // Re-check edited rows (qty x rate = amount); a confirmation is kept
-        // only while the row's numbers stay as they were confirmed.
-        const items = boqRowRepair.revalidateItems(cleaned, parseJsonArray(doc.items));
-        const unreviewed = boqRowRepair.unreviewedRows(items);
-        if (status === 'confirmed' && unreviewed.length) {
+        const actor = actorOf(req);
+        const previous = reviewState.annotateItems(parseJsonArray(doc.items));
+        // Re-check edited rows (qty x rate = amount). Acceptance and "fixed
+        // by" stamps come from the stored rows only; changing a row's
+        // quantity, rate, amount or unit withdraws its acceptance.
+        let items = reviewState.annotateItems(reviewState.mergeReviewState(
+            boqRowRepair.revalidateItems(cleaned, previous),
+            previous,
+            actor
+        ));
+        // Undo of an earlier "Looks fine" / "Keep as is" ([lineItemId]).
+        if (Array.isArray(req.body?.unaccept) && req.body.unaccept.length) items = reviewState.unacceptRows(items, req.body.unaccept);
+        // Rows the person explicitly checked in the editor ({ lineItemId, reason }).
+        if (Array.isArray(req.body?.accept) && req.body.accept.length) {
+            try {
+                items = reviewState.acceptRows(items, req.body.accept, { actor, bulk: false });
+            } catch (error) {
+                if (error instanceof reviewState.ReviewRequestError) return sendReviewError(res, error);
+                throw error;
+            }
+        }
+        // Only wrong numbers block confirmation; "please glance" rows do not.
+        const blocking = reviewState.blockingRows(items);
+        if (status === 'confirmed' && blocking.length) {
+            const names = blocking.slice(0, 12).map(({ item, index }) => item.serialNumber || `row ${index + 1}`).join(', ');
             return res.status(409).json({
-                error: `${unreviewed.length} flagged row(s) must be reviewed before the BOQ can be confirmed (S.No ${unreviewed.slice(0, 12).map(({ item, index }) => item.serialNumber || `row ${index + 1}`).join(', ')}${unreviewed.length > 12 ? ', …' : ''}).`,
-                unreviewed: unreviewed.map(({ index }) => index),
+                error: `${blocking.length} ${blocking.length === 1 ? 'item still has' : 'items still have'} wrong numbers (S.No ${names}${blocking.length > 12 ? ', …' : ''}). Fix them, or accept each one with a reason.`,
+                blocking: blocking.map(({ index }) => index),
+                unreviewed: blocking.map(({ index }) => index),
             });
         }
 
@@ -991,6 +1024,38 @@ router.put('/:id', async (req, res) => {
             updated_at: new Date(),
         }, 'id = ? AND user_id = ?', [req.params.id, req.user.id]);
 
+        res.json(serializeDoc(await db.getById('boq_documents', req.params.id, req.user.id)));
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/boq/:id/accept — mark rows as checked.
+// Body: { rows: [lineItemId | { lineItemId, reason }], reason?, bulk? }.
+// Several rows in one request (or bulk: true) is a bulk accept: only
+// "please glance" rows qualify, and a request that includes a row with
+// wrong numbers is rejected as a whole. A single wrong-numbers row needs a
+// reason. The server stamps who and when.
+router.post('/:id/accept', async (req, res) => {
+    try {
+        const doc = await db.getById('boq_documents', req.params.id, req.user.id);
+        if (!doc) return res.status(404).json({ error: 'Document not found.' });
+        const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+        const requests = rows.map((row) => (typeof row === 'string'
+            ? { lineItemId: row, reason: req.body?.reason }
+            : { lineItemId: row?.lineItemId, reason: row?.reason ?? req.body?.reason }));
+        const bulk = requests.length > 1 || req.body?.bulk === true;
+        let items;
+        try {
+            items = reviewState.acceptRows(reviewState.annotateItems(parseJsonArray(doc.items)), requests, { actor: actorOf(req), bulk });
+        } catch (error) {
+            if (error instanceof reviewState.ReviewRequestError) return sendReviewError(res, error);
+            throw error;
+        }
+        await db.update('boq_documents', {
+            items: JSON.stringify(items),
+            updated_at: new Date(),
+        }, 'id = ? AND user_id = ?', [req.params.id, req.user.id]);
         res.json(serializeDoc(await db.getById('boq_documents', req.params.id, req.user.id)));
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -1158,11 +1223,15 @@ router.get('/:id/export/pdf', async (req, res) => {
 
 function serializeDoc(doc) {
     const extractionMetadata = parseJsonField(doc.extraction_metadata, {});
+    // Severity is re-derived on every read, so documents saved before the
+    // review redesign get it too (all existing fields are kept).
+    const items = reviewState.annotateItems(parseJsonArray(doc.items));
     return {
         ...doc,
-        items: parseJsonArray(doc.items),
+        items,
         warnings: parseJsonArray(doc.warnings),
         extraction_metadata: extractionMetadata,
+        review: reviewState.reviewCounts(items),
     };
 }
 

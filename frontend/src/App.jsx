@@ -15,24 +15,101 @@ import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import { BACKEND_URL, apiFetch, socketAuth, dispatchSessionInvalidated, SESSION_INVALIDATED_EVENT, DATA_OWNER_HEADER, WORKSPACE_CHANGED_EVENT, hasStoredDataOwnerChoice, setStoredDataOwner } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import EmptyState from './components/EmptyState.jsx'
+import Icon from './components/Icon.jsx'
+import BrandLogo from './components/BrandLogo.jsx'
+import ThemeToggle from './components/ThemeToggle.jsx'
+import Modal from './components/Modal.jsx'
+import SkeletonPanel from './components/Skeleton.jsx'
 import { COUNTRIES } from './countries.js'
 
 // Socket auth moved to ./api.js (socketAuth).
 
-const navItems = [
-  'Dashboard',
-  'WhatsApp Connection',
-  'Inbox',
-  'Campaigns',
-  'Contacts',
-  'Templates',
-  'Knowledge Base',
-  'Ask AI',
-  'Document Intelligence',
-  'Analytics',
-  'Settings',
-  'Image Extractor',
+// Sidebar navigation. The item keys are the view names used by renderView();
+// NAV_META only adds the icon and a friendlier label for the menu.
+const NAV_GROUPS = [
+  { title: 'Overview', items: ['Dashboard', 'Analytics'] },
+  { title: 'Messaging', items: ['Inbox', 'Campaigns', 'Contacts', 'Templates'] },
+  { title: 'Documents', items: ['Document Intelligence', 'Image Extractor'] },
+  { title: 'AI assistant', items: ['Ask AI', 'Knowledge Base'] },
+  { title: 'Setup', items: ['WhatsApp Connection', 'Settings'] },
 ]
+const NAV_META = {
+  Dashboard: { icon: 'dashboard' },
+  Analytics: { icon: 'chart' },
+  Inbox: { icon: 'chat' },
+  Campaigns: { icon: 'megaphone' },
+  Contacts: { icon: 'users' },
+  Templates: { icon: 'file' },
+  'Document Intelligence': { icon: 'clipboard', label: 'BOQ & quotations' },
+  'Image Extractor': { icon: 'image', label: 'Image extractor' },
+  'Ask AI': { icon: 'sparkles' },
+  'Knowledge Base': { icon: 'book', label: 'Knowledge base' },
+  'WhatsApp Connection': { icon: 'phone', label: 'WhatsApp connection' },
+  Settings: { icon: 'sliders' },
+}
+const navLabel = (view) => NAV_META[view]?.label || view
+const navGroupOf = (view) => NAV_GROUPS.find((group) => group.items.includes(view))?.title || ''
+const CURRENT_YEAR = new Date().getFullYear()
+const SIDEBAR_STORAGE_KEY = 'sp-sidebar'
+const BUILDER_STEPS = [
+  { id: 'audience', title: 'Audience', hint: 'Name and contacts' },
+  { id: 'message', title: 'Message', hint: 'Text, fields, media' },
+  { id: 'safety', title: 'Safety', hint: 'Timing and limits' },
+  { id: 'review', title: 'Review', hint: 'Check and send' },
+]
+
+// Scroll to a section and move keyboard focus to it, honouring reduced motion.
+function scrollToSection(id) {
+  const target = document.getElementById(id)
+  if (!target) return
+  let reduce = false
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { reduce = false }
+  target.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
+  target.focus({ preventScroll: true })
+}
+
+function greetingNow() {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
+// Plain-language WhatsApp connection state for the status chip.
+function connectionState(status) {
+  const value = String(status || '').toLowerCase()
+  if (value === 'connected') return { tone: 'ok', label: 'Connected' }
+  if (value === 'business_connected') return { tone: 'ok', label: 'Connected (Business API)' }
+  if (value === 'waiting_qr') return { tone: 'warn', label: 'Scan the QR code' }
+  if (['initializing', 'reconnecting', 'connecting'].includes(value)) return { tone: 'warn', label: 'Connecting…' }
+  if (value.startsWith('checking')) return { tone: 'neutral', label: 'Checking…' }
+  if (value === 'offline') return { tone: 'bad', label: 'Server unreachable' }
+  if (['disconnected', 'logged_out'].includes(value)) return { tone: 'bad', label: 'Reconnect needed' }
+  return { tone: 'neutral', label: value ? value.replaceAll('_', ' ') : 'Unknown' }
+}
+
+function ConnectionChip({ status, block = false, onClick }) {
+  const state = connectionState(status)
+  const className = `conn-chip conn-${state.tone}${block ? ' block' : ''}`
+  const content = <><span className="conn-dot" aria-hidden="true" /><span className="chip-text">WhatsApp: {state.label}</span></>
+  if (onClick) {
+    return <button type="button" className={className} onClick={onClick} title={`WhatsApp: ${state.label}. Open the connection page.`}>{content}</button>
+  }
+  return <span className={className} role="status" title={`WhatsApp: ${state.label}`}>{content}</span>
+}
+
+// Small SVG progress ring for KPI tiles (value 0–100).
+function ProgressRing({ value, label }) {
+  const pct = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0))
+  return (
+    <svg className="kpi-ring" viewBox="0 0 36 36" role="img" aria-label={label}>
+      <circle className="kpi-ring-track" cx="18" cy="18" r="15.5" pathLength="100" />
+      <circle className="kpi-ring-value" cx="18" cy="18" r="15.5" pathLength="100" strokeDasharray={`${pct} 100`} />
+    </svg>
+  )
+}
+
+const percentOf = (part, whole) => (Number(whole) > 0 ? Math.round((Number(part) / Number(whole)) * 100) : null)
 
 const mockLeads = [
   { id: 1, name: 'Ramesh Patel', company: 'Patel Hardware', phone: '+91 98765 42108', priority: 'hot', score: 87, source: 'verified', reason: 'Replied at 9:12 AM and asked for your price quote for 500 pipes.', action: 'Send quote', draft: 'Hi Ramesh, thanks for your interest. I have prepared the price quote for 500 pipes. Would you like it here on WhatsApp?' },
@@ -793,6 +870,18 @@ function CampaignsView({ onNavigate }) {
     )
   }
 
+  // Builder stepper: progress is read from the form's existing state only.
+  const audienceReady = Boolean(name.trim() && upload)
+  const messageReady = Boolean(template.trim()) && (allowMissingFields || !Object.values(missingByField).some((count) => count > 0))
+  const timingReady = scheduleType === 'once' ? Boolean(runAt) : scheduleType === 'recurring' && recurrenceMode === 'custom' ? Boolean(customCron.trim()) : true
+  const stepDone = { audience: audienceReady, message: messageReady, safety: audienceReady && messageReady && timingReady, review: false }
+  const firstOpenStep = BUILDER_STEPS.findIndex((step) => !stepDone[step.id])
+  const builderSteps = BUILDER_STEPS.map((step, index) => ({
+    ...step,
+    hint: step.id === 'audience' && upload ? `${upload.countsByReason?.valid ?? upload.valid} contacts` : step.hint,
+    state: stepDone[step.id] ? 'done' : index === firstOpenStep ? 'current' : 'upcoming',
+  }))
+
   return (
     <div className="campaign-workspace">
       <div className="campaign-toolbar">
@@ -802,69 +891,37 @@ function CampaignsView({ onNavigate }) {
           <p className="muted-copy">Upload contacts, personalize every row, then send from a persistent queue.</p>
         </div>
         <label className="primary-btn upload-btn">
+          <Icon name="upload" size={16} />
           {busy ? 'Working...' : 'Choose XLSX file'}
           <input type="file" accept=".xlsx" onChange={uploadExcel} disabled={busy} />
         </label>
       </div>
 
       {message.text && <div className={`notice ${message.type}`}>{message.text}</div>}
-      {duplicateDialog && <div className="compose-backdrop" role="dialog" aria-modal="true" aria-label="Duplicate campaign">
-        <section className="compose-panel">
-          <div className="panel-header"><div><p className="eyebrow">Create editable draft</p><h2>Duplicate {duplicateDialog.name}</h2></div><button type="button" className="secondary-btn" onClick={() => setDuplicateDialog(null)}>Close</button></div>
+      {duplicateDialog && <Modal onClose={() => setDuplicateDialog(null)} labelledBy="duplicate-dialog-title">
+          <div className="panel-header"><div><p className="eyebrow">Create editable draft</p><h2 id="duplicate-dialog-title">Duplicate {duplicateDialog.name}</h2></div><button type="button" className="secondary-btn" onClick={() => setDuplicateDialog(null)}>Close</button></div>
           <label className="form-label">Draft name<input value={duplicateName} onChange={(event) => setDuplicateName(event.target.value)} /></label>
           <label className="form-label">Recipients<select value={duplicateContacts} onChange={(event) => setDuplicateContacts(event.target.value)}><option value="all">All original recipients</option><option value="unsent">Only unsent (pending, skipped, failed)</option><option value="failed">Only failed</option><option value="none">None — upload a new list in the editor</option></select></label>
           <label className="check-label"><input type="checkbox" checked={excludeMessaged} onChange={(event) => setExcludeMessaged(event.target.checked)} /> Exclude any contact already messaged in an earlier campaign</label>
           {excludeMessaged && <label className="form-label">Limit exclusion to selected campaigns (leave empty for all earlier campaigns)<select multiple size="3" value={excludeCampaignIds.map(String)} onChange={(event) => setExcludeCampaignIds(Array.from(event.target.selectedOptions, option => Number(option.value)))}>{campaignList.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
           <div className="button-row"><button type="button" className="primary-btn" disabled={busy} onClick={duplicateCampaign}>Create draft</button><button type="button" className="secondary-btn" onClick={() => setDuplicateDialog(null)}>Cancel</button></div>
-        </section>
-      </div>}
+      </Modal>}
 
       <div className="campaign-layout">
         <section className="panel campaign-builder">
-          <div className="panel-header"><h2>1. Build campaign</h2><span className="file-note">{file?.name || 'No file selected'}</span></div>
+          <div className="panel-header"><div><p className="eyebrow">New campaign</p><h2>Build your campaign</h2></div><span className="file-note">{file?.name || 'No file selected'}</span></div>
+          <ol className="builder-stepper" aria-label="Campaign steps">
+            {builderSteps.map((step, index) => <li key={step.id} className={`builder-step-link ${step.state}`}><a href={`#builder-${step.id}`} onClick={(event) => { event.preventDefault(); scrollToSection(`builder-${step.id}`) }} aria-current={step.state === 'current' ? 'step' : undefined} aria-label={`Step ${index + 1}: ${step.title}${step.state === 'done' ? ' (done)' : ''}`}><span className="step-index" aria-hidden="true">{step.state === 'done' ? <Icon name="check" size={14} /> : index + 1}</span><span className="step-text"><strong>{step.title}</strong><small>{step.hint}</small></span></a></li>)}
+          </ol>
           <form onSubmit={createCampaign}>
             {whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">WhatsApp Web is an unofficial linked-device connection. WhatsApp can restrict or ban numbers that send bulk messages through it, and it gives no quality or rate-limit warnings. For campaigns, connect the official WhatsApp Business Platform (Cloud API). <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
-            <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
-            <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
-            <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Start now</option><option value="queue">Add to queue</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
-            <label className="form-label">Pause after identical send errors<input type="number" min="1" step="1" value={circuitBreakerThreshold} onChange={(event) => setCircuitBreakerThreshold(event.target.value)} required /><small>Default: 5. “Number is not registered” remains a contact-level error.</small></label>
-            <div className="field-panel inline-fields sending-safety">
-              <h3>Sending safety</h3>
-              <label className="check-label"><input type="checkbox" checked={respectRecipientHours} onChange={(event) => setRespectRecipientHours(event.target.checked)} /> Send only during business hours in each recipient’s country</label>
-              <label className="form-label">Pause the campaign when recent failures reach<select value={failureRatePause} onChange={(event) => setFailureRatePause(event.target.value)}><option value="0.3">30% of the last 20 messages</option><option value="0.5">50% of the last 20 messages (default)</option><option value="0.7">70% of the last 20 messages</option><option value="0">Never</option></select></label>
-              <label className="form-label">Pause after every … messages<input type="number" min="0" max="1000" step="1" value={cooldownEvery} onChange={(event) => setCooldownEvery(event.target.value)} /><small>0 = no pauses between batches.</small></label>
-              <label className="form-label">Pause length (minutes)<input type="number" min="1" max="240" step="1" value={cooldownMinutes} onChange={(event) => setCooldownMinutes(event.target.value)} disabled={!(Number(cooldownEvery) > 0)} /></label>
-              <small>Messages go out one at a time with your delay and hourly and daily limits. WhatsApp rate limits, restriction warnings and quality drops pause the campaign automatically, and only opted-in contacts are messaged.</small>
-            </div>
-            {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
-            {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
-            <label className="form-label">Message template<textarea value={template} onChange={(event) => setTemplate(event.target.value)} required /></label>
-            {whatsappStatus.businessStatus === 'connected' && <div className="field-panel inline-fields">
-              <h3>Approved template (Business API)</h3>
-              <small>Outside the 24-hour customer service window WhatsApp only delivers approved templates. When you name one, recipients get that template instead of the message text above.</small>
-              <label className="form-label">Template name<input value={waTemplateName} onChange={(event) => setWaTemplateName(event.target.value)} placeholder="dealer_offer_october" /></label>
-              <label className="form-label">Language code<input value={waTemplateLanguage} onChange={(event) => setWaTemplateLanguage(event.target.value)} placeholder="en" /></label>
-              <label className="form-label">Template variables, one per line ({'{{1}}'}, {'{{2}}'} …)<textarea value={waTemplateParams} onChange={(event) => setWaTemplateParams(event.target.value)} placeholder={'{{name}}\n{{company}}'} /><small>Use your Excel columns, for example {'{{name}}'}.</small></label>
-            </div>}
-            <div className="field-panel inline-fields">
-              <h3>Detected fields</h3>
-              {upload?.dynamicFields?.length ? <div className="field-list">{upload.dynamicFields.map((field) => <button key={field} type="button" className="field-chip" onClick={() => setTemplate((current) => `${current} {{${field}}}`)}>{`{{${field}}}`}</button>)}</div> : <small>Upload an XLSX file to detect every header automatically.</small>}
-            </div>
-            <div className="field-panel inline-fields">
-              <div className="panel-header"><h3>Campaign media</h3><label className="secondary-btn upload-btn">{mediaFile ? 'Replace file' : 'Choose file'}<input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf" onChange={uploadMedia} disabled={busy} /></label></div>
-              {mediaPreview && mediaType === 'image' ? <img className="media-thumb" src={mediaPreview} alt="Campaign preview" /> : mediaPreview && mediaType === 'document' ? <div className="media-document-preview"><div>📄</div><small>{mediaFilename}</small></div> : <small>Optional JPEG, PNG, or WEBP image (up to 5 MB) or PDF document (up to 16 MB).</small>}
-            </div>
-            <div className="field-panel inline-fields">
-              {whatsappStatus.businessStatus === 'connected' ? <>
-                <div className="panel-header"><h3>Buttons (Business API only)</h3>{buttons.length < 3 && <button type="button" className="secondary-btn" onClick={() => setButtons([...buttons, { type: 'quick_reply', text: '', url: '' }])}>Add button</button>}</div>
-                {buttons.map((button, index) => <div className="button-config" key={index}><select value={button.type} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value } : item))}><option value="quick_reply">Quick Reply</option><option value="url">URL</option></select><input value={button.text} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} placeholder="Button text" />{button.type === 'url' && <input value={button.url} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item))} placeholder="https://example.com" />}<button type="button" className="danger-btn" onClick={() => setButtons(buttons.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}
-                <small>Buttons only send on the WhatsApp Business API provider — ignored when sending via WhatsApp Web.</small>
-              </> : <>
-                <div className="panel-header"><h3>Buttons (Business API only)</h3></div>
-                <small>Connect WhatsApp Business API to use buttons</small>
-              </>}
-            </div>
-            {upload && <div className="validation-summary">
+            <fieldset className="builder-step" id="builder-audience" tabIndex={-1}>
+              <legend><span className="step-index" aria-hidden="true">1</span>Audience</legend>
+              <p className="builder-step-help">Name the campaign and choose who receives it.</p>
+              <label className="form-label">Campaign name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Dealer outreach - August" required /></label>
+              <div className="upload-row"><label className="secondary-btn upload-btn"><Icon name="upload" size={16} />{upload ? 'Replace Excel file' : 'Choose Excel file'}<input type="file" accept=".xlsx" onChange={uploadExcel} disabled={busy} /></label><span className="file-note">{file?.name || 'No Excel file chosen yet'}</span></div>
+              <label className="form-label">Country code for phone numbers<select value={uploadCountryCode} onChange={changeUploadCountry} className="country-select"><option value="">Account default</option>{accountCountries.map((country) => <option key={`${country.name}-${country.dialCode}`} value={country.dialCode}>{country.name} (+{country.dialCode})</option>)}</select><small>{uploadCountryCode && uploadCountryCode !== '' ? `Numbers without a country code will be formatted as +${uploadCountryCode} …; numbers that already include one are left unchanged.` : 'Uses the account default from Settings. Change it before uploading to apply it to this file.'}</small></label>
+              {upload && <div className="validation-summary">
               <strong>{upload.countsByReason?.valid ?? upload.valid} valid</strong>
               <span>{upload.countsByReason?.blank ?? 0} blank</span>
               <span>{upload.countsByReason?.['too short'] ?? 0} too short</span>
@@ -873,21 +930,77 @@ function CampaignsView({ onNavigate }) {
               <span>{upload.countsByReason?.['not a mobile number'] ?? 0} not mobile</span>
               <span>Phone column: {upload.phoneColumn}</span>
               {upload.rejectedRowCount > 0 && <button type="button" className="secondary-btn" onClick={downloadRejectedRows}>Download rejected CSV ({upload.rejectedRowCount})</button>}
-            </div>}
-            <label className="check-label"><input type="checkbox" checked={excludeMessaged} onChange={(event) => setExcludeMessaged(event.target.checked)} /> Exclude contacts already messaged in any earlier campaign</label>
-            {excludeMessaged && <label className="form-label">Limit exclusion to selected campaigns (leave empty for all earlier campaigns)<select multiple size="3" value={excludeCampaignIds.map(String)} onChange={(event) => setExcludeCampaignIds(Array.from(event.target.selectedOptions, option => Number(option.value)))}>{campaignList.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-            {upload && <div className="notice info upload-formatting-notice">{upload.formattingNotice || `${upload.valid} contacts found. Numbers will be formatted as +${upload.countryCode || uploadCountryCode || '91'} XXXXXXXXXX unless they already include a country code.`} Change the country selector above to re-format against a different code.</div>}
-            {upload?.ignoredSheets?.length > 0 && <div className="notice warning">Skipped sheets without a phone-number header: {upload.ignoredSheets.join(', ')}.</div>}
-            {Object.entries(missingByField).filter(([, count]) => count > 0).map(([field, count]) => <div className="missing-warning" key={field}>Warning: {count} contacts have no value for {`{{${field}}}`}. Creating this campaign requires explicit approval.</div>)}
-            {Object.values(missingByField).some((count) => count > 0) && <label className="check-label"><input type="checkbox" checked={allowMissingFields} onChange={(event) => setAllowMissingFields(event.target.checked)} /> Allow unresolved fields to remain in messages</label>}
-            {whatsappStatus.businessStatus !== 'connected' && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
-            {scheduleType === 'now' && whatsappStatus.status !== 'connected' && whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">Connect WhatsApp before starting now. You can still add this campaign to the queue or schedule it.</div>}
-            <div className="button-row"><button type="button" className="secondary-btn" onClick={previewMessages} disabled={!upload || busy}>Preview messages</button><button className="primary-btn" disabled={!upload || !name.trim() || busy || (scheduleType === 'now' && whatsappStatus.status !== 'connected' && whatsappStatus.businessStatus !== 'connected')}>{scheduleType === 'now' ? 'Create and start' : scheduleType === 'queue' ? 'Add to queue' : 'Create schedule'}</button></div>
+              </div>}
+              {upload && <div className="notice info upload-formatting-notice">{upload.formattingNotice || `${upload.valid} contacts found. Numbers will be formatted as +${upload.countryCode || uploadCountryCode || '91'} XXXXXXXXXX unless they already include a country code.`} Change the country selector above to re-format against a different code.</div>}
+              {upload?.ignoredSheets?.length > 0 && <div className="notice warning">Skipped sheets without a phone-number header: {upload.ignoredSheets.join(', ')}.</div>}
+              <label className="check-label"><input type="checkbox" checked={excludeMessaged} onChange={(event) => setExcludeMessaged(event.target.checked)} /> Exclude contacts already messaged in any earlier campaign</label>
+              {excludeMessaged && <label className="form-label">Limit exclusion to selected campaigns (leave empty for all earlier campaigns)<select multiple size="3" value={excludeCampaignIds.map(String)} onChange={(event) => setExcludeCampaignIds(Array.from(event.target.selectedOptions, option => Number(option.value)))}>{campaignList.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+            </fieldset>
+            <fieldset className="builder-step" id="builder-message" tabIndex={-1}>
+              <legend><span className="step-index" aria-hidden="true">2</span>Message</legend>
+              <p className="builder-step-help">Write the message once; fields like {'{{name}}'} fill in for every contact.</p>
+              <label className="form-label">Message template<textarea value={template} onChange={(event) => setTemplate(event.target.value)} required /></label>
+              <div className="field-panel inline-fields">
+              <h3>Detected fields</h3>
+              {upload?.dynamicFields?.length ? <div className="field-list">{upload.dynamicFields.map((field) => <button key={field} type="button" className="field-chip" onClick={() => setTemplate((current) => `${current} {{${field}}}`)}>{`{{${field}}}`}</button>)}</div> : <small>Upload an XLSX file to detect every header automatically.</small>}
+              </div>
+              {Object.entries(missingByField).filter(([, count]) => count > 0).map(([field, count]) => <div className="missing-warning" key={field}>Warning: {count} contacts have no value for {`{{${field}}}`}. Creating this campaign requires explicit approval.</div>)}
+              {Object.values(missingByField).some((count) => count > 0) && <label className="check-label"><input type="checkbox" checked={allowMissingFields} onChange={(event) => setAllowMissingFields(event.target.checked)} /> Allow unresolved fields to remain in messages</label>}
+              {whatsappStatus.businessStatus === 'connected' && <div className="field-panel inline-fields">
+              <h3>Approved template (Business API)</h3>
+              <small>Outside the 24-hour customer service window WhatsApp only delivers approved templates. When you name one, recipients get that template instead of the message text above.</small>
+              <label className="form-label">Template name<input value={waTemplateName} onChange={(event) => setWaTemplateName(event.target.value)} placeholder="dealer_offer_october" /></label>
+              <label className="form-label">Language code<input value={waTemplateLanguage} onChange={(event) => setWaTemplateLanguage(event.target.value)} placeholder="en" /></label>
+              <label className="form-label">Template variables, one per line ({'{{1}}'}, {'{{2}}'} …)<textarea value={waTemplateParams} onChange={(event) => setWaTemplateParams(event.target.value)} placeholder={'{{name}}\n{{company}}'} /><small>Use your Excel columns, for example {'{{name}}'}.</small></label>
+              </div>}
+              <div className="field-panel inline-fields">
+              <div className="panel-header"><h3>Campaign media</h3><label className="secondary-btn upload-btn">{mediaFile ? 'Replace file' : 'Choose file'}<input type="file" accept=".jpg,.jpeg,.png,.webp,.pdf" onChange={uploadMedia} disabled={busy} /></label></div>
+              {mediaPreview && mediaType === 'image' ? <img className="media-thumb" src={mediaPreview} alt="Campaign preview" /> : mediaPreview && mediaType === 'document' ? <div className="media-document-preview"><div>📄</div><small>{mediaFilename}</small></div> : <small>Optional JPEG, PNG, or WEBP image (up to 5 MB) or PDF document (up to 16 MB).</small>}
+              </div>
+              <div className="field-panel inline-fields">
+              {whatsappStatus.businessStatus === 'connected' ? <>
+              <div className="panel-header"><h3>Buttons (Business API only)</h3>{buttons.length < 3 && <button type="button" className="secondary-btn" onClick={() => setButtons([...buttons, { type: 'quick_reply', text: '', url: '' }])}>Add button</button>}</div>
+              {buttons.map((button, index) => <div className="button-config" key={index}><select value={button.type} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value } : item))}><option value="quick_reply">Quick Reply</option><option value="url">URL</option></select><input value={button.text} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item))} placeholder="Button text" />{button.type === 'url' && <input value={button.url} onChange={(event) => setButtons(buttons.map((item, itemIndex) => itemIndex === index ? { ...item, url: event.target.value } : item))} placeholder="https://example.com" />}<button type="button" className="danger-btn" onClick={() => setButtons(buttons.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}
+              <small>Buttons only send on the WhatsApp Business API provider — ignored when sending via WhatsApp Web.</small>
+              </> : <>
+              <div className="panel-header"><h3>Buttons (Business API only)</h3></div>
+              <small>Connect WhatsApp Business API to use buttons</small>
+              </>}
+              </div>
+            </fieldset>
+            <fieldset className="builder-step" id="builder-safety" tabIndex={-1}>
+              <legend><span className="step-index" aria-hidden="true">3</span>Safety</legend>
+              <p className="builder-step-help">When to send, and the limits that protect your WhatsApp number.</p>
+              <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Start now</option><option value="queue">Add to queue</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
+              {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
+              {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
+              <label className="form-label">Pause after identical send errors<input type="number" min="1" step="1" value={circuitBreakerThreshold} onChange={(event) => setCircuitBreakerThreshold(event.target.value)} required /><small>Default: 5. “Number is not registered” remains a contact-level error.</small></label>
+              <div className="field-panel inline-fields sending-safety">
+              <h3>Sending safety</h3>
+              <label className="check-label"><input type="checkbox" checked={respectRecipientHours} onChange={(event) => setRespectRecipientHours(event.target.checked)} /> Send only during business hours in each recipient’s country</label>
+              <label className="form-label">Pause the campaign when recent failures reach<select value={failureRatePause} onChange={(event) => setFailureRatePause(event.target.value)}><option value="0.3">30% of the last 20 messages</option><option value="0.5">50% of the last 20 messages (default)</option><option value="0.7">70% of the last 20 messages</option><option value="0">Never</option></select></label>
+              <label className="form-label">Pause after every … messages<input type="number" min="0" max="1000" step="1" value={cooldownEvery} onChange={(event) => setCooldownEvery(event.target.value)} /><small>0 = no pauses between batches.</small></label>
+              <label className="form-label">Pause length (minutes)<input type="number" min="1" max="240" step="1" value={cooldownMinutes} onChange={(event) => setCooldownMinutes(event.target.value)} disabled={!(Number(cooldownEvery) > 0)} /></label>
+              <small>Messages go out one at a time with your delay and hourly and daily limits. WhatsApp rate limits, restriction warnings and quality drops pause the campaign automatically, and only opted-in contacts are messaged.</small>
+              </div>
+              {whatsappStatus.businessStatus !== 'connected' && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
+            </fieldset>
+            <fieldset className="builder-step" id="builder-review" tabIndex={-1}>
+              <legend><span className="step-index" aria-hidden="true">4</span>Review</legend>
+              <dl className="review-summary">
+                <div><dt>Campaign</dt><dd>{name.trim() || 'Not named yet'}</dd></div>
+                <div><dt>Recipients</dt><dd>{upload ? `${upload.countsByReason?.valid ?? upload.valid} valid contacts` : 'No Excel file yet'}</dd></div>
+                <div><dt>Sending</dt><dd>{scheduleType === 'now' ? 'Starts now' : scheduleType === 'queue' ? 'Added to the queue' : scheduleType === 'once' ? (runAt ? `Once, ${new Date(runAt).toLocaleString()}` : 'Once (choose a time)') : 'Recurring'}</dd></div>
+                <div><dt>Sends through</dt><dd>{whatsappStatus.businessStatus === 'connected' ? 'WhatsApp Business Platform' : 'WhatsApp Web'}</dd></div>
+              </dl>
+              {scheduleType === 'now' && whatsappStatus.status !== 'connected' && whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">Connect WhatsApp before starting now. You can still add this campaign to the queue or schedule it.</div>}
+              <div className="button-row"><button type="button" className="secondary-btn" onClick={previewMessages} disabled={!upload || busy}>Preview messages</button><button className="primary-btn" disabled={!upload || !name.trim() || busy || (scheduleType === 'now' && whatsappStatus.status !== 'connected' && whatsappStatus.businessStatus !== 'connected')}>{scheduleType === 'now' ? 'Create and start' : scheduleType === 'queue' ? 'Add to queue' : 'Create schedule'}</button></div>
+            </fieldset>
           </form>
         </section>
 
         <section className="panel preview-panel">
-          <div className="panel-header"><h2>2. Preview</h2><span className="file-note">First 5 valid rows</span></div>
+          <div className="panel-header"><div><p className="eyebrow">Preview</p><h2>How it will look</h2></div><span className="file-note">First 5 valid rows</span></div>
           {previews.length ? <div className="preview-list">{mediaPreview && <img className="preview-media" src={mediaPreview} alt="Campaign image preview" />}{previews.map((item) => <article key={item.phone} className="message-preview"><strong>{item.name || item.phone}</strong><small>{item.phone}</small><p>{item.rendered}</p>{item.missingFields.length > 0 && <em>Missing: {item.missingFields.join(', ')}</em>}</article>)}</div> : <div className="empty-preview">Upload a file and preview the rendered message before creating the queue.</div>}
         </section>
       </div>
@@ -926,8 +1039,11 @@ function CampaignsView({ onNavigate }) {
           {!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }]} />}
         </div>
         {selectedCampaign && <div className="campaign-detail">
+          {selectedCampaign.status === 'paused' && selectedCampaign.pause_reason && <div className="notice warning status-banner" role="status"><strong>Paused: </strong>{pauseReasonText(selectedCampaign.pause_reason)}{resumeLocked ? ` You can resume after ${new Date(selectedCampaign.resume_after).toLocaleTimeString()}.` : ''}</div>}
+          {selectedWaiting && <div className="notice info status-banner" role="status"><strong>Waiting: </strong>{WAITING_TEXT[selectedWaiting.reason] || selectedWaiting.reason}{selectedWaiting.until ? `; sending resumes around ${new Date(selectedWaiting.until).toLocaleTimeString()}.` : '.'}</div>}
+          {selectedCampaign.status === 'running' && queueStatus?.warning && queueStatus.currentCampaignId === selectedCampaign.id && <div className="notice warning status-banner" role="status">{queueStatus.warning}</div>}
           <div className="panel-header">
-            <div><h3>{selectedCampaign.name}</h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div>
+            <div><h3>{selectedCampaign.name} <span className={statusClass(selectedCampaign.status)}>{String(selectedCampaign.status || '').replaceAll('_', ' ')}</span></h3><span className="file-note">Sending through: {selectedCampaign.provider || 'web'}</span></div>
             <div className="campaign-progress-summary">
               <strong>{selectedCampaign.processed} / {selectedCampaign.total_contacts} processed</strong>
               <small>{campaignEstimate ? `${campaignEstimate.contacts} remaining` : 'Calculating remaining contacts…'}</small>
@@ -935,11 +1051,8 @@ function CampaignsView({ onNavigate }) {
               {campaignEstimate && !campaignEstimate.endAt && <small>Paused — reconnect/resume to estimate finish</small>}
             </div>
           </div>
-          <div className="campaign-progress" role="progressbar" aria-label="Campaign progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={campaignPercent}><i style={{ width: `${campaignPercent}%` }} /></div>
+          <div className={`campaign-progress${selectedCampaign.status === 'running' ? ' is-live' : ''}`} role="progressbar" aria-label="Campaign progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={campaignPercent}><i style={{ width: `${campaignPercent}%` }} /></div>
           <div className="stats-grid campaign-delivery-stats">{campaignTiles.map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label} title={['Delivered', 'Read'].includes(label) && !deliveryTracked ? 'Run supabase-campaign-delivery-migration.sql to track delivery receipts.' : undefined}><span>{label}</span><strong>{value}</strong></article>)}</div>
-          {selectedCampaign.status === 'paused' && selectedCampaign.pause_reason && <div className="notice warning" role="status"><strong>Paused: </strong>{pauseReasonText(selectedCampaign.pause_reason)}{resumeLocked ? ` You can resume after ${new Date(selectedCampaign.resume_after).toLocaleTimeString()}.` : ''}</div>}
-          {selectedWaiting && <div className="notice info" role="status"><strong>Waiting: </strong>{WAITING_TEXT[selectedWaiting.reason] || selectedWaiting.reason}{selectedWaiting.until ? `; sending resumes around ${new Date(selectedWaiting.until).toLocaleTimeString()}.` : '.'}</div>}
-          {selectedCampaign.status === 'running' && queueStatus?.warning && queueStatus.currentCampaignId === selectedCampaign.id && <div className="notice warning" role="status">{queueStatus.warning}</div>}
           {draftEdit && selectedCampaign.status === 'draft' && draftEditCampaignId === selectedCampaign.id ? <div className="field-panel draft-editor">
             <h3>Edit draft</h3>
             <label className="form-label">Campaign name<input value={draftEdit.name} onChange={(event) => setDraftEdit({ ...draftEdit, name: event.target.value })} /></label>
@@ -1095,10 +1208,10 @@ function ConnectionView() {
     <div><p className="eyebrow">One active connection</p><h2>Connect WhatsApp</h2><p className="muted-copy">Once connected, this WhatsApp number powers your Inbox, AI auto-replies, and Campaigns.</p></div>
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
     <div className="connection-grid">
-      <section className="panel connection-card"><div className="connection-heading"><span className="connection-icon">&#128241;</span><div><h2>WhatsApp Web</h2><p className="muted-copy">Connect by scanning a QR code from your phone.</p></div></div><ol><li>Open WhatsApp on your phone</li><li>Go to Linked Devices</li><li>Choose Link a Device and scan</li></ol>{qr ? <img className="qr-image" src={qr} alt="WhatsApp Web QR code" /> : <div className="qr-placeholder">{status.qrAvailable ? 'QR code available' : 'No QR code available'}</div>}<div className="connection-actions"><button className="primary-btn" onClick={connectWeb} disabled={busy}>Connect with QR</button><button className="secondary-btn" onClick={loadQr} disabled={busy || !status.qrAvailable}>Refresh QR</button></div></section>
-      <section className="panel connection-card"><div className="connection-heading"><span className="connection-icon">&#9729;</span><div><h2>WhatsApp Business API</h2><p className="muted-copy">Use Meta's official Cloud API connection.</p></div></div><label className="form-label">Phone Number ID<input value={credentials.phoneNumberId} onChange={(event) => setCredentials({ ...credentials, phoneNumberId: event.target.value })} /></label><label className="form-label">Access Token<input type="password" value={credentials.accessToken} onChange={(event) => setCredentials({ ...credentials, accessToken: event.target.value })} /></label><label className="form-label">Webhook Verify Token<input type="password" value={credentials.verifyToken} onChange={(event) => setCredentials({ ...credentials, verifyToken: event.target.value })} /></label><div className="connection-actions"><button className="secondary-btn" onClick={testBusiness} disabled={busy}>Test Connection</button><button className="primary-btn" onClick={connectBusiness} disabled={busy}>Connect Business API</button></div></section>
+      <section className="panel connection-card"><div className="connection-heading"><span className="connection-icon"><Icon name="qr" size={22} /></span><div><h2>WhatsApp Web</h2><p className="muted-copy">Connect by scanning a QR code from your phone.</p></div></div><div className="qr-layout"><div className={`qr-frame${qr ? ' has-qr' : ''}`}>{qr ? <><img className="qr-image" src={qr} alt="WhatsApp Web QR code" /><span className="qr-scanline" aria-hidden="true" /></> : <div className="qr-placeholder"><Icon name="qr" size={40} /><span>{status.qrAvailable ? 'QR code available' : 'No QR code available'}</span></div>}</div><ol className="qr-steps"><li><span className="qr-step-num" aria-hidden="true">1</span>Open WhatsApp on your phone</li><li><span className="qr-step-num" aria-hidden="true">2</span>Go to Linked Devices</li><li><span className="qr-step-num" aria-hidden="true">3</span>Choose Link a Device and scan</li></ol></div><div className="connection-actions"><button className="primary-btn" onClick={connectWeb} disabled={busy}>Connect with QR</button><button className="secondary-btn" onClick={loadQr} disabled={busy || !status.qrAvailable}>Refresh QR</button></div></section>
+      <section className="panel connection-card"><div className="connection-heading"><span className="connection-icon"><Icon name="cloud" size={22} /></span><div><h2>WhatsApp Business API</h2><p className="muted-copy">Use Meta's official Cloud API connection.</p></div></div><label className="form-label">Phone Number ID<input value={credentials.phoneNumberId} onChange={(event) => setCredentials({ ...credentials, phoneNumberId: event.target.value })} /></label><label className="form-label">Access Token<input type="password" value={credentials.accessToken} onChange={(event) => setCredentials({ ...credentials, accessToken: event.target.value })} /></label><label className="form-label">Webhook Verify Token<input type="password" value={credentials.verifyToken} onChange={(event) => setCredentials({ ...credentials, verifyToken: event.target.value })} /></label><div className="connection-actions"><button className="secondary-btn" onClick={testBusiness} disabled={busy}>Test Connection</button><button className="primary-btn" onClick={connectBusiness} disabled={busy}>Connect Business API</button></div></section>
     </div>
-    <section className="panel active-connection"><div><p className="eyebrow">Current provider</p><h2>{status.provider || 'Loading...'}</h2><p className="muted-copy">Status: <strong>{status.status}</strong></p></div><button className="danger-btn" onClick={disconnect} disabled={busy || status.status === 'disconnected'}>Disconnect</button></section>
+    <section className="panel active-connection"><div><p className="eyebrow">Current provider</p><h2>{status.provider || 'Loading...'}</h2><p className="muted-copy">Status: <ConnectionChip status={status.status} /></p></div><button className="danger-btn" onClick={() => { if (window.confirm('Disconnect WhatsApp? Campaigns and AI replies stop until you connect again.')) disconnect() }} disabled={busy || status.status === 'disconnected'}>Disconnect</button></section>
   </div>
 }
 
@@ -1192,7 +1305,7 @@ function InboxView({ onNavigate }) {
   const resolve = () => updateConversation(`/conversations/${selectedId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'resolved' }) })
 
   return <div className={threadOpen ? 'inbox-workspace mobile-thread-open' : 'inbox-workspace'}>
-    <div className="inbox-toolbar"><div><p className="eyebrow">Live conversations</p><h2>Inbox</h2></div><input className="search-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search conversations" /></div>
+    <div className="inbox-toolbar"><div><p className="eyebrow">Live conversations</p><h2>Inbox</h2></div><input className="search-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search conversations" aria-label="Search conversations" /></div>
     {notice && <div className="notice error">{notice}</div>}
     <div className="inbox-layout">
       <aside className="panel conversation-sidebar"><h2>Conversations</h2>{conversations.map((item) => <div className="conversation-row" key={item.id}><button type="button" className={`conversation-item ${selectedId === item.id ? 'selected' : ''}`} onClick={() => { setSelectedId(item.id); setThreadOpen(true) }}><span className="conversation-item-top"><strong>{displayIdentity(item)}</strong>{item.unread_count > 0 && <b>{item.unread_count}</b>}</span><small>{item.last_message || 'No messages yet'}</small>{item.status === 'human_takeover' && <em>Human attention required</em>}</button><button type="button" className="danger-btn" onClick={() => removeConversation(item.id)} disabled={busy}>Delete</button></div>)}{!conversations.length && <EmptyState icon="💬" title="No conversations yet" description="Once customers message your connected WhatsApp number, they'll appear here. Check back after your number is connected." actions={[{ label: 'Open WhatsApp Connection', variant: 'secondary', onClick: () => onNavigate?.('WhatsApp Connection') }] } />}</aside>
@@ -1391,7 +1504,7 @@ function AnalyticsView({ onNavigate }) {
   const [trend, setTrend] = useState([])
   const [notice, setNotice] = useState({ type: '', text: '' })
   useEffect(() => { Promise.all([apiFetch('/analytics/dashboard'), apiFetch('/analytics/messages/trend?days=7')]).then(([data, nextTrend]) => { setDashboard({ ...data, recentMessages: (data.recentMessages || []).map((message) => ({ ...message, name: displayIdentity(message) })) }); setTrend(nextTrend || []) }).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
-  if (!dashboard) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <div className="panel empty-preview">Loading analytics...</div>}</div>
+  if (!dashboard) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <SkeletonPanel label="Loading analytics" variant="dashboard" />}</div>
   const cards = [['Active contacts', dashboard.contacts.active, 'green'], ['Opted-out contacts', dashboard.contacts.optedOut, 'amber'], ['Open conversations', dashboard.conversations.open, 'blue'], ['Human takeover', dashboard.conversations.human_takeover, 'violet'], ['Resolved', dashboard.conversations.resolved, 'green'], ['Inbound messages', dashboard.messages.inbound, 'blue'], ['Outbound messages', dashboard.messages.outbound, 'violet'], ['Campaigns sent', dashboard.campaigns.total_sent, 'green'], ['Campaigns failed', dashboard.campaigns.total_failed, 'amber'], ['Campaign replies', dashboard.campaigns.total_replies, 'blue'], ['Campaign opt-outs', dashboard.campaigns.total_opt_outs, 'violet']]
   const maxValue = Math.max(1, ...trend.flatMap((item) => [item.inbound || 0, item.outbound || 0]))
   return <div className="view-workspace"><div><p className="eyebrow">Performance overview</p><h2>Analytics</h2><p className="muted-copy">A compact view of customer activity, campaigns, and message flow.</p></div>{notice.text && <div className="notice error">{notice.text}</div>}<div className="stats-grid analytics-stats">{cards.map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value || 0}</strong></article>)}</div><div className="analytics-grid"><section className="panel"><div className="panel-header"><h2>Message trend</h2><span className="file-note">Last 7 days</span></div><div className="trend-chart">{trend.length ? trend.map((item) => <div className="trend-day" key={item.date}><div className="trend-bars"><i className="inbound-bar" style={{ height: `${Math.max(4, ((item.inbound || 0) / maxValue) * 100)}%` }} /><i className="outbound-bar" style={{ height: `${Math.max(4, ((item.outbound || 0) / maxValue) * 100)}%` }} /></div><small>{item.date.slice(5)}</small><span>{item.inbound || 0} / {item.outbound || 0}</span></div>) : <EmptyState icon="📊" title="No message activity yet" description="Once conversations and campaigns start exchanging messages, daily trends will appear here." />}</div><div className="chart-legend"><span><i className="inbound-bar" /> Inbound</span><span><i className="outbound-bar" /> Outbound</span></div></section><section className="panel"><div className="panel-header"><h2>Recent messages</h2></div><ul className="list recent-message-list">{dashboard.recentMessages.map((message, index) => <li key={`${message.created_at}-${index}`}><div><strong>{message.name || message.phone}</strong><small>{message.body}</small></div><span className={`campaign-status ${message.direction === 'inbound' ? 'running' : 'completed'}`}>{message.direction}</span></li>)}</ul>{!dashboard.recentMessages.length && <EmptyState icon="✉️" title="No messages yet" description="Inbound and outbound messages will appear here once customers start chatting with you." />}</section></div><section className="panel"><div className="panel-header"><h2>Recent campaigns</h2></div><div className="campaign-table-wrap"><table><thead><tr><th>Campaign</th><th>Status</th><th>Sent</th><th>Failed</th><th>Replies</th><th>Opt-outs</th></tr></thead><tbody>{dashboard.recentCampaigns.map((campaign) => <tr key={campaign.id}><td data-label="Campaign"><strong>{campaign.name}</strong><small>{formatDate(campaign.created_at)}</small></td><td data-label="Status"><span className={`campaign-status ${String(campaign.status).toLowerCase()}`}>{campaign.status}</span></td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td><td data-label="Replies">{campaign.replies}</td><td data-label="Opt-outs">{campaign.opt_outs}</td></tr>)}</tbody></table>{!dashboard.recentCampaigns.length && <EmptyState icon="📣" title="No campaign activity yet" description="Create and run your first campaign — its delivery and reply stats will show up here." actions={[{ label: 'Go to Campaigns', onClick: () => (onNavigate || ((view) => { window.location.hash = `#${view}` }))('Campaigns') }] } />}</div></section></div>
@@ -1422,7 +1535,7 @@ function SettingsView({ userEmail }) {
       setTestNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Resend test email' }) })
     } finally { setTesting(false) }
   }
-  if (!settings) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <div className="panel empty-preview">Loading settings...</div>}</div>
+  if (!settings) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <SkeletonPanel label="Loading settings" />}</div>
   const update = (field) => (event) => setForm({ ...form, [field]: event.target.value })
   return <div className="view-workspace">
     <div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update your AI connection, email sender, business details, quotation company profile, and default country code.</p></div>
@@ -1443,7 +1556,7 @@ function SettingsView({ userEmail }) {
           <label className="form-label">From email<input value={form.resendFromEmail} onChange={update('resendFromEmail')} placeholder="hello@yourdomain.com" /></label>
           <label className="form-label">From name<input value={form.resendFromName} onChange={update('resendFromName')} placeholder="Your Business Name" /></label>
         </div>
-        {testNotice.text && <div className={`notice ${testNotice.type}`} style={{ margin: '0.75rem 0 0' }}>{testNotice.text}</div>}
+        {testNotice.text && <div className={`notice ${testNotice.type} settings-test-notice`}>{testNotice.text}</div>}
         <div className="button-row"><button type="button" className="secondary-btn" onClick={testResend} disabled={testing || busy}>{testing ? 'Sending test email...' : 'Test Connection'}</button><small className="help-note">Sends one test email to {userEmail || 'your account email'} using the saved credentials.</small></div>
       </section>
       <section className="panel settings-panel">
@@ -1482,11 +1595,25 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [backendStatus, setBackendStatus] = useState('Checking...')
   const [isConnected, setIsConnected] = useState(false)
+  // Display only: lets the status chip show a connected Business API.
+  const [businessApiStatus, setBusinessApiStatus] = useState('')
   const [dashboard, setDashboard] = useState(null)
   const [recentConversations, setRecentConversations] = useState(null)
   const [dashboardError, setDashboardError] = useState('')
   // Shared workspaces: { self, active, sharedAccess, shared: [{ id, email }] }
   const [workspaces, setWorkspaces] = useState(null)
+  // Desktop sidebar collapsed to an icon rail (remembered per browser).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'collapsed' } catch { return false }
+  })
+  const [greeting] = useState(greetingNow)
+  const toggleSidebar = () => {
+    setSidebarCollapsed((current) => {
+      const next = !current
+      try { window.localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? 'collapsed' : 'expanded') } catch { /* storage unavailable */ }
+      return next
+    })
+  }
 
   // ── Minimal hash-based routing ────────────────────────────────────────
   // ''          → public landing page (default for logged-out visitors)
@@ -1661,6 +1788,7 @@ function App() {
         const data = await apiFetch('/whatsapp/status')
         setBackendStatus(data.status || 'disconnected')
         setIsConnected(data.status === 'connected')
+        setBusinessApiStatus(data.businessStatus || '')
       } catch {
         setBackendStatus('offline')
         setIsConnected(false)
@@ -1704,16 +1832,154 @@ function App() {
     dispatchSessionInvalidated('session cleared')
   }, [session?.user?.id, authChecking])
 
-  const stats = dashboard ? [
-    { label: 'Total Contacts', value: dashboard.contacts.total, accent: 'green' },
-    { label: 'Active Campaigns', value: dashboard.campaigns.active, accent: 'blue' },
-    { label: 'Inbound Messages', value: dashboard.messages.inbound, accent: 'violet' },
-    {
-      label: 'WhatsApp Status',
-      value: isConnected ? '🟢 Connected' : '🔴 Offline',
-      accent: isConnected ? 'green' : 'amber',
-    },
-  ] : []
+  const statusClassOf = (status) => `campaign-status ${String(status || '').toLowerCase().replaceAll('_', '-')}`
+
+  // Dashboard: only numbers the dashboard API already returns. Rings show
+  // ratios between those numbers (never invented values).
+  const renderDashboard = () => {
+    if (!dashboard || !recentConversations) {
+      return dashboardError
+        ? <div className="notice error" role="alert">{dashboardError}</div>
+        : <SkeletonPanel label="Loading your dashboard…" variant="dashboard" />
+    }
+    const totals = dashboard.campaigns || {}
+    const sent = Number(totals.total_sent) || 0
+    const failed = Number(totals.total_failed) || 0
+    const attempted = sent + failed
+    const kpis = [
+      { label: 'Messages sent', value: sent, accent: 'green', icon: 'send', ring: percentOf(sent, attempted), note: 'of attempted messages went out' },
+      ...(totals.total_delivered != null ? [{ label: 'Delivered', value: Number(totals.total_delivered) || 0, accent: 'blue', icon: 'check-circle', ring: percentOf(totals.total_delivered, sent), note: 'of sent messages were delivered' }] : []),
+      ...(totals.total_read != null ? [{ label: 'Read', value: Number(totals.total_read) || 0, accent: 'violet', icon: 'eye', ring: percentOf(totals.total_read, sent), note: 'of sent messages were read' }] : []),
+      { label: 'Failed', value: failed, accent: 'amber', icon: 'alert', ring: percentOf(failed, attempted), note: 'of attempted messages failed' },
+      { label: 'Opted out', value: Number(totals.total_opt_outs) || 0, accent: 'violet', icon: 'ban', ring: percentOf(totals.total_opt_outs, sent), note: 'of messaged contacts opted out' },
+      { label: 'Replies', value: Number(totals.total_replies) || 0, accent: 'blue', icon: 'reply', ring: percentOf(totals.total_replies, sent), note: 'of messaged contacts replied' },
+    ]
+    const glance = [
+      { label: 'Contacts', value: dashboard.contacts?.total, icon: 'users' },
+      { label: 'Open conversations', value: dashboard.conversations?.open, icon: 'chat' },
+      { label: 'Messages received', value: dashboard.messages?.inbound, icon: 'inbox' },
+      { label: 'Campaigns sending', value: totals.active, icon: 'megaphone' },
+    ]
+    const liveCampaigns = (dashboard.recentCampaigns || []).filter((campaign) => ['running', 'paused', 'queued'].includes(campaign.status))
+    return (
+      <div className="dashboard">
+        {/* New-account setup guide: step completion derives from live
+            data (WhatsApp status + analytics poll below + knowledge doc
+            count) and hides itself once dismissed or fully complete. */}
+        <OnboardingChecklist onNavigate={setActiveView} dashboard={dashboard} whatsappConnected={isConnected} />
+
+        <section className="kpi-grid" aria-label="Campaign results">
+          {kpis.map((kpi) => (
+            <article key={kpi.label} className={`stat-card kpi-tile ${kpi.accent}`}>
+              <div className="kpi-head"><span className="kpi-icon" aria-hidden="true"><Icon name={kpi.icon} size={17} /></span><span className="kpi-label">{kpi.label}</span></div>
+              <div className="kpi-body">
+                <strong>{kpi.value.toLocaleString('en-IN')}</strong>
+                {kpi.ring === null
+                  ? <span className="kpi-ring-empty" aria-hidden="true">—</span>
+                  : <span className="kpi-ring-wrap"><ProgressRing value={kpi.ring} label={`${kpi.ring}% ${kpi.note}`} /><span className="kpi-ring-text" aria-hidden="true">{kpi.ring}%</span></span>}
+              </div>
+              <p className="kpi-note">{kpi.ring === null ? 'No campaign messages yet' : `${kpi.ring}% ${kpi.note}`}</p>
+            </article>
+          ))}
+        </section>
+
+        <div className="dashboard-grid">
+          <section className="panel queue-status-card" aria-live="polite">
+            <div className="panel-header">
+              <div><p className="eyebrow">Live · updates every 10 s</p><h2>Campaign queue</h2></div>
+              <span className={`campaign-status ${Number(totals.active) > 0 ? 'running' : 'draft'}`}>{Number(totals.active) > 0 ? `${totals.active} sending` : 'Idle'}</span>
+            </div>
+            {liveCampaigns.length ? (
+              <ul className="queue-list">
+                {liveCampaigns.map((campaign) => {
+                  const pct = percentOf(campaign.sent, campaign.total_contacts) ?? 0
+                  return (
+                    <li key={campaign.id}>
+                      <div className="queue-item-head"><strong>{campaign.name}</strong><span className={statusClassOf(campaign.status)}>{campaign.status.replaceAll('_', ' ')}</span></div>
+                      <div className={`campaign-progress${campaign.status === 'running' ? ' is-live' : ''}`} role="progressbar" aria-label={`${campaign.name} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ width: `${pct}%` }} /></div>
+                      <small className="tabular">{(campaign.sent || 0).toLocaleString('en-IN')} of {(campaign.total_contacts || 0).toLocaleString('en-IN')} sent{campaign.failed ? ` · ${campaign.failed} failed` : ''}</small>
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : (
+              <EmptyState icon="layers" title="Nothing is sending right now" description="Running, paused and queued campaigns show here with their progress." actions={[{ label: 'Open campaigns', onClick: () => setActiveView('Campaigns') }]} />
+            )}
+          </section>
+
+          <section className="panel glance-card">
+            <div className="panel-header"><div><p className="eyebrow">At a glance</p><h2>Your workspace</h2></div><ConnectionChip status={chipStatus} onClick={() => setActiveView('WhatsApp Connection')} /></div>
+            <ul className="glance-list">
+              {glance.map((item) => (
+                <li key={item.label}><span className="glance-icon" aria-hidden="true"><Icon name={item.icon} size={18} /></span><span className="glance-label">{item.label}</span><strong className="mono">{Number(item.value || 0).toLocaleString('en-IN')}</strong></li>
+              ))}
+            </ul>
+          </section>
+        </div>
+
+        <div className="dashboard-grid">
+          <article className="panel">
+            <div className="panel-header">
+              <h2>Recent campaigns</h2>
+              <button type="button" className="ghost-btn" onClick={() => setActiveView('Campaigns')}>View all <Icon name="chevron-right" size={16} /></button>
+            </div>
+            <ul className="list activity-list">
+              {dashboard.recentCampaigns.map((campaign) => (
+                <li key={campaign.id}>
+                  <span className="activity-icon" aria-hidden="true"><Icon name="megaphone" size={16} /></span>
+                  <div className="activity-text">
+                    <strong>{campaign.name}</strong>
+                    <small className="tabular">{campaign.sent || 0} / {campaign.total_contacts || 0} sent</small>
+                  </div>
+                  <span className={statusClassOf(campaign.status)}>{String(campaign.status).replaceAll('_', ' ')}</span>
+                </li>
+              ))}
+            </ul>
+            {!dashboard.recentCampaigns.length && (
+              <EmptyState
+                icon="📣"
+                title="No campaigns yet"
+                description="Create your first campaign to start reaching customers with personalized messages."
+                actions={[{ label: 'Create campaign', onClick: () => setActiveView('Campaigns') }]}
+              />
+            )}
+          </article>
+
+          <article className="panel">
+            <div className="panel-header">
+              <h2>Recent conversations</h2>
+              <button type="button" className="ghost-btn" onClick={() => setActiveView('Inbox')}>Open inbox <Icon name="chevron-right" size={16} /></button>
+            </div>
+            <ul className="list conversation-list activity-list">
+              {recentConversations.map((conversation) => (
+                <li key={conversation.id}>
+                  <span className="activity-icon" aria-hidden="true"><Icon name="chat" size={16} /></span>
+                  <div className="activity-text">
+                    <strong>{displayIdentity(conversation)}</strong>
+                    <small>{conversation.last_message || 'No messages yet'}</small>
+                  </div>
+                  <span className={`tag ${conversation.status === 'human_takeover' ? '' : 'muted'}`}>{conversation.status === 'human_takeover' ? 'Needs you' : conversation.ai_enabled ? 'AI replying' : 'You are replying'}</span>
+                </li>
+              ))}
+            </ul>
+            {!recentConversations.length && (
+              <EmptyState
+                icon="💬"
+                title="No conversations yet"
+                description="Once customers message your connected WhatsApp number, their conversations will appear here."
+                actions={[{ label: 'Check connection', variant: 'secondary', onClick: () => setActiveView('WhatsApp Connection') }]}
+              />
+            )}
+          </article>
+        </div>
+
+        <section className="panel message-editor cta-card">
+          <div className="cta-copy"><p className="eyebrow">Next step</p><h2>Start a campaign</h2><p className="muted-copy">Upload an Excel list, write one message with personal fields, and send it safely from the queue.</p></div>
+          <button type="button" className="primary-btn" onClick={() => setActiveView('Campaigns')}><Icon name="plus" size={18} /> New campaign</button>
+        </section>
+      </div>
+    )
+  }
 
   const renderView = () => {
     if (activeView === 'WhatsApp Connection') return <ConnectionView />
@@ -1727,90 +1993,12 @@ function App() {
     if (activeView === 'Analytics') return <AnalyticsView onNavigate={setActiveView} />
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
-    if (activeView === 'Dashboard') {
-      if (!dashboard || !recentConversations) {
-        return <div className="panel empty-preview">{dashboardError || 'Loading dashboard...'}</div>
-      }
-
-      return (
-        <>
-          {/* New-account setup guide: step completion derives from live
-              data (WhatsApp status + analytics poll below + knowledge doc
-              count) and hides itself once dismissed or fully complete. */}
-          <OnboardingChecklist onNavigate={setActiveView} dashboard={dashboard} whatsappConnected={isConnected} />
-
-          <section className="stats-grid">
-            {stats.map((stat) => (
-              <article key={stat.label} className={`stat-card ${stat.accent}`}>
-                <span>{stat.label}</span>
-                <strong>{stat.value}</strong>
-              </article>
-            ))}
-          </section>
-
-          <section className="content-grid">
-            <article className="panel">
-              <div className="panel-header">
-                <h2>Recent campaigns</h2>
-                <button type="button">View all</button>
-              </div>
-              <ul className="list">
-                {dashboard.recentCampaigns.map((campaign) => (
-                  <li key={campaign.id}>
-                    <div>
-                      <strong>{campaign.name}</strong>
-                      <small>{campaign.sent || 0} / {campaign.total_contacts || 0} sent</small>
-                    </div>
-                    <span className="tag">{campaign.status}</span>
-                  </li>
-                ))}
-              </ul>
-              {!dashboard.recentCampaigns.length && (
-                <EmptyState
-                  icon="📣"
-                  title="No campaigns yet"
-                  description="Create your first campaign to start reaching customers with personalized messages."
-                  actions={[{ label: 'Create campaign', onClick: () => setActiveView('Campaigns') }]}
-                />
-              )}
-            </article>
-
-            <article className="panel">
-              <div className="panel-header">
-                <h2>Recent conversations</h2>
-                <button type="button">Inbox</button>
-              </div>
-              <ul className="list conversation-list">
-                {recentConversations.map((conversation) => (
-                  <li key={conversation.id}>
-                    <div>
-                      <strong>{displayIdentity(conversation)}</strong>
-                      <small>{conversation.last_message || 'No messages yet'}</small>
-                    </div>
-                    <span className="tag muted">{conversation.status === 'human_takeover' ? 'Human Handoff' : conversation.ai_enabled ? 'AI Active' : 'Human Active'}</span>
-                  </li>
-                ))}
-              </ul>
-              {!recentConversations.length && (
-                <EmptyState
-                  icon="💬"
-                  title="No conversations yet"
-                  description="Once customers message your connected WhatsApp number, their conversations will appear here."
-                  actions={[{ label: 'Check connection', variant: 'secondary', onClick: () => setActiveView('WhatsApp Connection') }]}
-                />
-              )}
-            </article>
-          </section>
-
-          <section className="panel message-editor"><div className="panel-header"><h2>Campaign message composer</h2><button type="button" onClick={() => setActiveView('Campaigns')}>Open campaign manager</button></div><p className="muted-copy">Create an Excel-backed campaign with dynamic fields and queue controls.</p></section>
-        </>
-      )
-    }
+    if (activeView === 'Dashboard') return renderDashboard()
 
     return (
       <section className="panel empty-state-panel">
         <h2>{activeView}</h2>
-        <p>This section is ready for the next feature slice.</p>
+        <p className="muted-copy">This section is ready for the next feature slice.</p>
         <button type="button" className="primary-btn" onClick={() => setActiveView('Dashboard')}>
           Back to dashboard
         </button>
@@ -1854,6 +2042,7 @@ function App() {
     return () => window.removeEventListener(WORKSPACE_CHANGED_EVENT, onWorkspaceChanged)
   }, [])
 
+  const chipStatus = backendStatus !== 'connected' && businessApiStatus === 'connected' ? 'business_connected' : backendStatus
   const activeSharedWorkspace = workspaces?.sharedAccess ? workspaces.shared?.find((item) => item.id === workspaces.active) : null
   const workspaceSwitcher = workspaces?.shared?.length ? (
     <label className="workspace-switcher">
@@ -1871,9 +2060,10 @@ function App() {
 
   if (authChecking) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 font-sans">
-        <div className="w-10 h-10 border-4 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin mb-4" />
-        <p className="text-sm font-medium tracking-wide text-slate-400">Loading Sudarshan Pipes AI Assistant...</p>
+      <div className="app-splash" role="status" aria-live="polite">
+        <BrandLogo height={46} />
+        <span className="app-splash-spinner" aria-hidden="true" />
+        <p>Loading Sudarshan Pipes AI Assistant…</p>
       </div>
     )
   }
@@ -1894,102 +2084,88 @@ function App() {
     return <LandingPage onSignIn={() => navigate('/login')} />
   }
 
+  const userEmail = session?.user?.email || ''
+  const pageTitle = activeView === 'Dashboard' ? 'Dashboard' : navLabel(activeView)
+  const pageEyebrow = activeView === 'Dashboard' ? greeting : navGroupOf(activeView)
+
   return (
-    <div className={`app-shell${drawerOpen ? ' drawer-open' : ''}`}>
+    <div className={`app-shell${drawerOpen ? ' drawer-open' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
       <header className="mobile-topbar">
-        <button type="button" className="hamburger-btn" aria-label="Open navigation menu" onClick={() => setDrawerOpen(true)}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <line x1="4" y1="7" x2="20" y2="7" />
-            <line x1="4" y1="12" x2="20" y2="12" />
-            <line x1="4" y1="17" x2="20" y2="17" />
-          </svg>
+        <button type="button" className="hamburger-btn" aria-label="Open navigation menu" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>
+          <Icon name="menu" />
         </button>
-        <span className="mobile-brand">Sudarshan Pipes AI Assistant</span>
-        <span className={`status-pill ${isConnected ? 'online' : 'offline'}`}>{isConnected ? '🟢 Connected' : '🔴 Offline'}</span>
+        <span className="mobile-brand"><BrandLogo variant="mark" height={26} decorative /><span className="mobile-brand-title">Sudarshan Pipes AI</span></span>
+        <ConnectionChip status={chipStatus} onClick={() => selectView('WhatsApp Connection')} />
+        <ThemeToggle />
       </header>
       <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />
-      <aside className="sidebar" role="navigation" aria-label="Sidebar">
-        <button type="button" className="drawer-close" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)}><span aria-hidden="true">✕</span></button>
-        <div className="brand">Sudarshan Pipes AI Assistant</div>
-        <nav aria-label="Primary Navigation">
-          {navItems.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={item === activeView ? 'nav-item active' : 'nav-item'}
-              aria-current={item === activeView ? 'page' : undefined}
-              onClick={() => selectView(item)}
-            >
-              {item}
-            </button>
+      <aside className="sidebar" aria-label="Sidebar">
+        <button type="button" className="icon-btn drawer-close" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)}><Icon name="close" /></button>
+        <div className="sidebar-brand">
+          <div className="sidebar-brand-text brand-full">
+            <BrandLogo height={30} />
+            <span className="sidebar-product">AI Assistant</span>
+          </div>
+          <span className="brand-mark-only"><BrandLogo variant="mark" height={32} /></span>
+          <button type="button" className="icon-btn collapse-btn" onClick={toggleSidebar} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+            <Icon name={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'} />
+          </button>
+        </div>
+        <nav className="sidebar-nav" aria-label="Primary Navigation">
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.title}>
+              <p className="nav-group-title">{group.title}</p>
+              {group.items.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={item === activeView ? 'nav-item active' : 'nav-item'}
+                  aria-current={item === activeView ? 'page' : undefined}
+                  onClick={() => selectView(item)}
+                  title={navLabel(item)}
+                >
+                  <Icon name={NAV_META[item]?.icon} />
+                  <span className="nav-label">{navLabel(item)}</span>
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
-        <div className="sidebar-footer" style={{ marginTop: 'auto', padding: '16px 12px', borderTop: '1px solid rgba(148, 163, 184, 0.28)' }}>
+        <div className="sidebar-footer">
           {workspaceSwitcher}
-          <div style={{ fontSize: '11px', color: 'var(--brand-steel)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={session?.user?.email}>
-            👤 {session?.user?.email || 'Logged In'}
+          <ConnectionChip status={chipStatus} block onClick={() => selectView('WhatsApp Connection')} />
+          <div className="user-chip" title={userEmail}>
+            <span className="user-avatar" aria-hidden="true">{(userEmail || 'U').charAt(0)}</span>
+            <span className="user-chip-text"><strong>Signed in</strong><span className="user-chip-email">{userEmail || 'Logged in'}</span></span>
           </div>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="sign-out-btn"
-            style={{
-              width: '100%',
-              minHeight: '44px',
-              padding: '7px 12px',
-              fontSize: '12px',
-              fontWeight: 500,
-              background: 'transparent',
-              border: '1px solid var(--brand-steel-border)',
-              borderRadius: '8px',
-              color: 'var(--brand-steel)',
-              cursor: 'pointer'
-            }}
-          >
-            Sign Out
+          <button type="button" onClick={handleSignOut} className="sign-out-btn" title={userEmail ? `Sign out ${userEmail}` : 'Sign out'}>
+            <Icon name="logout" size={16} />
+            <span className="sign-out-label">Sign out</span>
           </button>
         </div>
       </aside>
 
       <div className="content-wrapper">
         <header className="topbar">
-          <div className={`status-pill ${isConnected ? 'online' : 'offline'}`}>
-            {isConnected ? '🟢 WhatsApp Connected' : '🔴 WhatsApp Offline'}
+          <div className="topbar-title">
+            <p className="eyebrow">{pageEyebrow}</p>
+            <h1>{pageTitle}</h1>
           </div>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            style={{
-              fontSize: '12px',
-              minHeight: '44px',
-              padding: '8px 14px',
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              color: 'var(--text-secondary)',
-              fontWeight: 600
-            }}
-            title={`Signed in as ${session?.user?.email}`}
-          >
-            Sign Out
-          </button>
+          <div className="topbar-actions">
+            <ThemeToggle />
+          </div>
         </header>
 
-        <main className="main-panel">
-          <p className="eyebrow">Good afternoon</p>
-          <h1>{activeView}</h1>
+        <main className="main-panel" id="main-content">
+          <div className="page">
+            {activeSharedWorkspace && <div className="notice info shared-workspace-notice" role="status">
+              You are working in <strong>{activeSharedWorkspace.email || 'a shared'}</strong>'s workspace (shared with you). Records you add or change here belong to that workspace. Settings and the WhatsApp connection can only be changed by its owner.
+            </div>}
 
-          {activeSharedWorkspace && <div className="notice info shared-workspace-notice" role="status">
-            You are working in <strong>{activeSharedWorkspace.email || 'a shared'}</strong>'s workspace (shared with you). Records you add or change here belong to that workspace. Settings and the WhatsApp connection can only be changed by its owner.
-          </div>}
-
-          <div className="backend-status">
-            Backend: <strong>{backendStatus}</strong>
+            {renderView()}
           </div>
-
-          {renderView()}
+          <footer className="page-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · AI Assistant</footer>
         </main>
       </div>
     </div>

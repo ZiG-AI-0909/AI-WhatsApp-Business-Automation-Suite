@@ -1,30 +1,20 @@
 import React from 'react';
 
 /**
- * Badge component with a soft‑tint style.
- * `tone` selects the color palette (hot, warm, cold, success, danger, warning, neutral, etc.).
- * If `dot` is true a small colored dot is rendered before the label.
+ * Badge component with a soft-tint style.
+ * `tone` selects the colour palette (hot, warm, cold, success, danger, warning, neutral).
+ * If `dot` is true a small coloured dot is rendered before the label.
+ * Colours come from the theme tokens (see styles/tokens.css), so the badge
+ * works in both the dark and light themes; the label text always carries
+ * the meaning, never the colour alone.
  */
 export default function Badge({ tone = 'neutral', dot = false, children, className = '' }) {
-  const toneMap = {
-    hot: 'bg-red-50 text-red-700',
-    warm: 'bg-orange-50 text-orange-700',
-    cold: 'bg-blue-50 text-blue-700',
-    success: 'bg-green-50 text-green-700',
-    danger: 'bg-red-50 text-red-700',
-    warning: 'bg-yellow-50 text-yellow-700',
-    neutral: 'bg-teal-50 text-teal-700', // default soft teal
-  };
-
-  const baseClasses = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full';
-  const toneClasses = toneMap[tone] || toneMap['neutral'];
-  const dotElement = dot ? (
-    <span className={`h-2 w-2 rounded-full ${toneClasses.split(' ')[0].replace('bg-', 'bg-')}`}></span>
-  ) : null;
+  const tones = ['hot', 'warm', 'cold', 'success', 'danger', 'warning', 'neutral'];
+  const toneClass = tones.includes(tone) ? tone : 'neutral';
 
   return (
-    <span className={`${baseClasses} ${toneClasses} ${className}`.trim()}>
-      {dotElement}
+    <span className={`ui-badge ui-badge-${toneClass} ${className}`.trim()}>
+      {dot && <span className="ui-badge-dot" aria-hidden="true"></span>}
       {children}
     </span>
   );

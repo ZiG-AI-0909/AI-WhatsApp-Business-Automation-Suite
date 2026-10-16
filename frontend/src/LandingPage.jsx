@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
+import BrandLogo from './components/BrandLogo.jsx'
+import ThemeToggle from './components/ThemeToggle.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public landing page — shown to logged-out visitors at the default route.
@@ -13,16 +15,6 @@ import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 const scrollToSection = (id) => () => {
   const element = document.getElementById(id)
   if (element) element.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
-function LandingLogo() {
-  return (
-    <div className="landing-logo" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-      </svg>
-    </div>
-  )
 }
 
 const HOW_IT_WORKS_STEPS = [
@@ -160,7 +152,7 @@ export default function LandingPage({ onSignIn }) {
 
   if (checking) {
     return (
-      <div className="landing-page" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+      <div className="landing-page landing-loading">
         <div className="landing-spinner" aria-label="Loading" />
       </div>
     )
@@ -172,8 +164,8 @@ export default function LandingPage({ onSignIn }) {
       <header className="landing-header">
         <div className="landing-header-inner">
           <div className="landing-brand">
-            <LandingLogo />
-            <span>Sudarshan Pipes AI Automation</span>
+            <BrandLogo height={30} />
+            <span>AI Assistant</span>
           </div>
           <nav className="landing-header-nav" aria-label="Page sections">
             {[['how-it-works', 'How it works'], ['features', 'Features'], ['why-ai', 'Why AI replies']].map(([id, label]) => (
@@ -188,6 +180,7 @@ export default function LandingPage({ onSignIn }) {
               </button>
             ))}
           </nav>
+          <ThemeToggle />
           <button type="button" className="landing-btn-primary" onClick={onSignIn}>Sign In</button>
         </div>
       </header>
@@ -279,7 +272,7 @@ export default function LandingPage({ onSignIn }) {
       </main>
 
       <footer className="landing-footer">
-        <span>© {new Date().getFullYear()} Sudarshan Pipes AI Automation. All rights reserved.</span>
+        <span>© {new Date().getFullYear()} Sudarshan Pipes &amp; Fittings · AI Assistant. All rights reserved.</span>
       </footer>
     </div>
   )

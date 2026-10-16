@@ -319,6 +319,7 @@ export default function QuotationView({ initialQuote = null }) {
       </div>
       {readOnly && <div className="notice info">This quotation is {quote.status} and read-only. Use Duplicate to make changes.</div>}
 
+      <div className="quote-paper">
       <div className="settings-grid quote-header-grid">
         {field('customer_name', 'Customer (To)')}
         {field('customer_gstin', 'Customer GSTIN', { maxLength: 15 })}
@@ -395,8 +396,10 @@ export default function QuotationView({ initialQuote = null }) {
             <dt className="quote-grand">Grand total (Rs)</dt><dd className="quote-grand">{money(totals.grand_total)}</dd>
           </dl>
           <p className="quote-muted">{totals.unpriced_lines ? `${totals.unpriced_lines} included line(s) without a rate count as 0.` : totals.amount_in_words}</p>
-          {!readOnly && quote.finalize?.blockers?.length > 0 && <div className="quote-blockers"><strong>Before finalizing</strong><ul>{quote.finalize.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul></div>}
+          {!readOnly && quote.finalize?.blockers?.length > 0 && <div className="quote-blockers" role="status"><strong>Before finalizing ({quote.finalize.blockers.length} to fix)</strong><ul className="quote-checklist">{quote.finalize.blockers.map((blocker) => <li key={blocker}><span className="visually-hidden">To do: </span>{blocker}</li>)}</ul></div>}
+          {!readOnly && quote.finalize?.ready && <div className="quote-ready" role="status"><strong>Ready to finalize</strong> Every included line has a rate and no placeholders remain.</div>}
         </aside>
+      </div>
       </div>
 
       <div className="button-row quote-actions">

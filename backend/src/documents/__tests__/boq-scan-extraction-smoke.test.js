@@ -243,26 +243,39 @@ async function testConfirmationGate(items) {
     const call = async (body) => {
         const response = {};
         const res = { status(code) { response.status = code; return res; }, json(payload) { response.body = payload; return res; } };
-        await layer.route.stack[0].handle({ params: { id: '7' }, user: { id: USER }, body }, res);
+        await layer.route.stack[0].handle({ params: { id: '7' }, user: { id: USER, email: 'reviewer@example.com' }, body }, res);
         return { status: response.status || 200, body: response.body };
     };
+    // Only rows with wrong numbers block confirmation (S.No 4, 44, 57, 79 in
+    // this scan); "please glance" rows (guessed units, AI checks) do not.
     let response = await call({ items, status: 'confirmed' });
-    assert.equal(response.status, 409, 'flagged rows block confirmation');
-    assert.match(response.body.error, /flagged row\(s\) must be reviewed/);
-    const flagged = items.filter((item) => item.needsReview).length;
-    assert.equal(response.body.unreviewed.length, flagged);
+    assert.equal(response.status, 409, 'rows with wrong numbers block confirmation');
+    assert.match(response.body.error, /4 items still have wrong numbers \(S\.No 4, 44, 57, 79\)/);
+    const bySerial = (list, serial) => list.findIndex((item) => item.serialNumber === String(serial));
+    assert.deepEqual(response.body.blocking, [4, 44, 57, 79].map((serial) => bySerial(items, serial)));
+    assert.deepEqual(response.body.unreviewed, response.body.blocking, 'old field kept for compatibility');
 
-    const reviewed = items.map((item) => ({ ...item, reviewConfirmed: item.needsReview ? true : item.reviewConfirmed }));
-    response = await call({ items: reviewed, status: 'confirmed' });
+    // Fixing the numbers clears 44, 57 and 79; S.No 4 (unreadable rate and
+    // amount) is kept on purpose, with a reason.
+    const fixed = items.map((item) => ([44, 57, 79].map(String).includes(item.serialNumber)
+        ? { ...item, amount: Math.round(item.quantity * item.rate * 100) / 100 }
+        : item));
+    const row4 = items[bySerial(items, 4)];
+    response = await call({ items: fixed, status: 'confirmed', accept: [{ lineItemId: row4.lineItemId, reason: 'Rate and amount checked on the printed page' }] });
     assert.equal(response.status, 200, JSON.stringify(response.body).slice(0, 300));
     assert.equal(response.body.status, 'confirmed');
+    const confirmed4 = response.body.items[bySerial(response.body.items, 4)];
+    assert.equal(confirmed4.severity, 'error', 'an accepted row keeps its severity');
+    assert.equal(confirmed4.acceptance.reason, 'Rate and amount checked on the printed page');
+    assert.equal(confirmed4.acceptance.by, 'reviewer@example.com');
+    assert.ok(response.body.items[bySerial(response.body.items, 44)].fixed, 'a corrected row records who fixed it');
 
-    // Changing a confirmed row's numbers withdraws its confirmation.
+    // Changing a row's numbers so they disagree again blocks confirmation.
     const edited = response.body.items.map((item) => (item.serialNumber === '19' ? { ...item, quantity: 80 } : item));
     response = await call({ items: edited, status: 'confirmed' });
-    assert.equal(response.status, 409, 'an edited flagged row must be reviewed again');
+    assert.equal(response.status, 409, 'an edited row with wrong numbers blocks confirmation again');
     const row19 = edited.findIndex((item) => item.serialNumber === '19');
-    assert.ok(response.body.unreviewed.includes(row19));
+    assert.ok(response.body.blocking.includes(row19));
 }
 
 async function main() {

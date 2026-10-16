@@ -1,0 +1,240 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Sudarshan Pipes AI Assistant — design tokens
+   ───────────────────────────────────────────────────────────────────
+   Brand colours were sampled from the Sudarshan Pipes & Fittings logo
+   (public/sudarshan-logo.jpg):
+     --sp-blue    #194494   wordmark + pipe "S" (dominant colour)
+     --sp-orange  #EC8211   circle + double rule lines
+   Orange is the one strong brand accent; the dark theme's navy
+   backgrounds are tinted from the logo blue; cyan is the cool accent.
+
+   Change the look in ONE place: every component reads these custom
+   properties. Dark is the default theme ("mission control"); the light
+   theme overrides the same names. The theme is chosen by
+   <html data-theme="dark|light"> (set before first paint in
+   index.html, toggled in the top bar, remembered in localStorage).
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Brand (theme-independent) */
+  --sp-blue: #194494;
+  --sp-orange: #EC8211;
+  --logo-chip-bg: #FFFFFF;           /* the logo's own white background */
+
+  /* Typography */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Plus Jakarta Sans', var(--font-sans);
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 0.75rem;     /* captions, table heads */
+  --text-sm: 0.8125rem;   /* labels, secondary copy */
+  --text-base: 0.9375rem; /* body */
+  --text-md: 1rem;
+  --text-lg: 1.125rem;    /* card titles */
+  --text-xl: 1.375rem;    /* section titles */
+  --text-2xl: clamp(1.45rem, 1.1rem + 1.1vw, 1.95rem); /* page title */
+  --text-3xl: clamp(1.8rem, 1.2rem + 2.4vw, 2.6rem);    /* hero */
+
+  /* Radii */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Motion (all of it is switched off for prefers-reduced-motion) */
+  --dur-fast: 150ms;
+  --dur: 200ms;
+  --dur-slow: 250ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Layout */
+  --sidebar-w: 268px;
+  --sidebar-w-collapsed: 78px;
+  --content-max: 1440px;
+  --blur: 18px;
+  --touch: 44px;
+}
+
+/* ── Dark theme (default) ─────────────────────────────────────────── */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #060B18;
+  --bg-glow-1: rgba(25, 68, 148, 0.42);   /* logo blue */
+  --bg-glow-2: rgba(34, 211, 238, 0.10);  /* cool cyan */
+  --bg-glow-3: rgba(236, 130, 17, 0.10);  /* logo orange */
+  --grid-line: rgba(143, 176, 255, 0.055);
+
+  --surface: #0E1830;
+  --surface-raised: #122042;
+  --surface-subtle: #0B1429;
+  --surface-muted: #16244A;
+  --surface-glass: rgba(9, 16, 34, 0.74);
+  --overlay: rgba(2, 6, 16, 0.66);
+
+  --text-primary: #E8EDF7;
+  --text-secondary: #B4C0D6;
+  --text-muted: #8B99B4;
+  --text-inverse: #0F1B33;
+
+  --border: rgba(143, 167, 214, 0.22);
+  --border-subtle: rgba(143, 167, 214, 0.13);
+  --border-strong: rgba(143, 167, 214, 0.36);
+
+  --accent: #EC8211;
+  --accent-hover: #F59A33;
+  --accent-text: #F5A04A;
+  --accent-contrast: #1A1003;
+  --accent-bg: rgba(236, 130, 17, 0.14);
+  --accent-border: rgba(236, 130, 17, 0.45);
+  --accent-glow: 0 0 0 3px rgba(236, 130, 17, 0.22), 0 0 24px rgba(236, 130, 17, 0.28);
+
+  --cool: #22D3EE;
+  --cool-text: #5EE0F2;
+  --cool-bg: rgba(34, 211, 238, 0.12);
+  --cool-border: rgba(34, 211, 238, 0.38);
+
+  --brand-blue-text: #8FB0FF;
+  --brand-blue-bg: rgba(79, 123, 224, 0.16);
+  --brand-blue-border: rgba(143, 176, 255, 0.40);
+
+  --success: #34D399;
+  --success-text: #4ADE9F;
+  --success-bg: rgba(52, 211, 153, 0.12);
+  --success-border: rgba(52, 211, 153, 0.38);
+  --warning: #F59E0B;
+  --warning-text: #FBC14A;
+  --warning-bg: rgba(245, 158, 11, 0.13);
+  --warning-border: rgba(245, 158, 11, 0.42);
+  --danger: #F87171;
+  --danger-text: #FF8A8A;
+  --danger-bg: rgba(248, 113, 113, 0.12);
+  --danger-border: rgba(248, 113, 113, 0.42);
+  --violet: #A78BFA;
+  --violet-text: #B9A2FF;
+  --violet-bg: rgba(167, 139, 250, 0.13);
+  --violet-border: rgba(167, 139, 250, 0.40);
+
+  --input-bg: #0A1328;
+  --input-border: rgba(143, 167, 214, 0.28);
+  --input-placeholder: #75839F;
+
+  --table-head-bg: #0F1A36;
+  --row-hover: rgba(143, 176, 255, 0.065);
+  --row-zebra: rgba(143, 176, 255, 0.028);
+  --row-selected: rgba(236, 130, 17, 0.10);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 28px 70px rgba(0, 0, 0, 0.55);
+  --card-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 42%);
+
+  --skeleton-base: #142144;
+  --skeleton-shine: #1C2D58;
+
+  /* Legacy names kept so older rules keep working */
+  --brand-navy: var(--surface-glass);
+  --brand-navy-deep: var(--surface-muted);
+  --brand-white: var(--text-primary);
+  --brand-steel: var(--text-muted);
+  --brand-steel-dark: var(--surface-muted);
+  --brand-steel-border: var(--border);
+  --brand-green: var(--success);
+  --brand-green-text: var(--success-text);
+  --brand-green-bg: var(--success-bg);
+  --brand-green-border: var(--success-border);
+  --bg-reinforced-steel: var(--bg);
+  --bg-secondary: var(--surface-subtle);
+  --white: #FFFFFF;
+  --shadow-legacy: var(--shadow);
+}
+
+/* ── Light theme ──────────────────────────────────────────────────── */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #F2F5FA;
+  --bg-glow-1: rgba(25, 68, 148, 0.11);
+  --bg-glow-2: rgba(8, 145, 178, 0.09);
+  --bg-glow-3: rgba(236, 130, 17, 0.08);
+  --grid-line: rgba(25, 68, 148, 0.05);
+
+  --surface: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --surface-subtle: #F7F9FC;
+  --surface-muted: #EAF0F8;
+  --surface-glass: rgba(255, 255, 255, 0.80);
+  --overlay: rgba(15, 27, 51, 0.42);
+
+  --text-primary: #0F1B33;
+  --text-secondary: #35435F;
+  --text-muted: #566583;
+  --text-inverse: #F7F9FC;
+
+  --border: rgba(25, 48, 96, 0.17);
+  --border-subtle: rgba(25, 48, 96, 0.10);
+  --border-strong: rgba(25, 48, 96, 0.28);
+
+  --accent: #EC8211;
+  --accent-hover: #DA730A;
+  --accent-text: #A35200;
+  --accent-contrast: #1A1003;
+  --accent-bg: rgba(236, 130, 17, 0.12);
+  --accent-border: rgba(236, 130, 17, 0.50);
+  --accent-glow: 0 0 0 3px rgba(236, 130, 17, 0.20), 0 0 18px rgba(236, 130, 17, 0.18);
+
+  --cool: #0891B2;
+  --cool-text: #0B6E86;
+  --cool-bg: rgba(8, 145, 178, 0.10);
+  --cool-border: rgba(8, 145, 178, 0.36);
+
+  --brand-blue-text: #194494;
+  --brand-blue-bg: rgba(25, 68, 148, 0.08);
+  --brand-blue-border: rgba(25, 68, 148, 0.30);
+
+  --success: #059669;
+  --success-text: #047857;
+  --success-bg: rgba(5, 150, 105, 0.10);
+  --success-border: rgba(5, 150, 105, 0.36);
+  --warning: #D97706;
+  --warning-text: #8A4B00;
+  --warning-bg: rgba(217, 119, 6, 0.12);
+  --warning-border: rgba(217, 119, 6, 0.42);
+  --danger: #DC2626;
+  --danger-text: #B42318;
+  --danger-bg: rgba(220, 38, 38, 0.09);
+  --danger-border: rgba(220, 38, 38, 0.36);
+  --violet: #7C3AED;
+  --violet-text: #6D3FD6;
+  --violet-bg: rgba(124, 58, 237, 0.09);
+  --violet-border: rgba(124, 58, 237, 0.32);
+
+  --input-bg: #FFFFFF;
+  --input-border: rgba(25, 48, 96, 0.24);
+  --input-placeholder: #6B7A96;
+
+  --table-head-bg: #F4F7FB;
+  --row-hover: rgba(25, 68, 148, 0.05);
+  --row-zebra: rgba(25, 68, 148, 0.022);
+  --row-selected: rgba(236, 130, 17, 0.10);
+
+  --shadow-sm: 0 1px 2px rgba(15, 27, 51, 0.07);
+  --shadow: 0 12px 30px rgba(15, 27, 51, 0.09);
+  --shadow-lg: 0 28px 64px rgba(15, 27, 51, 0.18);
+  --card-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0) 40%);
+
+  --skeleton-base: #E6ECF5;
+  --skeleton-shine: #F4F7FB;
+}
