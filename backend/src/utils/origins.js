@@ -1,10 +1,11 @@
 // Shared CORS origin policy for Express and Socket.IO.
-// - Two fixed production Vercel domains.
+// - Fixed production Vercel domains.
 // - Any Vercel preview deployment matching the project's slug pattern.
 // - Local Vite dev server.
 const ALLOWED_ORIGINS = [
     'https://ai-whats-app-business-automation-suite-zig-ai-0909s-projects.vercel.app',
     'https://ai-whats-app-business-automation-su-theta.vercel.app',
+    'https://aisudarshanpipes.vercel.app',
     'http://localhost:5173',
     ...(process.env.ALLOWED_ORIGINS || '').split(',').map(origin => origin.trim()).filter(Boolean),
 ];
