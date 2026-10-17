@@ -77,7 +77,9 @@ create table if not exists public.kyc_submissions (
     --   [{ "category": "Raw Materials", "items": ["PVC Resin", "Titanium Dioxide"], "other_text": "" },
     --    { "category": "Packaging",     "items": ["Packing Bags / Sacks"],          "other_text": "" }]
     -- category: Raw Materials | Components & Fittings | Machinery & Spares |
-    --           Packaging | Transport & Logistics | Contractor & Services | Other
+    --           Packaging | Transport & Logistics | Contractor & Services |
+    --           Maintenance | Other   (the list lives in code; adding one needs
+    --           no migration)
     -- items come only from that category's list (backend/src/kyc/kycSchema.js);
     -- anything typed under "Other" is in other_text. The server validates the
     -- contents; the database only guarantees a non-empty array. No upper

@@ -352,7 +352,8 @@ function KycDetail({ id, onBack }) {
               <dt>{selection.category}</dt>
               <dd className="kyc-chips">
                 {selection.items.map((item) => <Badge key={item} tone="cold">{item}</Badge>)}
-                {selection.other_text && <Badge tone="neutral">{selection.category === 'Other' ? selection.other_text : `Other: ${selection.other_text}`}</Badge>}
+                {/* Older "Other" entries stored only their text (no list then). */}
+                {selection.other_text && <Badge tone="neutral">{selection.category === 'Other' && !selection.items.length ? selection.other_text : `Other: ${selection.other_text}`}</Badge>}
               </dd>
             </div>
           )) : <div className="is-wide"><dt>Category</dt><dd><span className="kyc-empty">Not provided</span></dd></div>}

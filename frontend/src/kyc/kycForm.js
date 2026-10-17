@@ -17,8 +17,10 @@ export const STATES = [
 ]
 
 // Section 3 cascading picker (CategoryPicker): real items per category.
-// "Other" is appended to every list and reveals a text box; the "Other"
-// category has no list, only the text box. Sent as category_selections
+// "Other (type it in)" is appended to every list, the "Other" category's
+// included, and reveals a text box. Keep in step with CATEGORY_OPTIONS in
+// backend/src/kyc/kycSchema.js, which rejects anything not listed there.
+// Sent as category_selections
 // (toCategorySelections) and stored in kyc_submissions.category_selections.
 export const OTHER_ITEM = 'Other'
 export const CATEGORY_OPTIONS = [
@@ -28,8 +30,12 @@ export const CATEGORY_OPTIONS = [
   { key: 'packaging', label: 'Packaging', items: ['Packing Bags / Sacks', 'Printing Ink & Make-up', 'Filter Kits / Consumables'] },
   { key: 'transport_logistics', label: 'Transport & Logistics', items: ['Freight / Transport Services', 'Warehousing'] },
   { key: 'contractor_services', label: 'Contractor & Services', items: ['Annual Maintenance Contracts (AMC)', 'Lab / Sample Testing Services', 'Installation & Commissioning Services'] },
-  { key: 'other', label: 'Other', items: null },
+  { key: 'maintenance', label: 'Maintenance', items: ['CNC Maintenance', 'Extruder/Motor Repairs Maintenance', 'Generator Maintenance', 'Air Compressor Maintenance', 'CNC Consumables'] },
+  { key: 'other', label: 'Other', items: ['Office Stationaries'] },
 ]
+
+/** "maintenance item" / "item" for the Other category. */
+const itemNoun = (category) => (category.key === 'other' ? 'item' : `${category.label.toLowerCase()} item`)
 
 /** Picker value → stored shape, in form order. */
 export function toCategorySelections(value) {
@@ -48,9 +54,9 @@ export function validateCategorySelections(value) {
   for (const category of chosen) {
     const entry = value[category.key]
     if (entry.other && !entry.other_text.trim()) {
-      errors[`category_${category.key}`] = category.items ? 'Type the other item, or remove “Other”.' : 'Describe what you supply.'
-    } else if (category.items && !entry.items.length && !entry.other) {
-      errors[`category_${category.key}`] = `Pick at least one ${category.label.toLowerCase()} item, or untick the category.`
+      errors[`category_${category.key}`] = 'Type the other item, or remove “Other”.'
+    } else if (!entry.items.length && !entry.other) {
+      errors[`category_${category.key}`] = `Pick at least one ${itemNoun(category)}, or untick the category.`
     }
   }
   return errors

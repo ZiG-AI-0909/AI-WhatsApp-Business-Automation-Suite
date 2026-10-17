@@ -94,7 +94,8 @@ const VALID = {
     category_selections: JSON.stringify([
         { category: 'Packaging', items: ['Packing Bags / Sacks'], other_text: '' },
         { category: 'Raw Materials', items: ['Titanium Dioxide', 'PVC Resin', 'PVC Resin'], other_text: '  carbon   black masterbatch ' },
-        { category: 'Other', items: [], other_text: 'Pallet repair' },
+        { category: 'Other', items: ['Office Stationaries'], other_text: 'Pallet repair' },
+        { category: 'Maintenance', items: ['Generator Maintenance', 'CNC Maintenance'], other_text: '' },
     ]),
     products_offered: '',
     bank_account_holder: 'Shree Ganesh Polymers Pvt Ltd',
@@ -152,7 +153,8 @@ async function main() {
         assert.deepEqual(values.category_selections, [
             { category: 'Raw Materials', items: ['PVC Resin', 'Titanium Dioxide'], other_text: 'carbon black masterbatch' },
             { category: 'Packaging', items: ['Packing Bags / Sacks'], other_text: '' },
-            { category: 'Other', items: [], other_text: 'Pallet repair' },
+            { category: 'Maintenance', items: ['CNC Maintenance', 'Generator Maintenance'], other_text: '' },
+            { category: 'Other', items: ['Office Stationaries'], other_text: 'Pallet repair' },
         ], 'form order, list order, de-duplicated, trimmed');
         assert.equal(values.declaration_date, '2026-10-18', 'declaration date is the India date');
         assert.deepEqual(documents.map((d) => `${d.type}${d.ext}`), ['pan_proof.pdf', 'gst_certificate.pdf', 'bank_proof.png', 'udyam_certificate.pdf', 'signed_declaration.png']);
@@ -178,11 +180,22 @@ async function main() {
         assert.match(mismatch.gstin, /must match the PAN/);
         const pick = (selections) => schema.validateSubmission({ ...VALID, category_selections: JSON.stringify(selections) }, multerFiles()).errors;
         assert.match(pick([{ category: 'Packaging', items: [], other_text: '' }]).category_packaging, /Pick at least one packaging item/);
-        assert.match(pick([{ category: 'Other', items: [], other_text: ' ' }]).category_other, /Describe what you supply/);
         assert.deepEqual(pick([{ category: 'Packaging', items: [], other_text: 'Stretch film' }]), {}, 'Other text alone is enough');
         assert.ok(pick([{ category: 'Raw Materials', items: ['Uranium'], other_text: '' }]).categories, 'items must come from the list');
         assert.ok(pick([{ category: 'Raw Materials & Chemicals', items: ['PVC Resin'] }]).categories, 'only the short category names');
-        assert.ok(pick([{ category: 'Other', items: ['x'], other_text: 'y' }]).categories, 'Other category has no items');
+        // Maintenance: every item accepted, correct spelling only.
+        const maintenanceItems = ['CNC Maintenance', 'Extruder/Motor Repairs Maintenance', 'Generator Maintenance', 'Air Compressor Maintenance', 'CNC Consumables'];
+        assert.deepEqual(pick([{ category: 'Maintenance', items: maintenanceItems, other_text: '' }]), {});
+        assert.match(pick([{ category: 'Maintenance', items: [], other_text: '' }]).category_maintenance, /Pick at least one maintenance item/);
+        assert.ok(pick([{ category: 'Maintainance', items: ['CNC Maintenance'] }]).categories, 'misspelled category rejected');
+        assert.ok(pick([{ category: 'Maintenance', items: ['CNC Maintainance'] }]).categories, 'misspelled item rejected');
+        // Other is now a list like the rest: Office Stationaries | Other (typed).
+        assert.deepEqual(pick([{ category: 'Other', items: ['Office Stationaries'], other_text: '' }]), {});
+        assert.deepEqual(pick([{ category: 'Other', items: [], other_text: 'Pallet repair' }]), {}, 'typed Other still enough (and older rows stay valid)');
+        assert.match(pick([{ category: 'Other', items: [], other_text: ' ' }]).category_other, /^Pick at least one item, or untick/);
+        assert.ok(pick([{ category: 'Other', items: ['Pallets'], other_text: '' }]).categories, 'Other items must come from its list');
+        assert.equal(schema.describeSelection({ category: 'Other', items: ['Office Stationaries'], other_text: 'Pallet repair' }), 'Office Stationaries, Other: Pallet repair');
+        assert.equal(schema.describeSelection({ category: 'Other', items: [], other_text: 'Pallet repair' }), 'Pallet repair', 'older Other-only rows read naturally');
         assert.ok(pick([{ category: 'Packaging', items: ['Packing Bags / Sacks'] }, { category: 'Packaging', items: ['Printing Ink & Make-up'] }]).categories, 'no duplicate categories');
         assert.ok(pick([{ category: 'Packaging', items: [], other_text: 'x'.repeat(201) }]).category_packaging);
         assert.ok(schema.validateSubmission({ ...VALID, category_selections: '{not json' }, multerFiles()).errors.categories);
@@ -211,6 +224,33 @@ async function main() {
         assert.equal(approved.values.status, 'approved');
         assert.ok(schema.validateReview({ final_decision: 'info_required' }).errors.decision_remarks);
         assert.ok(schema.validateReview({ final_decision: 'maybe', check_bank: 'done', final_approved_on: '20-10-2026' }).errors.final_decision);
+    });
+
+    await check('frontend picker and server whitelist list the same categories and items', async () => {
+        // frontend/src/kyc/kycForm.js is a dependency-free ES module.
+        const { pathToFileURL } = require('node:url');
+        const formPath = require('path').join(__dirname, '..', '..', '..', '..', 'frontend', 'src', 'kyc', 'kycForm.js');
+        const form = await import(pathToFileURL(formPath).href);
+        assert.deepEqual(form.CATEGORY_OPTIONS, schema.CATEGORY_OPTIONS, 'kycForm.js CATEGORY_OPTIONS must match kycSchema.js');
+        assert.ok(!JSON.stringify(schema.CATEGORY_OPTIONS).includes('Maintainance'), 'no "Maintainance" misspelling');
+        // Picker-side rules for the Other category, now a list like the rest.
+        const empty = { items: [], other: false, other_text: '' };
+        assert.match(form.validateCategorySelections({ other: empty }).category_other, /^Pick at least one item, or untick/);
+        assert.match(form.validateCategorySelections({ other: { ...empty, other: true } }).category_other, /Type the other item/);
+        assert.deepEqual(form.validateCategorySelections({ other: { ...empty, items: ['Office Stationaries'] } }), {});
+        assert.match(form.validateCategorySelections({ maintenance: empty }).category_maintenance, /Pick at least one maintenance item/);
+        // What the picker sends is exactly what the server accepts.
+        const sent = form.toCategorySelections({
+            maintenance: { items: ['CNC Consumables'], other: false, other_text: '' },
+            other: { items: ['Office Stationaries'], other: true, other_text: ' Toner ' },
+        });
+        assert.deepEqual(sent, [
+            { category: 'Maintenance', items: ['CNC Consumables'], other_text: '' },
+            { category: 'Other', items: ['Office Stationaries'], other_text: 'Toner' },
+        ]);
+        const server = schema.checkCategorySelections(JSON.stringify(sent));
+        assert.deepEqual(server.errors, {});
+        assert.deepEqual(server.value, sent);
     });
 
     // ── HTTP ────────────────────────────────────────────────────
@@ -246,7 +286,7 @@ async function main() {
             submissionId = data.id;
             const row = store.kyc_submissions.find((r) => r.id === submissionId);
             assert.equal(row.pan, 'AAGCB7383J');
-            assert.equal(row.category_selections.length, 3);
+            assert.equal(row.category_selections.length, 4);
             assert.deepEqual(row.category_selections[0], { category: 'Raw Materials', items: ['PVC Resin', 'Titanium Dioxide'], other_text: 'carbon black masterbatch' });
             assert.ok(!('categories' in row) && !('category_other' in row));
             assert.equal(row.documents.signed_declaration.path, `${submissionId}/signed_declaration.png`);
@@ -361,7 +401,12 @@ async function main() {
             const text = (await new PDFParse({ data: note.data }).getText()).text.replace(/\s+/g, ' '); // extraction wraps lines
             assert.match(text, /Items Selected/);
             assert.match(text, /Raw Materials: PVC Resin, Titanium Dioxide, Other: carbon black masterbatch/);
-            assert.match(text, /Other: Pallet repair/);
+            assert.match(text, /Maintenance: CNC Maintenance, Generator Maintenance/);
+            assert.match(text, /Other: Office Stationaries, Other: Pallet repair/);
+            for (const label of ['Raw Materials', 'Components & Fittings', 'Machinery & Spares', 'Packaging', 'Transport & Logistics', 'Contractor & Services', 'Maintenance', 'Other']) {
+                assert.ok(text.includes(label), `PDF has a category box for ${label}`);
+            }
+            assert.equal((await new PDFParse({ data: note.data }).getText()).total, 2, 'still a 2-page form');
             assert.match(text, /See the uploaded "Signed & Sealed Declaration Page"/);
             const excel = await call('GET', '/kyc/export/excel?status=approved', { token: 'token-staff' });
             assert.equal(excel.status, 200);
@@ -380,7 +425,13 @@ async function main() {
             assert.equal(col('Packaging: Items'), 'Packing Bags / Sacks');
             assert.equal(col('Category: Machinery & Spares'), 'No');
             assert.equal(col('Machinery & Spares: Items'), '');
-            assert.equal(col('Other: Items'), 'Pallet repair');
+            assert.equal(col('Category: Maintenance'), 'Yes');
+            assert.equal(col('Maintenance: Items'), 'CNC Maintenance, Generator Maintenance');
+            assert.equal(col('Category: Other'), 'Yes');
+            assert.equal(col('Other: Items'), 'Office Stationaries, Other: Pallet repair');
+            const categoryHeaders = header.filter((name) => String(name).startsWith('Category: '));
+            assert.equal(categoryHeaders.length, 8, 'one Yes/No column per category');
+            assert.equal(categoryHeaders[6], 'Category: Maintenance', 'Maintenance sits before Other');
             assert.equal(col('Signed & Sealed Declaration Page: Attached'), 'Yes');
             assert.equal(col('Final Decision'), 'Approved');
         });

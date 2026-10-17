@@ -26,7 +26,10 @@ const STATES = [
 // kyc_submissions.category_selections, in this order:
 //   [{ "category": "Raw Materials", "items": ["PVC Resin"], "other_text": "" }, …]
 // Items must come from the category's list; anything else goes in
-// other_text ("Other" in the dropdown). The "Other" category has no list.
+// other_text ("Other" in the dropdown — every category has one, the "Other"
+// category included). Keep in step with CATEGORY_OPTIONS in
+// frontend/src/kyc/kycForm.js. Adding a category needs no migration: the
+// category_selections check only requires a non-empty array.
 const CATEGORY_OPTIONS = [
     { key: 'raw_materials', label: 'Raw Materials', items: ['PVC Resin', 'Titanium Dioxide', 'Iron Oxide', 'Calcium Carbonate (Omyacarb)', 'Flowaid / Processing Aids', 'Cooling Tower & Descaling Chemicals'] },
     { key: 'components_fittings', label: 'Components & Fittings', items: ['Pipe End Caps', 'Thread Adaptors', 'SS Hose Nipples', 'Aluminium Channel', 'Gear Box / Mechanical Components'] },
@@ -34,7 +37,8 @@ const CATEGORY_OPTIONS = [
     { key: 'packaging', label: 'Packaging', items: ['Packing Bags / Sacks', 'Printing Ink & Make-up', 'Filter Kits / Consumables'] },
     { key: 'transport_logistics', label: 'Transport & Logistics', items: ['Freight / Transport Services', 'Warehousing'] },
     { key: 'contractor_services', label: 'Contractor & Services', items: ['Annual Maintenance Contracts (AMC)', 'Lab / Sample Testing Services', 'Installation & Commissioning Services'] },
-    { key: 'other', label: 'Other', items: null },
+    { key: 'maintenance', label: 'Maintenance', items: ['CNC Maintenance', 'Extruder/Motor Repairs Maintenance', 'Generator Maintenance', 'Air Compressor Maintenance', 'CNC Consumables'] },
+    { key: 'other', label: 'Other', items: ['Office Stationaries'] },
 ];
 const OTHER_TEXT_MAX = 200;
 
@@ -228,21 +232,20 @@ function checkCategorySelections(raw) {
             continue;
         }
         // Only items from the category's own list; free text goes in other_text.
-        if (items.some((item) => !option.items?.includes(item))) {
+        if (items.some((item) => !option.items.includes(item))) {
             errors.categories = malformed;
             continue;
         }
         const otherText = oneLine(entry.other_text);
         if (otherText.length > OTHER_TEXT_MAX) {
             errors[`category_${option.key}`] = `Keep the other item to ${OTHER_TEXT_MAX} characters or fewer.`;
-        } else if (!option.items && !otherText) {
-            errors[`category_${option.key}`] = 'Describe what you supply.';
-        } else if (option.items && !items.length && !otherText) {
-            errors[`category_${option.key}`] = `Pick at least one ${option.label.toLowerCase()} item, or untick the category.`;
+        } else if (!items.length && !otherText) {
+            const noun = option.key === 'other' ? 'item' : `${option.label.toLowerCase()} item`;
+            errors[`category_${option.key}`] = `Pick at least one ${noun}, or untick the category.`;
         }
         byKey.set(option.key, {
             category: option.label,
-            items: (option.items || []).filter((item) => items.includes(item)),
+            items: option.items.filter((item) => items.includes(item)),
             other_text: otherText,
         });
     }
@@ -250,10 +253,15 @@ function checkCategorySelections(raw) {
     return { value, errors };
 }
 
-/** "Raw Materials: PVC Resin, Other: masterbatch" — for exports. */
+/** "PVC Resin, Other: masterbatch" — for exports. */
 function describeSelection(selection) {
     const parts = [...(selection.items || [])];
-    if (selection.other_text) parts.push(selection.category === 'Other' ? selection.other_text : `Other: ${selection.other_text}`);
+    if (selection.other_text) {
+        // Submissions from before the Other category had a list stored only
+        // its text; show that bare rather than as "Other: Other: …".
+        const legacyOther = selection.category === 'Other' && !parts.length;
+        parts.push(legacyOther ? selection.other_text : `Other: ${selection.other_text}`);
+    }
     return parts.join(', ');
 }
 
