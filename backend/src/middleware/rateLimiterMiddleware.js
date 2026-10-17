@@ -77,4 +77,15 @@ const _mutation = rateLimit({
     ...json429('Too many requests. Slow down.'),
 });
 
-module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter };
+// Public vendor KYC form — no auth, up to 35 MB of uploads per request, so
+// it is keyed by IP and kept tight. A vendor normally submits once; the
+// allowance covers retries after validation errors and a shared office IP.
+function kycSubmitLimiter(req, res, next) { return _kycSubmit(req, res, next); }
+const _kycSubmit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: Number(process.env.KYC_SUBMIT_LIMIT_PER_HOUR || 10),
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    ...json429('Too many form submissions from this network. Please try again in an hour.'),
+});
+
+module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter };

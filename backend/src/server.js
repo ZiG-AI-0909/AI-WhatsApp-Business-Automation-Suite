@@ -45,6 +45,12 @@ const io = new Server(server, {
 });
 
 app.set('io', io);
+// Render (and most hosts) put one reverse proxy in front of the app. Without
+// this, req.ip is the proxy's address and every visitor shares ONE
+// IP-keyed rate-limit bucket (public KYC form, webhook). Trust exactly the
+// configured number of hops — never `true`, which lets clients spoof
+// X-Forwarded-For. Set TRUST_PROXY_HOPS=0 when running with no proxy.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1));
 app.use(cors({
     origin: (origin, callback) => {
         if (isAllowedOrigin(origin)) return callback(null, true);
@@ -102,6 +108,9 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/auth', require('./routes/auth'));
+// Public vendor KYC form: unauthenticated, IP rate-limited in the router.
+// Must stay above every app.use('/api', requireAuth, …) catch-all mount.
+app.use('/api/public/kyc', require('./routes/kycPublic'));
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 app.use('/api/whatsapp', requireAuth, require('./routes/whatsapp'));
 app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/whatsappWebhook'));
@@ -120,6 +129,8 @@ app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware'
 app.use('/api', requireAuth, require('./routes/quotations'));
 app.use('/api/boq', requireAuth, require('./routes/boq').router);
 app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
+// Vendor KYC review/export: signed-in KYC staff only (see routes/kyc.js).
+app.use('/api/kyc', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/kyc'));
 
 app.use('/api', requireAuth, (req, res) => {
     res.status(404).json({ error: 'Route not found' });

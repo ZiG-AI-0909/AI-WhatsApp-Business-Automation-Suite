@@ -7,6 +7,8 @@ import WelcomeAuthPage from './WelcomeAuthPage.jsx'
 import ImageExtractorView from './ImageExtractorView.jsx'
 import AskAiView from './AskAiView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
+import KycSubmissionsView from './KycSubmissionsView.jsx'
+import VendorKycPage from './VendorKycPage.jsx'
 import CopilotPanel from './CopilotPanel.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
@@ -30,7 +32,8 @@ import { COUNTRIES } from './countries.js'
 const NAV_GROUPS = [
   { title: 'Overview', items: ['Dashboard', 'Analytics'] },
   { title: 'Messaging', items: ['Inbox', 'Campaigns', 'Contacts', 'Templates'] },
-  { title: 'Documents', items: ['Document Intelligence', 'Image Extractor'] },
+  // 'Submitted Forms' is only shown to KYC reviewers (see kycStaff in App).
+  { title: 'Documents', items: ['Document Intelligence', 'Image Extractor', 'Submitted Forms'] },
   { title: 'AI assistant', items: ['Ask AI', 'Knowledge Base'] },
   { title: 'Setup', items: ['WhatsApp Connection', 'Settings'] },
 ]
@@ -43,6 +46,7 @@ const NAV_META = {
   Templates: { icon: 'file' },
   'Document Intelligence': { icon: 'clipboard', label: 'BOQ & quotations' },
   'Image Extractor': { icon: 'image', label: 'Image extractor' },
+  'Submitted Forms': { icon: 'receipt', label: 'Submitted forms' },
   'Ask AI': { icon: 'sparkles' },
   'Knowledge Base': { icon: 'book', label: 'Knowledge base' },
   'WhatsApp Connection': { icon: 'phone', label: 'WhatsApp connection' },
@@ -1630,10 +1634,13 @@ function App() {
   // ''          → public landing page (default for logged-out visitors)
   // '#/login'   → sign-in / sign-up flow (WelcomeAuthPage)
   // '#/app'     → authenticated app shell (also the post-login default)
+  // '#/vendor-kyc' or the path /vendor-kyc → public vendor KYC form, shown
+  //               to everyone, signed in or not (the link sent to vendors)
   // Any other hash falls back to the landing page for logged-out users.
   const readRoute = () => {
     const hash = window.location.hash.replace(/^#/, '')
-    if (hash === '/login' || hash === '/app') return hash
+    if (hash === '/login' || hash === '/app' || hash === '/vendor-kyc') return hash
+    if (!hash && window.location.pathname.replace(/\/+$/, '') === '/vendor-kyc') return '/vendor-kyc'
     return ''
   }
   const [route, setRoute] = useState(readRoute)
@@ -2005,6 +2012,7 @@ function App() {
     if (activeView === 'Analytics') return <AnalyticsView onNavigate={setActiveView} />
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
+    if (activeView === 'Submitted Forms') return <KycSubmissionsView />
     if (activeView === 'Dashboard') return renderDashboard()
 
     return (
@@ -2023,7 +2031,20 @@ function App() {
   // direct sign-in (onAuthSuccess) and OAuth redirects back to '/', where
   // the session arrives via onAuthStateChange instead of onAuthSuccess.
   useEffect(() => {
-    if (session && route !== '/app') navigate('/app')  }, [session?.user?.id, route])
+    if (session && route !== '/app' && route !== '/vendor-kyc') navigate('/app')  }, [session?.user?.id, route])
+
+  // KYC reviewers (private.kyc_staff) get the "Submitted forms" view. The
+  // backend enforces this on every /api/kyc route; this only hides the item.
+  const [kycStaff, setKycStaff] = useState(false)
+  useEffect(() => {
+    if (!session?.user?.id) { setKycStaff(false); return }
+    let cancelled = false
+    apiFetch('/kyc/access')
+      .then((data) => { if (!cancelled) setKycStaff(data?.staff === true) })
+      .catch(() => { if (!cancelled) setKycStaff(false) })
+    return () => { cancelled = true }
+  }, [session?.user?.id])
+  const navGroups = NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => item !== 'Submitted Forms' || kycStaff) }))
 
   // Load the workspaces shared with this user. On first sign-in with a
   // shared workspace (and no remembered choice) open the shared data, which
@@ -2069,6 +2090,9 @@ function App() {
       </select>
     </label>
   ) : null
+
+  // Public vendor KYC form: no sign-in and no waiting for the auth check.
+  if (route === '/vendor-kyc') return <VendorKycPage />
 
   if (authChecking) {
     return (
@@ -2124,7 +2148,7 @@ function App() {
           </button>
         </div>
         <nav className="sidebar-nav" aria-label="Primary Navigation">
-          {NAV_GROUPS.map((group) => (
+          {navGroups.map((group) => (
             <div className="nav-group" key={group.title}>
               <p className="nav-group-title">{group.title}</p>
               {group.items.map((item) => (
