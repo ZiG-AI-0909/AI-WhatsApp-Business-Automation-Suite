@@ -759,6 +759,26 @@ function CampaignsView({ onNavigate }) {
     }
   }
 
+  // Stop any running or paused campaign straight from its row — including one
+  // paused because WhatsApp disconnected, which needs no connection to stop.
+  // Stopping skips the messages not yet sent; on reconnect it stays stopped.
+  const stopCampaign = async (campaign, event) => {
+    event?.stopPropagation()
+    const reconnectNote = campaign.pause_reason === 'whatsapp_disconnected' ? ' It will not restart when WhatsApp reconnects.' : ''
+    if (!window.confirm(`Stop "${campaign.name}"? Messages not sent yet (${Math.max(0, Number(campaign.total_contacts) - Number(campaign.processed)) || 0}) will be skipped.${reconnectNote} Use Duplicate later to send again.`)) return
+    setBusy(true)
+    try {
+      await apiFetch(`/campaigns/${campaign.id}/stop`, { method: 'POST' })
+      await loadCampaigns()
+      if (selectedCampaign?.id === campaign.id) setSelectedCampaign(await apiFetch(`/campaigns/${campaign.id}`))
+      setMessage({ type: 'success', text: `"${campaign.name}" stopped.` })
+    } catch (error) {
+      setMessage({ type: 'error', text: friendlyErrorMessage(error, { context: 'Campaigns' }) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const testCampaignMedia = async () => {
     if (!selectedCampaign?.id) return
     setBusy(true)
@@ -1030,12 +1050,13 @@ function CampaignsView({ onNavigate }) {
             <button className="secondary-btn" onClick={retryFailedContacts} disabled={busy || !(Number(selectedCampaign.failed) > 0) || !['failed', 'completed_with_errors', 'completed', 'stopped'].includes(selectedCampaign.status)}>Retry failed ({Number(selectedCampaign.failed) || 0})</button>
             <button className="secondary-btn" onClick={() => controlCampaign('pause')} disabled={busy || selectedCampaign.status !== 'running'}>Pause</button>
             <button className="secondary-btn" onClick={() => controlCampaign('resume')} disabled={busy || selectedCampaign.status !== 'paused' || resumeLocked} title={resumeLocked ? `WhatsApp rate-limited this campaign. Resume after ${new Date(selectedCampaign.resume_after).toLocaleTimeString()}.` : undefined}>Resume</button>
-            <button className="danger-btn" onClick={() => controlCampaign('stop')} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button>
+            <button className="danger-btn" onClick={() => stopCampaign(selectedCampaign)} disabled={busy || !['running', 'paused'].includes(selectedCampaign.status)}>Stop</button>
           </div>}
         </div>
         {selectedCampaign && !selectedProviderConnected && <div className="notice warning campaign-connection-notice" role="status">
-          <span>{selectedCampaign.pause_reason === 'whatsapp_disconnected' ? 'WhatsApp disconnected — reconnect to continue.' : 'WhatsApp is not connected. Connect before starting this campaign.'}</span>
+          <span>{selectedCampaign.pause_reason === 'whatsapp_disconnected' ? 'WhatsApp disconnected — reconnect to continue, or stop this campaign.' : 'WhatsApp is not connected. Connect before starting this campaign.'}</span>
           <button type="button" className="secondary-btn" onClick={() => onNavigate?.('WhatsApp Connection')}>Open WhatsApp Connection</button>
+          {['running', 'paused'].includes(selectedCampaign.status) && <button type="button" className="danger-btn" onClick={() => stopCampaign(selectedCampaign)} disabled={busy}>Stop campaign</button>}
         </div>}
         {selectedCampaign?.last_error && <div className="notice warning">{selectedCampaign.last_error}</div>}
         {selectedIds.length > 0 && <div className="button-row"><span>{selectedIds.length} selected</span><button className="danger-btn" onClick={bulkDelete} disabled={busy}>Delete selected</button></div>}
@@ -1049,7 +1070,7 @@ function CampaignsView({ onNavigate }) {
               <td data-label="Status"><span className={statusClass(campaign.status)}>{campaign.status.replaceAll('_', ' ')}</span></td>
               <td data-label="Progress">{campaign.processed} / {campaign.total_contacts}</td><td data-label="Sent">{campaign.sent}{campaign.delivered != null && <small>{campaign.delivered} delivered</small>}</td><td data-label="Failed">{campaign.failed}</td>
               <td data-label="Queue">{campaign.status === 'queued' ? <div onClick={(event) => event.stopPropagation()}><strong>#{campaign.queue_position}</strong>{queueStartEstimate(campaign) && <small>Est. start {queueStartEstimate(campaign).toLocaleString()}</small>}<div className="button-row"><button className="secondary-btn" aria-label="Move up" disabled={campaign.queue_position <= 1} onClick={(event) => moveQueuedCampaign(campaign, -1, event)}>↑</button><button className="secondary-btn" aria-label="Move down" disabled={campaign.queue_position >= queuedCampaigns.length} onClick={(event) => moveQueuedCampaign(campaign, 1, event)}>↓</button><button className="secondary-btn" onClick={(event) => removeQueuedCampaign(campaign, event)}>Remove</button></div></div> : '—'}</td>
-              <td data-label="Actions" onClick={(event) => event.stopPropagation()}>{campaign.status === 'draft' && <button className="secondary-btn" onClick={(event) => editCampaignDraft(campaign, event)}>Edit</button>}{['completed', 'completed_with_errors', 'failed', 'stopped'].includes(campaign.status) && <button className="secondary-btn" onClick={(event) => openDuplicateDialog(campaign, event)}>Duplicate</button>}</td>
+              <td data-label="Actions" onClick={(event) => event.stopPropagation()}>{campaign.status === 'draft' && <button className="secondary-btn" onClick={(event) => editCampaignDraft(campaign, event)}>Edit</button>}{['running', 'paused'].includes(campaign.status) && <button className="danger-btn" onClick={(event) => stopCampaign(campaign, event)} disabled={busy} aria-label={`Stop ${campaign.name}`}>Stop</button>}{['completed', 'completed_with_errors', 'failed', 'stopped'].includes(campaign.status) && <button className="secondary-btn" onClick={(event) => openDuplicateDialog(campaign, event)}>Duplicate</button>}</td>
             </tr>)}</tbody>
           </table>
           {!campaignList.length && <EmptyState icon="📣" title="No campaigns yet" description="Create your first campaign to start reaching customers. Upload an Excel list, personalize the message, and send — or schedule it for later." actions={[{ label: 'Create your first campaign', onClick: () => document.querySelector('.campaign-builder input')?.focus() }]} />}
