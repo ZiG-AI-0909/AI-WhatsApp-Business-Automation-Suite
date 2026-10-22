@@ -88,4 +88,13 @@ const _kycSubmit = rateLimit({
     ...json429('Too many form submissions from this network. Please try again in an hour.'),
 });
 
-module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter };
+// Public mechanic / technician registration — same shape, its own bucket.
+function technicianSubmitLimiter(req, res, next) { return _technicianSubmit(req, res, next); }
+const _technicianSubmit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: Number(process.env.TECHNICIAN_SUBMIT_LIMIT_PER_HOUR || 10),
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    ...json429('Too many form submissions from this network. Please try again in an hour.'),
+});
+
+module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter };

@@ -111,6 +111,7 @@ app.use('/api/auth', require('./routes/auth'));
 // Public vendor KYC form: unauthenticated, IP rate-limited in the router.
 // Must stay above every app.use('/api', requireAuth, …) catch-all mount.
 app.use('/api/public/kyc', require('./routes/kycPublic'));
+app.use('/api/public/technician', require('./routes/technicianPublic'));
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 app.use('/api/whatsapp', requireAuth, require('./routes/whatsapp'));
 app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/whatsappWebhook'));
@@ -131,6 +132,8 @@ app.use('/api/boq', requireAuth, require('./routes/boq').router);
 app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
 // Vendor KYC review/export: signed-in KYC staff only (see routes/kyc.js).
 app.use('/api/kyc', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/kyc'));
+// Mechanic / technician registrations: same KYC reviewers.
+app.use('/api/technicians', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/technicians'));
 
 app.use('/api', requireAuth, (req, res) => {
     res.status(404).json({ error: 'Route not found' });

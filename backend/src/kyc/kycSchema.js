@@ -448,6 +448,11 @@ module.exports = {
     DECLARATION_TEXT,
     CONSENT_TEXT,
     FIELDS,
+    // Shared with technician/technicianSchema.js
+    checkDocument,
+    oneLine,
+    multiLine,
+    validDate,
     gstinChecksumValid,
     checkCategorySelections,
     describeSelection,

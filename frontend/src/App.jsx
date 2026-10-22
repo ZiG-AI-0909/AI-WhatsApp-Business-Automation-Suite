@@ -9,6 +9,7 @@ import AskAiView from './AskAiView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
 import VendorKycPage from './VendorKycPage.jsx'
+import TechnicianRegistrationPage from './TechnicianRegistrationPage.jsx'
 import CopilotPanel from './CopilotPanel.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
@@ -52,6 +53,8 @@ const NAV_META = {
   'WhatsApp Connection': { icon: 'phone', label: 'WhatsApp connection' },
   Settings: { icon: 'sliders' },
 }
+// Public forms, open to everyone signed in or not (see readRoute in App).
+const PUBLIC_FORM_ROUTES = ['/vendor-kyc', '/technician-registration']
 const navLabel = (view) => NAV_META[view]?.label || view
 const navGroupOf = (view) => NAV_GROUPS.find((group) => group.items.includes(view))?.title || ''
 const CURRENT_YEAR = new Date().getFullYear()
@@ -1636,11 +1639,14 @@ function App() {
   // '#/app'     → authenticated app shell (also the post-login default)
   // '#/vendor-kyc' or the path /vendor-kyc → public vendor KYC form, shown
   //               to everyone, signed in or not (the link sent to vendors)
+  // '#/technician-registration' or the path /technician-registration →
+  //               public mechanic / technician registration, same rules
   // Any other hash falls back to the landing page for logged-out users.
   const readRoute = () => {
     const hash = window.location.hash.replace(/^#/, '')
-    if (hash === '/login' || hash === '/app' || hash === '/vendor-kyc') return hash
-    if (!hash && window.location.pathname.replace(/\/+$/, '') === '/vendor-kyc') return '/vendor-kyc'
+    if (hash === '/login' || hash === '/app' || PUBLIC_FORM_ROUTES.includes(hash)) return hash
+    const path = window.location.pathname.replace(/\/+$/, '')
+    if (!hash && PUBLIC_FORM_ROUTES.includes(path)) return path
     return ''
   }
   const [route, setRoute] = useState(readRoute)
@@ -2031,7 +2037,7 @@ function App() {
   // direct sign-in (onAuthSuccess) and OAuth redirects back to '/', where
   // the session arrives via onAuthStateChange instead of onAuthSuccess.
   useEffect(() => {
-    if (session && route !== '/app' && route !== '/vendor-kyc') navigate('/app')  }, [session?.user?.id, route])
+    if (session && route !== '/app' && !PUBLIC_FORM_ROUTES.includes(route)) navigate('/app')  }, [session?.user?.id, route])
 
   // KYC reviewers (private.kyc_staff) get the "Submitted forms" view. The
   // backend enforces this on every /api/kyc route; this only hides the item.
@@ -2093,6 +2099,7 @@ function App() {
 
   // Public vendor KYC form: no sign-in and no waiting for the auth check.
   if (route === '/vendor-kyc') return <VendorKycPage />
+  if (route === '/technician-registration') return <TechnicianRegistrationPage />
 
   if (authChecking) {
     return (

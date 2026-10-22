@@ -4,6 +4,7 @@ import EmptyState from './components/EmptyState.jsx'
 import Icon from './components/Icon.jsx'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
+import { TechnicianDetail, TechnicianList } from './TechnicianSubmissions.jsx'
 import {
   CHECK_STATUSES, DOCUMENTS, FIELDS, FINAL_DECISIONS, INTERNAL_CHECKS, SECTIONS, STATUS_META,
   formatBytes, formatDate,
@@ -497,8 +498,15 @@ function KycDetail({ id, onBack }) {
 
 export default function KycSubmissionsView() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS)
-  const [selectedId, setSelectedId] = useState(null)
-  return selectedId
-    ? <KycDetail id={selectedId} onBack={() => setSelectedId(null)} />
-    : <KycList filters={filters} setFilters={setFilters} onOpen={setSelectedId} />
+  // { form: 'kyc' | 'technician', id } — the open submission, if any.
+  const [selected, setSelected] = useState(null)
+  const back = () => setSelected(null)
+  if (selected?.form === 'kyc') return <KycDetail id={selected.id} onBack={back} />
+  if (selected?.form === 'technician') return <TechnicianDetail id={selected.id} onBack={back} />
+  return (
+    <div className="kyc-forms-stack">
+      <KycList filters={filters} setFilters={setFilters} onOpen={(id) => setSelected({ form: 'kyc', id })} />
+      <TechnicianList onOpen={(id) => setSelected({ form: 'technician', id })} />
+    </div>
+  )
 }

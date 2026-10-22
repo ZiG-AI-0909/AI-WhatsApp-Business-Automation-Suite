@@ -994,6 +994,27 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .kyc-reference { font-family: var(--font-mono); font-size: var(--text-2xl); font-weight: 700; letter-spacing: 0.04em; color: var(--text-primary); }
 .kyc-print-sheet { display: none; }
 
+/* Technician partner registration (TechnicianRegistrationPage / TechnicianSubmissions) */
+.tech-page:lang(ta) { --font-sans: 'Inter', 'Noto Sans Tamil', system-ui, sans-serif; --font-display: 'Plus Jakarta Sans', 'Noto Sans Tamil', system-ui, sans-serif; font-family: var(--font-sans); }
+.tech-page:lang(ta) .kyc-intro h1 { line-height: 1.4; }
+.tech-company { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); }
+.tech-company strong { color: var(--text-primary); font-size: var(--text-md); text-transform: none; letter-spacing: 0; }
+.tech-lang { display: inline-flex; flex-shrink: 0; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-subtle); }
+.tech-lang-btn { min-height: 36px; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+.tech-lang-btn:lang(ta) { font-family: 'Noto Sans Tamil', var(--font-sans); }
+.tech-lang-btn.is-active { background: var(--accent); color: var(--accent-contrast); }
+.tech-lang-btn:focus-visible { outline: none; box-shadow: var(--accent-glow); }
+.tech-phone { display: flex; align-items: stretch; min-width: 0; }
+.tech-phone-code { display: inline-flex; align-items: center; padding: 0 var(--space-3); border: 1px solid var(--border); border-right: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); background: var(--surface-muted); color: var(--text-secondary); font-weight: 600; }
+.tech-phone input { flex: 1; min-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.tech-page .kyc-doc { margin-top: 2px; }
+.tech-submit { min-height: 48px; gap: var(--space-2); }
+.tech-spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: tech-spin 0.8s linear infinite; }
+@keyframes tech-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .tech-spinner { animation-duration: 2.4s; } }
+.kyc-forms-stack { display: flex; flex-direction: column; gap: var(--space-8); }
+.tech-list { padding-top: var(--space-6); border-top: 1px solid var(--border-subtle); }
+
 /* Section 3 cascading category picker (kyc/CategoryPicker.jsx) */
 .kyc-cats { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); }
 .kyc-cats > .kyc-label { margin: 0 0 var(--space-1); }

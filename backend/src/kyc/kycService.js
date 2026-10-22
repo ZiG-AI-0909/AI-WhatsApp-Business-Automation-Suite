@@ -245,6 +245,8 @@ async function updateReview(id, values, reviewerId) {
 
 module.exports = {
     KycError,
+    isMissingSchema,
+    indiaDayStart,
     BUCKET,
     TABLE,
     SIGNED_URL_SECONDS,
