@@ -4,6 +4,7 @@ import EmptyState from './components/EmptyState.jsx'
 import Icon from './components/Icon.jsx'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
+import { downloadResponse } from './utils/download.js'
 import { TechnicianDetail, TechnicianList } from './TechnicianSubmissions.jsx'
 import {
   CHECK_STATUSES, DOCUMENTS, FIELDS, FINAL_DECISIONS, INTERNAL_CHECKS, SECTIONS, STATUS_META,
@@ -38,25 +39,6 @@ function filterParams(filters) {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value)
   return params.toString()
-}
-
-async function downloadResponse(response, fallbackName) {
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}))
-    const error = new Error(body.error || `Download failed (${response.status})`)
-    error.status = response.status
-    throw error
-  }
-  const disposition = response.headers.get('content-disposition') || ''
-  const name = /filename="([^"]+)"/.exec(disposition)?.[1] || fallbackName
-  const url = URL.createObjectURL(await response.blob())
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = name
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 // ── List ────────────────────────────────────────────────────────────────────

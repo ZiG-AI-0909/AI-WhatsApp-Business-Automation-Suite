@@ -14,6 +14,7 @@ const { DOCUMENTS, STATUSES } = require('./technicianSchema');
 const TABLE = 'technician_partner_registrations';
 const PREFIX = 'technicians';
 const LIST_LIMIT = 1000;
+const EXPORT_LIMIT = 5000;
 const LIST_COLUMNS = 'id, submitted_at, status, full_name, shop_name, mobile, place, district, state, shop_maps_url';
 const MIGRATION_MESSAGE = 'Technician partner registration needs a database update: run supabase-technician-registration-migration.sql in the Supabase SQL Editor.';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -113,10 +114,13 @@ function readFilters(query = {}) {
     };
 }
 
-/** List rows carry only the key fields — never bank details. */
-async function listRegistrations(filters) {
+/**
+ * Filters shared by the list and the Excel export, so the export is
+ * exactly the list the reviewer is looking at.
+ */
+async function queryRegistrations(filters, { columns, limit }) {
     requireDb();
-    let query = supabase.from(TABLE).select(LIST_COLUMNS, { count: 'exact' });
+    let query = supabase.from(TABLE).select(columns, { count: 'exact' });
     if (filters.status) query = query.eq('status', filters.status);
     if (filters.from) query = query.gte('submitted_at', filters.from);
     if (filters.to) query = query.lt('submitted_at', filters.to);
@@ -124,11 +128,21 @@ async function listRegistrations(filters) {
         const like = `"*${filters.q}*"`; // quoted: the term may contain spaces
         query = query.or(`full_name.ilike.${like},shop_name.ilike.${like},mobile.ilike.${like},place.ilike.${like},district.ilike.${like}`);
     }
-    const { data, error, count } = await query.order('submitted_at', { ascending: false }).range(0, LIST_LIMIT - 1);
+    const { data, error, count } = await query.order('submitted_at', { ascending: false }).range(0, limit - 1);
     if (error) throw dbError(error, 'Could not load technician registrations.');
+    return { rows: data || [], total: count ?? (data || []).length, limit };
+}
+
+/** List rows carry only the key fields. */
+async function listRegistrations(filters) {
+    const result = await queryRegistrations(filters, { columns: LIST_COLUMNS, limit: LIST_LIMIT });
     const fields = LIST_COLUMNS.split(',').map((column) => column.trim());
-    const rows = (data || []).map((row) => Object.fromEntries(fields.map((field) => [field, row[field] ?? null])));
-    return { rows, total: count ?? rows.length, limit: LIST_LIMIT };
+    result.rows = result.rows.map((row) => Object.fromEntries(fields.map((field) => [field, row[field] ?? null])));
+    return result;
+}
+
+function exportRegistrations(filters) {
+    return queryRegistrations(filters, { columns: '*', limit: EXPORT_LIMIT });
 }
 
 async function getRegistration(id) {
@@ -172,6 +186,7 @@ module.exports = {
     createRegistration,
     readFilters,
     listRegistrations,
+    exportRegistrations,
     getRegistration,
     documentLinks,
     updateReview,

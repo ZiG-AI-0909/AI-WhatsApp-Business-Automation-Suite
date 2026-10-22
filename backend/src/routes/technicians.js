@@ -8,6 +8,7 @@ const express = require('express');
 const { requireKycStaff, SIGNED_URL_SECONDS } = require('../kyc/kycService');
 const service = require('../technician/technicianService');
 const { validateReview } = require('../technician/technicianSchema');
+const { buildTechnicianWorkbook } = require('../technician/technicianExport');
 
 const router = express.Router();
 
@@ -24,6 +25,26 @@ router.get('/', async (req, res) => {
         res.json({ registrations: rows.map((row) => ({ ...row, reference: service.referenceFor(row.id) })), total, limit });
     } catch (error) {
         fail(res, error, 'Could not load technician registrations.');
+    }
+});
+
+// Same filters as the list (status, search), so the file matches the screen.
+router.get('/export/excel', async (req, res) => {
+    try {
+        const filters = service.readFilters(req.query);
+        const { rows } = await service.exportRegistrations(filters);
+        const label = [
+            filters.status && `status=${filters.status}`,
+            req.query.from && `from=${req.query.from}`,
+            req.query.to && `to=${req.query.to}`,
+            filters.q && `search="${filters.q}"`,
+        ].filter(Boolean).join(', ') || 'none (all registrations)';
+        const buffer = await buildTechnicianWorkbook(rows, { filtersLabel: label });
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="technician-partner-registrations-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+        res.send(buffer);
+    } catch (error) {
+        fail(res, error, 'Could not export technician registrations.');
     }
 });
 

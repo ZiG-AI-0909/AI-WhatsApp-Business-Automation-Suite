@@ -4,6 +4,7 @@ import EmptyState from './components/EmptyState.jsx'
 import Icon from './components/Icon.jsx'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
+import { downloadResponse } from './utils/download.js'
 import { formatBytes, formatDate } from './kyc/kycForm.js'
 import { DOCUMENTS, STATUS_META, formatDmy } from './technician/technicianForm.js'
 
@@ -65,6 +66,7 @@ export function TechnicianList({ onOpen }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
   const [status, setStatus] = useState('')
   const [search, setSearch] = useState('')
   const [q, setQ] = useState('')
@@ -88,6 +90,18 @@ export function TechnicianList({ onOpen }) {
   const filtered = Boolean(status || q)
   const rows = data?.registrations || []
 
+  // Same filters as the list, so the file matches what is on screen.
+  const exportExcel = async () => {
+    setExporting(true)
+    try {
+      await downloadResponse(await apiFetchRaw(`/technicians/export/excel${query ? `?${query}` : ''}`), 'technician-partner-registrations.xlsx')
+    } catch (err) {
+      setError(errorText(err, 'Excel export'))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="view-workspace tech-list">
       <div className="view-toolbar">
@@ -97,6 +111,9 @@ export function TechnicianList({ onOpen }) {
         </div>
         <div className="button-row">
           <CopyLinkButton />
+          <button type="button" className="primary-btn" onClick={exportExcel} disabled={exporting || !rows.length}>
+            <Icon name="download" size={15} /> {exporting ? 'Exporting…' : `Export Excel${filtered ? ' (filtered)' : ''}`}
+          </button>
         </div>
       </div>
 

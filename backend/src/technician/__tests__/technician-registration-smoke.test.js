@@ -277,6 +277,47 @@ async function main() {
             assert.equal((await call('GET', '/technicians?q=nobody', { token: 'token-staff' })).data.registrations.length, 0);
         });
 
+        await check('Excel export: staff only, same filters as the list, text cells, Maps hyperlink, no Aadhaar data', async () => {
+            const download = async (path, token) => {
+                const response = await fetch(`${base}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                return { status: response.status, headers: response.headers, body: Buffer.from(await response.arrayBuffer()) };
+            };
+            assert.equal((await download('/technicians/export/excel')).status, 401);
+            assert.equal((await download('/technicians/export/excel', 'token-user')).status, 403);
+            const file = await download('/technicians/export/excel?q=coimbatore', 'token-staff');
+            assert.equal(file.status, 200);
+            assert.match(file.headers.get('content-disposition'), /technician-partner-registrations-\d{4}-\d{2}-\d{2}\.xlsx/);
+            const ExcelJS = require('exceljs');
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(file.body);
+            const sheet = workbook.getWorksheet('Partner registrations');
+            assert.equal(sheet.rowCount, 1 + 4, 'header + the 4 rows the list shows');
+            const header = sheet.getRow(1).values.filter(Boolean);
+            assert.deepEqual(header.slice(0, 14), ['Reference', 'Submitted (IST)', 'Status', 'Name', 'District', 'Place', 'Shop Name', 'Contact Number', 'Address', 'Pincode', 'State', 'Date of Birth', 'Date of Marriage', 'Shop Location (Google Maps)']);
+            const rowFor = (reference) => {
+                for (let index = 2; index <= sheet.rowCount; index++) {
+                    if (sheet.getRow(index).getCell(1).value === reference) return sheet.getRow(index);
+                }
+                return null;
+            };
+            const col = (name) => header.indexOf(name) + 1;
+            const located = rowFor('TEC-5F0C2A8E');
+            assert.ok(located, 'device-location registration exported');
+            assert.equal(located.getCell(col('Contact Number')).value, '9845012345', 'mobile kept as text');
+            assert.equal(located.getCell(col('Pincode')).value, '642001');
+            assert.equal(located.getCell(col('Date of Birth')).value, '14-05-1990');
+            assert.equal(located.getCell(col('Shop Name')).value, 'Murugan Motor Works');
+            assert.deepEqual(located.getCell(col('Shop Location (Google Maps)')).value, { text: 'https://www.google.com/maps?q=10.658235,77.008123', hyperlink: 'https://www.google.com/maps?q=10.658235,77.008123' });
+            assert.equal(located.getCell(col('Location Source')).value, 'Shared from phone');
+            assert.equal(rowFor(`TEC-${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`).getCell(col('Aadhaar Uploaded')).value, 'Yes');
+            const text = JSON.stringify(sheet.getSheetValues());
+            assert.ok(!text.includes('technicians/'), 'no Aadhaar storage path in the file');
+            const none = await download('/technicians/export/excel?q=nobody', 'token-staff');
+            const empty = new ExcelJS.Workbook();
+            await empty.xlsx.load(none.body);
+            assert.equal(empty.getWorksheet('Partner registrations').rowCount, 1, 'filtered export: header only');
+        });
+
         await check('detail with a 10-minute signed Aadhaar link; review saves status + reviewer', async () => {
             const detail = await call('GET', `/technicians/${id}`, { token: 'token-staff' });
             assert.equal(detail.status, 200);
