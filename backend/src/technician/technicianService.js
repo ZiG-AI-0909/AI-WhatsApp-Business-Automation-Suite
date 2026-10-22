@@ -14,7 +14,7 @@ const { DOCUMENTS, STATUSES } = require('./technicianSchema');
 const TABLE = 'technician_partner_registrations';
 const PREFIX = 'technicians';
 const LIST_LIMIT = 1000;
-const LIST_COLUMNS = 'id, submitted_at, status, full_name, mobile, place, district, state';
+const LIST_COLUMNS = 'id, submitted_at, status, full_name, shop_name, mobile, place, district, state, shop_maps_url';
 const MIGRATION_MESSAGE = 'Technician partner registration needs a database update: run supabase-technician-registration-migration.sql in the Supabase SQL Editor.';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -43,10 +43,23 @@ async function removeObjects(paths) {
     }
 }
 
-/** Store the documents, then insert the row; any failure removes the files. */
-async function createRegistration({ values, documents, meta = {} }) {
+async function findExisting(id) {
+    const { data, error } = await supabase.from(TABLE).select('id, submitted_at').eq('id', id).maybeSingle();
+    if (error) throw dbError(error, 'Your form could not be saved. Please try again in a few minutes.');
+    return data ? { id: data.id, submitted_at: data.submitted_at, reference: referenceFor(data.id), duplicate: true } : null;
+}
+
+/**
+ * Store the documents, then insert the row; any failure removes the files.
+ * `clientId` is a UUID the form makes once per fill-in: a retry after a
+ * dropped connection (the first request may have saved) returns the
+ * existing registration instead of creating a second one.
+ */
+async function createRegistration({ values, documents, meta = {}, clientId }) {
     requireDb();
-    const id = crypto.randomUUID();
+    const id = UUID.test(String(clientId || '')) ? String(clientId).toLowerCase() : crypto.randomUUID();
+    const existing = await findExisting(id);
+    if (existing) return existing;
     const uploads = await Promise.allSettled(documents.map(async (document) => {
         const objectPath = `${PREFIX}/${id}/${document.type}${document.ext}`;
         const { error } = await supabase.storage.from(BUCKET).upload(objectPath, document.buffer, {
@@ -78,6 +91,12 @@ async function createRegistration({ values, documents, meta = {} }) {
     };
     const { data, error } = await supabase.from(TABLE).insert(row).select('id, submitted_at').single();
     if (error) {
+        // A parallel retry with the same clientId won the insert. The files
+        // share its paths, so they are not removed.
+        if (error.code === '23505') {
+            const winner = await findExisting(id);
+            if (winner) return winner;
+        }
         await removeObjects(stored.map((item) => item.objectPath));
         throw dbError(error, 'Your form could not be saved. Please try again in a few minutes.');
     }
@@ -103,7 +122,7 @@ async function listRegistrations(filters) {
     if (filters.to) query = query.lt('submitted_at', filters.to);
     if (filters.q) {
         const like = `"*${filters.q}*"`; // quoted: the term may contain spaces
-        query = query.or(`full_name.ilike.${like},mobile.ilike.${like},place.ilike.${like},district.ilike.${like}`);
+        query = query.or(`full_name.ilike.${like},shop_name.ilike.${like},mobile.ilike.${like},place.ilike.${like},district.ilike.${like}`);
     }
     const { data, error, count } = await query.order('submitted_at', { ascending: false }).range(0, LIST_LIMIT - 1);
     if (error) throw dbError(error, 'Could not load technician registrations.');

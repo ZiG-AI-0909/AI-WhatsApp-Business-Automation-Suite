@@ -67,6 +67,8 @@ const VALID = {
     state: 'Karnataka', // any of the three; the district stays a Tamil Nadu one
     date_of_birth: '1990-05-14',
     date_of_marriage: '',
+    shop_name: '  Murugan  Motor Works ',
+    shop_maps_url: '',
 };
 const AADHAAR_NAME = '1234-5678-9012 aadhaar.png';
 const multerFile = ([name, buffer]) => ({ originalname: name, buffer, size: buffer.length });
@@ -99,14 +101,50 @@ async function main() {
         assert.equal(values.mobile, '9845012345');
         assert.equal(values.address, '12, Kamaraj Street\nPollachi');
         assert.equal(values.date_of_marriage, null);
+        assert.equal(values.shop_name, 'Murugan Motor Works');
+        assert.equal(values.shop_maps_url, null);
         assert.deepEqual(documents, []);
+    });
+
+    await check('optional: shop name, DOB, marriage date (alone too), location, Aadhaar', async () => {
+        const { values, errors } = schema.validateRegistration({ ...VALID, shop_name: '', date_of_birth: '', date_of_marriage: '2015-02-01' }, {}, { now: NOW });
+        assert.deepEqual(errors, {}, 'marriage date without a DOB is fine');
+        assert.equal(values.shop_name, null);
+        assert.equal(values.date_of_birth, null);
+        assert.equal(values.date_of_marriage, '2015-02-01');
+    });
+
+    await check('shop location: device coordinates → generated link; pasted link checked', async () => {
+        const location = (body) => schema.validateRegistration({ ...VALID, ...body }, {}, { now: NOW });
+        const device = location({ shop_latitude: '10.65823456', shop_longitude: '77.00812349', shop_location_accuracy: '18.4', shop_maps_url: 'ignored' });
+        assert.deepEqual(device.errors, {});
+        assert.equal(device.values.shop_latitude, 10.658235);
+        assert.equal(device.values.shop_maps_url, 'https://www.google.com/maps?q=10.658235,77.008123');
+        assert.equal(device.values.shop_location_accuracy_m, 18);
+        assert.equal(device.values.shop_location_source, 'device');
+        assert.equal(location({ shop_latitude: '95', shop_longitude: '77' }).errors.shop_location, 'invalid_location');
+        assert.equal(location({ shop_latitude: '10.6' }).errors.shop_location, 'invalid_location', 'both coordinates needed');
+        const pasted = location({ shop_maps_url: 'maps.app.goo.gl/AbC123xyz' });
+        assert.deepEqual(pasted.errors, {});
+        assert.equal(pasted.values.shop_maps_url, 'https://maps.app.goo.gl/AbC123xyz');
+        assert.equal(pasted.values.shop_location_source, 'link');
+        assert.equal(pasted.values.shop_latitude, null);
+        const withCoords = location({ shop_maps_url: 'https://www.google.com/maps/place/Shop/@10.6582,77.0081,17z' }).values;
+        assert.deepEqual([withCoords.shop_latitude, withCoords.shop_longitude], [10.6582, 77.0081]);
+        for (const good of ['https://www.google.co.in/maps?q=10.6,77.0', 'https://maps.google.com/?q=Pollachi', 'https://goo.gl/maps/xyz']) {
+            assert.deepEqual(location({ shop_maps_url: good }).errors, {}, good);
+        }
+        for (const bad of ['https://evil.example/maps', 'javascript:alert(1)', 'https://www.google.com/search?q=shop', 'https://google.com.evil.io/maps', 'not a link']) {
+            assert.equal(location({ shop_maps_url: bad }).errors.shop_location, 'invalid_maps_url', bad);
+        }
     });
 
     await check('errors are codes: required, formats, dates, file', async () => {
         const errors = (body, files = {}) => schema.validateRegistration({ ...VALID, ...body }, files, { now: NOW }).errors;
         const empty = schema.validateRegistration({}, {}, { now: NOW }).errors;
-        assert.deepEqual(Object.keys(empty).sort(), ['address', 'date_of_birth', 'district', 'full_name', 'mobile', 'pincode', 'place', 'state']);
+        assert.deepEqual(Object.keys(empty).sort(), ['address', 'district', 'full_name', 'mobile', 'pincode', 'place', 'state'], 'only the 7 required fields');
         assert.ok(Object.values(empty).every((code) => code === 'required'));
+        assert.equal(errors({ shop_name: 'x'.repeat(121) }).shop_name, 'too_long');
         assert.equal(errors({ district: 'Bengaluru Urban' }).district, 'invalid_option', 'only Tamil Nadu districts');
         assert.equal(errors({ state: 'Kerala' }).state, 'invalid_option');
         assert.equal(errors({ mobile: '12345' }).mobile, 'invalid_mobile');
@@ -129,14 +167,31 @@ async function main() {
         assert.deepEqual(form.DISTRICTS, schema.DISTRICTS);
         assert.deepEqual(form.STATES, schema.STATES);
         assert.deepEqual(Object.keys(form.STATUS_META), schema.STATUSES);
-        assert.deepEqual(form.FIELD_ORDER, ['full_name', 'district', 'place', 'mobile', 'address', 'pincode', 'state', 'date_of_birth', 'date_of_marriage', 'aadhaar']);
+        assert.deepEqual(form.FIELD_ORDER, ['full_name', 'district', 'place', 'shop_name', 'mobile', 'address', 'pincode', 'state', 'date_of_birth', 'date_of_marriage', 'shop_location', 'aadhaar']);
+        assert.deepEqual(form.REQUIRED, ['full_name', 'district', 'place', 'mobile', 'address', 'pincode', 'state']);
         assert.deepEqual(form.validateForm({ ...form.INITIAL_VALUES, ...VALID }, {}), {});
+        assert.deepEqual(form.validateForm({ ...form.INITIAL_VALUES, ...VALID, date_of_birth: '', shop_name: '', date_of_marriage: '2015-02-01' }, {}), {});
         assert.equal(form.validateForm({ ...form.INITIAL_VALUES, ...VALID, date_of_marriage: '1980-01-01' }, {}).date_of_marriage, 'marriage_before_birth');
+        assert.equal(form.validateForm({ ...form.INITIAL_VALUES, ...VALID, shop_maps_url: 'https://evil.example/maps' }, {}).shop_location, 'invalid_maps_url');
+        assert.deepEqual(form.validateForm({ ...form.INITIAL_VALUES, ...VALID, shop_maps_url: 'bad' }, {}, { hasDeviceLocation: true }), {}, 'pasted link ignored when the phone location is used');
+        for (const url of ['https://maps.app.goo.gl/AbC', 'https://www.google.com/maps/place/x', 'https://evil.example/maps', 'https://www.google.com/search?q=x']) {
+            assert.equal(form.isGoogleMapsUrl(url), schema.isGoogleMapsUrl(url), `same Maps-link rule for ${url}`);
+        }
+        assert.equal(form.mapsLink(10.5, 77.25), 'https://www.google.com/maps?q=10.5,77.25');
+        assert.equal(i18n.DEFAULT_LANGUAGE, 'ta', 'Tamil opens first');
+        assert.equal(i18n.LANGUAGES[0].code, 'ta');
         const { en, ta } = i18n.TRANSLATIONS;
+        assert.ok(!JSON.stringify(ta).includes('கூட்டாளர்'), 'Partner is பார்ட்னர், never கூட்டாளர்');
+        assert.match(ta.heading, /பார்ட்னர்/);
+        assert.equal(ta.heading, 'எங்கள் மெக்கானிக் / டெக்னீஷியன் பார்ட்னர் பதிவு படிவம்');
+        assert.equal(ta.submit, 'பதிவைப் பூர்த்தி செய்யவும்');
+        assert.equal(ta.shareLocation, 'கடை இருக்கும் இடத்தைப் பகிரவும்');
+        assert.equal(ta.companyName, 'Sudarshan Extrusions Pvt. Ltd.', 'brand name not translated');
+        assert.equal(en.heading, 'Our Mechanic/Technician Partner Registration Form');
         const keys = (dict) => Object.keys(dict).filter((key) => typeof dict[key] === 'string').sort();
         assert.deepEqual(keys(ta), keys(en), 'Tamil has every English string');
         assert.deepEqual(Object.keys(ta.errors).sort(), Object.keys(en.errors).sort());
-        for (const code of ['required', 'invalid_name', 'invalid_option', 'too_long', 'invalid_mobile', 'invalid_pincode', 'invalid_date', 'future_date', 'marriage_before_birth', 'invalid_file', 'file_too_large', 'file_empty']) {
+        for (const code of ['required', 'invalid_name', 'invalid_option', 'too_long', 'invalid_mobile', 'invalid_pincode', 'invalid_date', 'future_date', 'marriage_before_birth', 'invalid_maps_url', 'invalid_location', 'invalid_file', 'file_too_large', 'file_empty']) {
             assert.ok(en.errors[code] && ta.errors[code], `translation for ${code}`);
         }
         assert.deepEqual(Object.keys(ta.districts).sort(), [...schema.DISTRICTS].sort(), 'every district has a Tamil name');
@@ -182,6 +237,23 @@ async function main() {
             assert.ok(!('status' in row) && !('review_remarks' in row), 'review fields cannot be injected');
         });
 
+        await check('retry with the same client id (slow connection) → same registration, no duplicate', async () => {
+            const clientId = '5f0c2a8e-7b1d-4c3e-9a2f-1d2e3f4a5b6c';
+            const body = { ...VALID, client_submission_id: clientId, shop_latitude: '10.658235', shop_longitude: '77.008123', shop_location_accuracy: '12' };
+            const first = await submit(body);
+            assert.equal(first.status, 201, JSON.stringify(first.data));
+            assert.equal(first.data.id, clientId);
+            const rows = store.technician_partner_registrations.length;
+            const again = await submit(body);
+            assert.equal(again.status, 200);
+            assert.equal(again.data.reference, first.data.reference);
+            assert.equal(store.technician_partner_registrations.length, rows, 'no second row');
+            const row = store.technician_partner_registrations.find((r) => r.id === clientId);
+            assert.equal(row.shop_maps_url, 'https://www.google.com/maps?q=10.658235,77.008123');
+            assert.equal(row.shop_location_source, 'device');
+            assert.equal((await submit({ ...VALID, client_submission_id: 'not-a-uuid' })).status, 201, 'a bad id just gets a fresh one');
+        });
+
         await check('public submit: 400 with field codes; failed upload stores nothing', async () => {
             const bad = await submit({ ...VALID, mobile: '1', district: 'Mysuru' });
             assert.equal(bad.status, 400);
@@ -200,8 +272,8 @@ async function main() {
             store.technician_partner_registrations.forEach((row) => { row.status ||= 'pending'; row.submitted_at ||= '2026-10-22T06:00:00Z'; });
             const list = await call('GET', '/technicians?q=coimbatore&status=pending', { token: 'token-staff' });
             assert.equal(list.status, 200);
-            assert.equal(list.data.registrations.length, 2);
-            assert.deepEqual(Object.keys(list.data.registrations[0]).sort(), ['district', 'full_name', 'id', 'mobile', 'place', 'reference', 'state', 'status', 'submitted_at']);
+            assert.equal(list.data.registrations.length, 4, 'every Coimbatore registration so far');
+            assert.deepEqual(Object.keys(list.data.registrations[0]).sort(), ['district', 'full_name', 'id', 'mobile', 'place', 'reference', 'shop_maps_url', 'shop_name', 'state', 'status', 'submitted_at']);
             assert.equal((await call('GET', '/technicians?q=nobody', { token: 'token-staff' })).data.registrations.length, 0);
         });
 

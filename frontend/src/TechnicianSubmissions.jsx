@@ -20,6 +20,7 @@ const DETAIL_FIELDS = [
   ['full_name', 'Name'],
   ['district', 'District'],
   ['place', 'Place'],
+  ['shop_name', 'Shop Name'],
   ['mobile', 'Contact Number'],
   ['address', 'Address', true],
   ['pincode', 'Pincode'],
@@ -27,6 +28,12 @@ const DETAIL_FIELDS = [
   ['date_of_birth', 'Date of Birth'],
   ['date_of_marriage', 'Date of Marriage'],
 ]
+
+// A pending migration is a setup step, not an outage: show the server's
+// "run supabase-…-migration.sql" message instead of the generic 5xx text.
+function errorText(err, context) {
+  return err?.code === 'TECH_MIGRATION_PENDING' ? err.message : friendlyErrorMessage(err, { context })
+}
 
 function StatusBadge({ status }) {
   const meta = STATUS_META[status] || { label: status || 'Pending', tone: 'neutral' }
@@ -73,7 +80,7 @@ export function TechnicianList({ onOpen }) {
     setLoading(true)
     apiFetch(`/technicians${query ? `?${query}` : ''}`)
       .then((result) => { if (!cancelled) { setData(result); setError('') } })
-      .catch((err) => { if (!cancelled) setError(friendlyErrorMessage(err, { context: 'Partner registrations' })) })
+      .catch((err) => { if (!cancelled) setError(errorText(err, 'Partner registrations')) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [query])
@@ -101,7 +108,7 @@ export function TechnicianList({ onOpen }) {
           </select>
         </label>
         <label className="form-label kyc-filter-search">Search
-          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, mobile, place, district" />
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, shop, mobile, place, district" />
         </label>
         {filtered && <button type="button" className="ghost-btn" onClick={() => { setSearch(''); setQ(''); setStatus('') }}>Clear filters</button>}
       </section>
@@ -126,6 +133,7 @@ export function TechnicianList({ onOpen }) {
               <thead>
                 <tr>
                   <th scope="col">Name</th>
+                  <th scope="col">Shop</th>
                   <th scope="col">Place</th>
                   <th scope="col">District</th>
                   <th scope="col">State</th>
@@ -140,6 +148,14 @@ export function TechnicianList({ onOpen }) {
                     <td>
                       <button type="button" className="kyc-row-link" onClick={(event) => { event.stopPropagation(); onOpen(row.id) }}>{row.full_name}</button>
                       <small className="kyc-row-sub">{row.reference}</small>
+                    </td>
+                    <td>
+                      {row.shop_name || <span className="kyc-empty">—</span>}
+                      {row.shop_maps_url && (
+                        <small className="kyc-row-sub">
+                          <a href={row.shop_maps_url} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>Map</a>
+                        </small>
+                      )}
                     </td>
                     <td>{row.place}</td>
                     <td>{row.district}</td>
@@ -200,7 +216,7 @@ export function TechnicianDetail({ id, onBack }) {
       setSavedReview(reviewFrom(data.registration))
       setLoadError('')
     } catch (err) {
-      setLoadError(friendlyErrorMessage(err, { context: 'Registration' }))
+      setLoadError(errorText(err, 'Registration'))
     }
   }
   useEffect(() => { load() }, [id])
@@ -282,6 +298,21 @@ export function TechnicianDetail({ id, onBack }) {
               <dd>{displayValue(key, registration[key])}</dd>
             </div>
           ))}
+          <div className="is-wide">
+            <dt>Shop Location</dt>
+            <dd>
+              {registration.shop_maps_url ? (
+                <span className="kyc-attachment">
+                  <a href={registration.shop_maps_url} target="_blank" rel="noopener noreferrer"><Icon name="map-pin" size={14} /> Open in Google Maps</a>
+                  <small>
+                    {registration.shop_location_source === 'device' ? 'Shared from the phone' : 'Link pasted by the partner'}
+                    {registration.shop_latitude != null && ` · ${registration.shop_latitude}, ${registration.shop_longitude}`}
+                    {registration.shop_location_accuracy_m != null && ` · ±${registration.shop_location_accuracy_m} m`}
+                  </small>
+                </span>
+              ) : <span className="kyc-empty">Not provided</span>}
+            </dd>
+          </div>
         </dl>
       </DetailSection>
 

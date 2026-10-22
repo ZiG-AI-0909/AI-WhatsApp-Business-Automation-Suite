@@ -47,6 +47,74 @@ function checkPastDate(raw, today) {
     return { value };
 }
 
+// Google Maps links people paste from the Maps app or browser, including
+// the short share links (maps.app.goo.gl, goo.gl/maps).
+function isGoogleMapsUrl(text) {
+    let url;
+    try { url = new URL(text); } catch { return false; }
+    if (!['https:', 'http:'].includes(url.protocol)) return false;
+    const host = url.hostname.toLowerCase();
+    if (host === 'maps.app.goo.gl') return true;
+    if (host === 'goo.gl') return url.pathname.startsWith('/maps');
+    if (/^maps\.google\.[a-z]{2,3}(\.[a-z]{2})?$/.test(host)) return true;
+    return /^(www\.)?google\.[a-z]{2,3}(\.[a-z]{2})?$/.test(host) && url.pathname.startsWith('/maps');
+}
+
+/** "…@11.0168,76.9558,15z" or "…?q=11.0168,76.9558" → { lat, lng } */
+function coordinatesFromMapsUrl(text) {
+    const match = /[@=](-?\d{1,2}\.\d+),\s*(-?\d{1,3}\.\d+)/.exec(decodeURIComponent(text));
+    if (!match) return null;
+    const lat = Number(match[1]);
+    const lng = Number(match[2]);
+    return Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : null;
+}
+
+const mapsLink = (lat, lng) => `https://www.google.com/maps?q=${lat},${lng}`;
+
+/**
+ * Optional shop location: device coordinates (shop_latitude/longitude,
+ * from the browser's location button) or a pasted Google Maps link
+ * (shop_maps_url). Coordinates win when both are sent.
+ */
+function checkShopLocation(body) {
+    const none = { shop_latitude: null, shop_longitude: null, shop_location_accuracy_m: null, shop_maps_url: null, shop_location_source: null };
+    const latText = String(body.shop_latitude ?? '').trim();
+    const lngText = String(body.shop_longitude ?? '').trim();
+    if (latText || lngText) {
+        const lat = Number(latText);
+        const lng = Number(lngText);
+        if (!latText || !lngText || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+            return { value: none, error: 'invalid_location' };
+        }
+        const latitude = Math.round(lat * 1e6) / 1e6;
+        const longitude = Math.round(lng * 1e6) / 1e6;
+        const accuracy = Number(body.shop_location_accuracy);
+        return {
+            value: {
+                shop_latitude: latitude,
+                shop_longitude: longitude,
+                shop_location_accuracy_m: Number.isFinite(accuracy) && accuracy >= 0 ? Math.min(Math.round(accuracy), 100000) : null,
+                shop_maps_url: mapsLink(latitude, longitude),
+                shop_location_source: 'device',
+            },
+        };
+    }
+    const link = oneLine(body.shop_maps_url);
+    if (!link) return { value: none };
+    const withScheme = /^https?:\/\//i.test(link) ? link : `https://${link}`;
+    if (withScheme.length > 500 || !isGoogleMapsUrl(withScheme)) return { value: none, error: 'invalid_maps_url' };
+    const coords = coordinatesFromMapsUrl(withScheme);
+    return {
+        value: {
+            ...none,
+            shop_latitude: coords?.lat ?? null,
+            shop_longitude: coords?.lng ?? null,
+            shop_maps_url: withScheme,
+            shop_location_source: 'link',
+        },
+    };
+}
+
 /**
  * Validate a public registration.
  * @param {object} body  multipart text fields
@@ -86,15 +154,22 @@ function validateRegistration(body = {}, files = {}, { now = new Date() } = {}) 
     if (!values.state) errors.state = 'required';
     else if (!STATES.includes(values.state)) errors.state = 'invalid_option';
 
+    // Optional: shop name, both dates, shop location, Aadhaar.
+    values.shop_name = oneLine(body.shop_name) || null;
+    if (values.shop_name && values.shop_name.length > 120) errors.shop_name = 'too_long';
+
     const dob = checkPastDate(body.date_of_birth, today);
     values.date_of_birth = dob.value;
     if (dob.error) errors.date_of_birth = dob.error;
-    else if (!dob.value) errors.date_of_birth = 'required';
 
     const dom = checkPastDate(body.date_of_marriage, today);
     values.date_of_marriage = dom.value;
     if (dom.error) errors.date_of_marriage = dom.error;
     else if (dom.value && values.date_of_birth && dom.value < values.date_of_birth) errors.date_of_marriage = 'marriage_before_birth';
+
+    const location = checkShopLocation(body);
+    Object.assign(values, location.value);
+    if (location.error) errors.shop_location = location.error;
 
     const documents = [];
     for (const document of DOCUMENTS) {
@@ -136,6 +211,8 @@ module.exports = {
     STATUSES,
     DOCUMENTS,
     normalizeMobile,
+    isGoogleMapsUrl,
+    checkShopLocation,
     validateRegistration,
     validateReview,
 };

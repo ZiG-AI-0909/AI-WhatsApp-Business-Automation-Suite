@@ -53,9 +53,10 @@ router.post('/', technicianSubmitLimiter, (req, res) => {
                 values,
                 documents,
                 meta: { ip: req.ip, userAgent: req.get('user-agent') },
+                clientId: req.body?.client_submission_id,
             });
-            console.log(`[technician] registration ${result.reference} received`);
-            return res.status(201).json({ ok: true, ...result });
+            console.log(`[technician] registration ${result.reference} ${result.duplicate ? 'repeated (already saved)' : 'received'}`);
+            return res.status(result.duplicate ? 200 : 201).json({ ok: true, ...result });
         } catch (error) {
             return res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Your form could not be submitted. Please try again.' });
         }

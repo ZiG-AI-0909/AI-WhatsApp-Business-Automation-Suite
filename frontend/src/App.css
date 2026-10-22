@@ -995,23 +995,58 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .kyc-print-sheet { display: none; }
 
 /* Technician partner registration (TechnicianRegistrationPage / TechnicianSubmissions) */
-.tech-page:lang(ta) { --font-sans: 'Inter', 'Noto Sans Tamil', system-ui, sans-serif; --font-display: 'Plus Jakarta Sans', 'Noto Sans Tamil', system-ui, sans-serif; font-family: var(--font-sans); }
-.tech-page:lang(ta) .kyc-intro h1 { line-height: 1.4; }
-.tech-company { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); }
-.tech-company strong { color: var(--text-primary); font-size: var(--text-md); text-transform: none; letter-spacing: 0; }
-.tech-lang { display: inline-flex; flex-shrink: 0; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-subtle); }
-.tech-lang-btn { min-height: 36px; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+/* Mobile first: most partners fill this in on an Android phone. */
+.tech-page:lang(ta) { --font-sans: 'Noto Sans Tamil', 'Inter', system-ui, sans-serif; --font-display: 'Noto Sans Tamil', 'Plus Jakarta Sans', system-ui, sans-serif; font-family: var(--font-sans); }
+.tech-page :lang(en) { font-family: 'Inter', system-ui, sans-serif; }
+.tech-page:lang(ta) h1, .tech-page:lang(ta) h2 { line-height: 1.45; letter-spacing: 0; }
+.tech-page .kyc-label { font-size: var(--text-base); color: var(--text-primary); line-height: 1.5; }
+.tech-page .field-help { line-height: 1.55; }
+/* 16px text stops iOS Safari zooming in on focus; 48px = comfortable tap target. */
+.tech-page :where(input:not([type='checkbox']):not([type='radio']):not([type='file']), select, textarea) { width: 100%; min-height: 48px; font-size: 16px; }
+.tech-page input[type='date'] { display: block; min-width: 0; line-height: 1.4; }
+.tech-page select { text-overflow: ellipsis; }
+.tech-page .kyc-error { font-size: var(--text-sm); }
+.tech-main { max-width: 760px; }
+.tech-intro h1 { font-size: clamp(1.35rem, 5vw, var(--text-2xl)); }
+.tech-subheading { margin: 0; color: var(--sp-orange); font-weight: 600; font-size: var(--text-md); line-height: 1.5; }
+.tech-company { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); margin: 0; color: var(--text-secondary); font-size: var(--text-sm); }
+.tech-company strong { color: var(--brand-blue-text, var(--text-primary)); font-size: var(--text-md); }
+.tech-lang { display: inline-flex; flex-shrink: 0; margin-left: auto; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-subtle); }
+.tech-lang-btn { min-height: 40px; min-width: 64px; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 700; cursor: pointer; }
 .tech-lang-btn:lang(ta) { font-family: 'Noto Sans Tamil', var(--font-sans); }
 .tech-lang-btn.is-active { background: var(--accent); color: var(--accent-contrast); }
 .tech-lang-btn:focus-visible { outline: none; box-shadow: var(--accent-glow); }
 .tech-phone { display: flex; align-items: stretch; min-width: 0; }
-.tech-phone-code { display: inline-flex; align-items: center; padding: 0 var(--space-3); border: 1px solid var(--border); border-right: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); background: var(--surface-muted); color: var(--text-secondary); font-weight: 600; }
+.tech-phone-code { display: inline-flex; align-items: center; padding: 0 var(--space-3); border: 1px solid var(--input-border, var(--border)); border-right: 0; border-radius: var(--radius-sm) 0 0 var(--radius-sm); background: var(--surface-muted); color: var(--text-secondary); font-size: 16px; font-weight: 600; }
 .tech-phone input { flex: 1; min-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.tech-big-btn { min-height: 48px; gap: var(--space-2); }
+.tech-location-btn { width: 100%; justify-content: center; font-size: var(--text-md); border-color: var(--accent-border); color: var(--accent-text, var(--text-primary)); }
+.tech-location-note { margin: 0; font-size: var(--text-sm); line-height: 1.55; }
+.tech-or { margin-top: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
+.tech-location-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--success-border); border-radius: var(--radius-md); background: var(--surface-subtle); }
+.tech-location-ok { display: flex; align-items: center; gap: var(--space-2); margin: 0; color: var(--success-text); font-weight: 600; }
+.tech-map { width: 100%; height: 200px; border: 0; border-radius: var(--radius-sm); background: var(--surface-muted); }
+.tech-coords { margin: 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-secondary); overflow-wrap: anywhere; }
+.tech-coords small { font-family: var(--font-sans); }
+.tech-location-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.tech-privacy, .tech-secure { display: inline-flex; align-items: flex-start; gap: 6px; }
+.tech-privacy .icon, .tech-secure .icon { flex-shrink: 0; margin-top: 3px; }
 .tech-page .kyc-doc { margin-top: 2px; }
-.tech-submit { min-height: 48px; gap: var(--space-2); }
-.tech-spinner { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: tech-spin 0.8s linear infinite; }
+.tech-submit { width: 100%; min-height: 56px; gap: var(--space-2); font-size: var(--text-md); }
+.tech-secure { margin: 0; justify-content: center; text-align: center; }
+.tech-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: tech-spin 0.8s linear infinite; vertical-align: -3px; }
 @keyframes tech-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .tech-spinner { animation-duration: 2.4s; } }
+@media (max-width: 640px) {
+  .tech-page .kyc-section { padding: var(--space-4); }
+  .tech-location-actions > * { flex: 1 1 100%; justify-content: center; }
+  .tech-page .kyc-doc-control > * { flex: 1 1 auto; justify-content: center; }
+}
+@media (max-width: 380px) {
+  /* Keep the language switcher; the theme toggle can go on very small phones. */
+  .tech-header .theme-toggle { display: none; }
+  .tech-lang-btn { min-width: 56px; padding: 0 var(--space-2); }
+}
 .kyc-forms-stack { display: flex; flex-direction: column; gap: var(--space-8); }
 .tech-list { padding-top: var(--space-6); border-top: 1px solid var(--border-subtle); }
 
