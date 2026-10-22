@@ -74,13 +74,14 @@ function settingsForClient(settings) {
 }
 
 async function overview() {
-    const [usage, settings, trend, notifications, folders, history] = await Promise.all([
+    const [usage, settings, trend, notifications, folders, history, deletions] = await Promise.all([
         monitor.measureUsage(),
         monitor.getSettings(),
         monitor.trend({ days: 30 }),
         monitor.listNotifications({ limit: 20, includeEmail: true }),
         archives.listFolders(),
         archives.listArchives(),
+        files.recentDeletions(30),
     ]);
     return {
         usage,
@@ -90,6 +91,7 @@ async function overview() {
         notifications,
         folders,
         archives: history,
+        deletions,
         limits: { maxFiles: archives.MAX_FILES, maxBytes: archives.MAX_BYTES },
         emailSender: Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM_EMAIL) ? 'server' : (settings.updated_by ? 'admin_settings' : 'none'),
     };
@@ -133,11 +135,33 @@ router.get('/files', async (req, res) => {
     }
 });
 
-router.get('/files/download', async (req, res) => {
+// ?mode=view opens the file in the browser; ?mode=download saves it.
+router.get('/files/link', async (req, res) => {
     try {
-        res.json(await files.downloadUrl(String(req.query.bucket || ''), String(req.query.name || '')));
+        res.json(await files.fileUrl(String(req.query.bucket || ''), String(req.query.name || ''), { download: req.query.mode === 'download' }));
     } catch (error) {
-        fail(res, error, 'Could not create a download link.');
+        fail(res, error, 'Could not create a link to the file.');
+    }
+});
+
+// "Select all files matching these filters" (deletable ones only).
+router.get('/files/ids', async (req, res) => {
+    try {
+        const ids = await files.matchingIds(files.readFileFilters(req.query));
+        res.json({ ids, limit: files.MAX_DELETE });
+    } catch (error) {
+        fail(res, error, 'Could not select the files.');
+    }
+});
+
+router.delete('/files', async (req, res) => {
+    try {
+        if (req.body?.confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm.', code: 'STORAGE_CONFIRM' });
+        const result = await files.deleteFiles(req.body?.ids, actorOf(req));
+        jobs.checkSoon();
+        res.json(result);
+    } catch (error) {
+        fail(res, error, 'Could not delete the files.');
     }
 });
 

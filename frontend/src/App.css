@@ -1239,6 +1239,21 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
   .storage-tiles { grid-template-columns: minmax(0, 1fr); }
 }
 
+/* Files: select, view, delete (storage/StorageFiles.jsx) */
+.storage-plan { max-width: 520px; }
+.storage-plan select { width: 100%; }
+.files-select-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.files-selection-bar { position: sticky; top: 8px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--danger-border); border-radius: var(--radius-md); background: var(--surface-raised); }
+.files-selection-bar > span { margin-right: auto; }
+.files-check { width: 44px; text-align: center; }
+.files-check input { width: 18px; height: 18px; }
+.storage-files-table tr.is-selected td { background: var(--danger-bg); }
+.storage-file-name .ui-badge { margin-top: 4px; margin-right: 4px; }
+.files-skipped { margin: 6px 0; padding-left: 18px; font-size: var(--text-sm); }
+.files-delete-form { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5); max-width: 520px; }
+.files-delete-form h2 { margin: 0; }
+.files-delete-form p { margin: 0; line-height: 1.55; }
+
 /* Download now & clean up (storage/DownloadCleanup.jsx) */
 .archive-folders { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--space-3); }
 .archive-group { margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-subtle); min-width: 0; }

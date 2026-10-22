@@ -29,6 +29,10 @@ export function StorageBanner({ status, onOpenStorage, everywhere = false }) {
   if (dismissed >= severity && severity < 4) return null
   const meta = severityMeta(severity)
   const critical = severity >= 3
+  // The warning follows whichever is fuller: file storage or the database.
+  const alert = status.alert || { resource: 'files', percent: status.percentUsed, availableBytes: status.availableBytes, capacityBytes: status.capacityBytes }
+  const isDb = alert.resource === 'database'
+  const what = isDb ? 'DATABASE' : 'STORAGE'
   const dismiss = () => {
     setDismissed(severity)
     try { window.sessionStorage.setItem(DISMISS_KEY, String(severity)) } catch { /* private mode */ }
@@ -37,12 +41,14 @@ export function StorageBanner({ status, onOpenStorage, everywhere = false }) {
     <div className={`notice ${meta.notice} storage-banner${critical ? ' is-critical' : ''}`} role={critical ? 'alert' : 'status'}>
       <div className="storage-banner-body">
         <strong className="storage-banner-title">
-          {critical ? `⚠️ ${severity >= 4 ? 'STORAGE FULL' : 'STORAGE ALMOST FULL'} — ${formatPercent(status.percentUsed)} USED` : `${meta.label}: ${formatPercent(status.percentUsed)} of storage used`}
+          {critical ? `⚠️ ${what} ${severity >= 4 ? 'FULL' : 'ALMOST FULL'} — ${formatPercent(alert.percent)} USED` : `${meta.label}: ${formatPercent(alert.percent)} of ${isDb ? 'the database' : 'storage'} used`}
         </strong>
         <span>{status.message}</span>
         <span className="storage-banner-meta">
-          {formatBytes(status.availableBytes)} remaining of {formatBytes(status.capacityBytes)}. {cleanupLine(status.lastCleanup)}.
-          {critical && ' An administrator can use Storage → Download now to save older files and free space. Contact your administrator if more storage is required.'}
+          {formatBytes(alert.availableBytes)} remaining of {formatBytes(alert.capacityBytes)}{isDb ? ' (database)' : ''}. {cleanupLine(status.lastCleanup)}.
+          {critical && (isDb
+            ? ' Downloading files does not free database space; an administrator needs to remove old records or upgrade the Supabase plan.'
+            : ' An administrator can use Storage → Download now to save older files and free space. Contact your administrator if more storage is required.')}
         </span>
       </div>
       <div className="storage-banner-actions">

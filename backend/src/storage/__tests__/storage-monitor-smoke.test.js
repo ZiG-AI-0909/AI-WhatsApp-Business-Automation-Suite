@@ -109,7 +109,7 @@ const store = fake.store;
 Object.assign(store, {
     storage_settings: [{ id: 1, capacity_bytes: null, db_capacity_bytes: null, warn_early_pct: 70, warn_high_pct: 85, warn_critical_pct: 95, reminder_hours: 24, notify_all_staff: true, extra_recipient_emails: [], updated_at: new Date().toISOString(), updated_by: null }],
     storage_alert_state: [{ id: 1, level: 0, last_notified_at: null, last_percent: null }],
-    storage_usage_snapshots: [], storage_notifications: [], storage_archives: [], storage_archive_files: [],
+    storage_usage_snapshots: [], storage_notifications: [], storage_archives: [], storage_archive_files: [], storage_deleted_files: [],
     campaigns: [], campaign_schedules: [],
     kyc_submissions: [], technician_partner_registrations: [],
 });
@@ -185,6 +185,18 @@ async function main() {
         assert.ok(bad.errors.capacity_gb && bad.errors.warn_high_pct && bad.errors.reminder_hours && bad.errors.extra_recipient_emails);
     });
 
+    await check('plan presets: Free = 1 GB files + 500 MB database; Pro = 100 GB + 8 GB; custom = typed', async () => {
+        const base = { warn_early_pct: 70, warn_high_pct: 85, warn_critical_pct: 95, reminder_hours: 24 };
+        const free = monitor.validateSettings({ ...base, plan: 'free', capacity_gb: '999' });
+        assert.deepEqual(free.errors, {});
+        assert.equal(free.values.capacity_bytes, GB, 'typed numbers are ignored for a plan');
+        assert.equal(free.values.db_capacity_bytes, 500 * MB);
+        assert.equal(monitor.validateSettings({ ...base, plan: 'pro' }).values.capacity_bytes, 100 * GB);
+        const custom = monitor.validateSettings({ ...base, plan: 'custom', capacity_gb: '2', db_capacity_gb: '0.5' });
+        assert.equal(custom.values.capacity_bytes, 2 * GB);
+        assert.equal(custom.values.plan, 'custom');
+    });
+
     await check('thresholds: alert once, no duplicates, jump sends only the highest, falling resets', async () => {
         setCapacity(10 * MB);
         setUsage('campaign-media', 'big-1.mp4', Math.round(7.2 * MB) - 1024);
@@ -203,6 +215,21 @@ async function main() {
         assert.equal((await monitor.evaluate()).severity, 0);
         assert.equal(notifications().length, 2, 'falling does not notify');
         setCapacity(GB);
+    });
+
+    await check('database warnings: the fuller of files and database drives the level and message', async () => {
+        const before = notifications().length;
+        store.storage_settings[0].db_capacity_bytes = 44 * MB; // the fake database is 42 MB → 95.5%
+        setCapacity(GB);
+        const result = await monitor.evaluate();
+        assert.equal(result.severity, 3);
+        assert.equal(result.usage.alert.resource, 'database');
+        assert.match(notifications().at(-1).message, /^Critical database warning: Only 4(\.\d)?% of database space remains/);
+        assert.ok(notifications().length > before);
+        assert.equal((await monitor.publicStatus()).alert.resource, 'database');
+        store.storage_settings[0].db_capacity_bytes = null;
+        monitor.invalidate();
+        assert.equal((await monitor.evaluate()).severity, 0, 'back to normal once the database quota is cleared');
     });
 
     await check('alert emails reach staff + extras when a sender exists; text points to "Download now"', async () => {
@@ -385,6 +412,42 @@ async function main() {
             const big = await call('POST', '/archives', { token: 'token-staff', body: { folders: [{ bucket: 'campaign-media', folder: 'huge' }] } });
             assert.equal(big.status, 400);
             assert.match(big.data.error, /up to 5000 files and 1\.00 GB/);
+        });
+
+        await check('file list: View / Download links; delete selected skips KYC and in-use files, logs who', async () => {
+            const list = await call('GET', '/files?pageSize=100', { token: 'token-staff' });
+            assert.equal(list.status, 200, JSON.stringify(list.data));
+            const byName = (name) => list.data.files.find((file) => file.name === name);
+            assert.equal(byName('user-1/offer.pdf').inUse, true, 'used by the draft campaign');
+            assert.equal(byName('user-1/banner.png').inUse, false);
+            const view = await call('GET', `/files/link?mode=view&bucket=campaign-media&name=${encodeURIComponent('user-1/offer.pdf')}`, { token: 'token-staff' });
+            assert.equal(view.status, 200);
+            assert.match(view.data.url, /^https:\/\/signed\.test\/campaign-media\/user-1\/offer\.pdf/);
+            assert.equal((await call('GET', '/files/link?mode=view&bucket=campaign-media&name=nope.pdf', { token: 'token-staff' })).status, 404);
+            putObject('kyc-documents', `${KYC_ID}/gst_certificate.pdf`, crypto.randomBytes(100));
+            const gst = objects.find((o) => o.name.endsWith('gst_certificate.pdf'));
+            assert.equal((await call('GET', '/files?bucket=kyc-documents', { token: 'token-staff' })).data.files[0].protected, true);
+            const offer = objects.find((o) => o.name === 'user-1/offer.pdf');
+            const banner = objects.find((o) => o.name === 'user-1/banner.png');
+            const xlsx = objects.find((o) => o.name === '1700000000_contacts.xlsx');
+            const ids = [gst.id, offer.id, banner.id, xlsx.id];
+            assert.equal((await call('DELETE', '/files', { token: 'token-user', body: { ids, confirm: 'DELETE' } })).status, 403);
+            assert.equal((await call('DELETE', '/files', { token: 'token-staff', body: { ids } })).status, 400, 'typed confirmation required');
+            const all = await call('GET', '/files/ids?bucket=campaign-media', { token: 'token-staff' });
+            assert.ok(all.data.ids.includes(banner.id) && !all.data.ids.includes(offer.id), 'select-all leaves out in-use files');
+            const before = notifications().length;
+            const result = await call('DELETE', '/files', { token: 'token-staff', body: { ids, confirm: 'DELETE' } });
+            assert.equal(result.status, 200, JSON.stringify(result.data));
+            assert.deepEqual(result.data.deleted.map((d) => d.path).sort(), ['campaign-excel-uploads/1700000000_contacts.xlsx', 'campaign-media/user-1/banner.png']);
+            assert.deepEqual(result.data.skipped.map((s) => s.reason.split(' ')[0]).sort(), ['Still', 'Vendor']);
+            assert.ok(objects.includes(gst) && objects.includes(offer), 'skipped files stay');
+            assert.ok(!objects.includes(banner) && !objects.includes(xlsx));
+            assert.deepEqual(store.storage_deleted_files.map((row) => [row.object_name, row.deleted_by_email]).sort(),
+                [['1700000000_contacts.xlsx', EMAILS[STAFF]], ['user-1/banner.png', EMAILS[STAFF]]]);
+            const notice = notifications().slice(before).find((n) => n.kind === 'files_deleted');
+            assert.ok(notice.message.startsWith(`${EMAILS[STAFF]} deleted 2 file(s)`), notice.message);
+            const overview = await call('GET', '/overview', { token: 'token-staff' });
+            assert.equal(overview.data.deletions.length, 2);
         });
 
         await check('cron endpoint needs the secret; settings save works', async () => {

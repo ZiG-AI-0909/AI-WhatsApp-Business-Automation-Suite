@@ -27,6 +27,13 @@ const SNAPSHOT_EVERY_MS = 30 * 60_000;
 const LOCK_SECONDS = 120;
 const HOLDER = `${os.hostname()}:${process.pid}:${crypto.randomBytes(3).toString('hex')}`;
 const GB = 1024 ** 3;
+const MB = 1024 ** 2;
+
+// Supabase plan quotas (supabase.com/pricing). 'custom' = entered by hand.
+const PLANS = {
+    free: { label: 'Supabase Free', capacity_bytes: 1 * GB, db_capacity_bytes: 500 * MB },
+    pro: { label: 'Supabase Pro', capacity_bytes: 100 * GB, db_capacity_bytes: 8 * GB },
+};
 
 const SEVERITY = { none: 0, early: 1, high: 2, critical: 3, full: 4 };
 const SEVERITY_NAMES = ['none', 'early', 'high', 'critical', 'full'];
@@ -72,7 +79,7 @@ async function unlock(name, holder = HOLDER) {
 }
 
 // ── Settings ─────────────────────────────────────────────────────────
-const SETTINGS_COLUMNS = 'capacity_bytes, db_capacity_bytes, warn_early_pct, warn_high_pct, warn_critical_pct, reminder_hours, notify_all_staff, extra_recipient_emails, updated_at, updated_by';
+const SETTINGS_COLUMNS = 'plan, capacity_bytes, db_capacity_bytes, warn_early_pct, warn_high_pct, warn_critical_pct, reminder_hours, notify_all_staff, extra_recipient_emails, updated_at, updated_by';
 let settingsCache = null;
 
 async function getSettings({ fresh = false } = {}) {
@@ -104,8 +111,15 @@ function validateSettings(body = {}) {
         if (!Number.isFinite(number) || number <= 0 || number > 1_000_000) errors[key] = 'Enter a size in GB greater than 0.';
         else values[column] = Math.round(number * GB);
     };
-    gb('capacity_gb', 'capacity_bytes');
-    gb('db_capacity_gb', 'db_capacity_bytes');
+    // A plan sets both quotas; 'custom' takes the numbers typed in.
+    values.plan = Object.prototype.hasOwnProperty.call(PLANS, body.plan) ? body.plan : 'custom';
+    if (values.plan === 'custom') {
+        gb('capacity_gb', 'capacity_bytes');
+        gb('db_capacity_gb', 'db_capacity_bytes');
+    } else {
+        values.capacity_bytes = PLANS[values.plan].capacity_bytes;
+        values.db_capacity_bytes = PLANS[values.plan].db_capacity_bytes;
+    }
     const pct = (key) => {
         const number = Number(body[key]);
         if (!Number.isInteger(number) || number < 1 || number > 99) errors[key] = 'Enter a whole percentage from 1 to 99.';
@@ -184,6 +198,14 @@ async function measureUsage({ fresh = false } = {}) {
     const usedBytes = byBucket.reduce((sum, item) => sum + item.bytes, 0);
     const capacityBytes = settings.capacity_bytes;
     const percentUsed = capacityBytes ? Math.round((usedBytes / capacityBytes) * 1000) / 10 : null;
+    const dbUsed = dbErr ? null : Number(dbBytes) || 0;
+    const dbPercent = dbUsed != null && settings.db_capacity_bytes ? Math.round((dbUsed / settings.db_capacity_bytes) * 1000) / 10 : null;
+    // Warnings follow whichever is fuller: file storage or the database
+    // (on the Free plan a full database stops new records being saved).
+    const alert = dbPercent != null && (percentUsed == null || dbPercent > percentUsed)
+        ? { resource: 'database', percent: dbPercent, usedBytes: dbUsed, capacityBytes: settings.db_capacity_bytes, availableBytes: Math.max(0, settings.db_capacity_bytes - dbUsed) }
+        : { resource: 'files', percent: percentUsed, usedBytes, capacityBytes, availableBytes: capacityBytes ? Math.max(0, capacityBytes - usedBytes) : null };
+    const plan = PLANS[settings.plan] ? settings.plan : 'custom';
     const value = {
         provider: 'Supabase Storage',
         source: 'storage.objects (size Supabase recorded for each object)',
@@ -192,15 +214,17 @@ async function measureUsage({ fresh = false } = {}) {
         usedBytes,
         fileCount: byBucket.reduce((sum, item) => sum + item.files, 0),
         capacityBytes,
-        capacitySource: capacityBytes ? 'Set by an administrator (your Supabase plan quota)' : null,
+        plan,
+        capacitySource: capacityBytes ? (plan === 'custom' ? 'Entered by an administrator' : `${PLANS[plan].label} plan quota`) : null,
         availableBytes: capacityBytes ? Math.max(0, capacityBytes - usedBytes) : null,
         percentUsed,
-        severity: severityFor(percentUsed, settings),
+        alert,
+        severity: severityFor(alert.percent, settings),
         byBucket,
         database: {
-            bytes: dbErr ? null : Number(dbBytes) || 0,
+            bytes: dbUsed,
             capacityBytes: settings.db_capacity_bytes,
-            percentUsed: !dbErr && settings.db_capacity_bytes ? Math.round((Number(dbBytes) / settings.db_capacity_bytes) * 1000) / 10 : null,
+            percentUsed: dbPercent,
         },
     };
     usageCache = { at: Date.now(), value };
@@ -255,7 +279,17 @@ function pctText(value) {
 
 /** The warning text for a severity (wording agreed with Sudarshan). */
 function messageFor(severity, usage) {
-    const used = usage.percentUsed;
+    const alert = usage.alert || { resource: 'files', percent: usage.percentUsed };
+    const used = alert.percent;
+    if (alert.resource === 'database') {
+        switch (severity) {
+            case SEVERITY.early: return `Database usage has reached ${pctText(used)}. Please review old records and plan a clean-up.`;
+            case SEVERITY.high: return `High database usage: ${pctText(used)} of the database space is being used. Please clean up old records or plan a Supabase upgrade.`;
+            case SEVERITY.critical: return `Critical database warning: Only ${pctText(Math.max(0, Math.round((100 - used) * 10) / 10))} of database space remains. Saving new records will soon fail; clean up old records or upgrade the Supabase plan.`;
+            case SEVERITY.full: return 'Database capacity has been reached. Saving new records may fail. Please free up database space or upgrade the Supabase plan.';
+            default: return '';
+        }
+    }
     switch (severity) {
         case SEVERITY.early: return `Storage usage has reached ${pctText(used)}. Please review existing files and prepare for storage cleanup.`;
         case SEVERITY.high: return `High storage usage: ${pctText(used)} of available storage is being used. Please review large files and download what you need to keep.`;
@@ -353,15 +387,15 @@ async function notify({ kind, severity = 0, usage = null, message, emailLines, s
     const { data: row, error } = await supabase.from('storage_notifications').insert({
         kind,
         level: severity,
-        percent_used: usage?.percentUsed ?? null,
-        used_bytes: usage?.usedBytes ?? null,
-        capacity_bytes: usage?.capacityBytes ?? null,
+        percent_used: usage?.alert?.percent ?? usage?.percentUsed ?? null,
+        used_bytes: usage?.alert?.usedBytes ?? usage?.usedBytes ?? null,
+        capacity_bytes: usage?.alert?.capacityBytes ?? usage?.capacityBytes ?? null,
         message,
         email_status: 'pending',
     }).select('id, created_at').single();
     if (error) throw dbError(error, 'Could not record the storage notification.');
     statusCache = null;
-    emitStatus({ kind, severity, percentUsed: usage?.percentUsed ?? null, message, at: row.created_at });
+    emitStatus({ kind, severity, percentUsed: usage?.alert?.percent ?? null, message, at: row.created_at });
     const email = await sendAlertEmails(settings, { subject, lines: emailLines || [message] })
         .catch((sendError) => ({ status: 'failed', count: 0, error: String(sendError.message || sendError).slice(0, 300) }));
     await supabase.from('storage_notifications')
@@ -387,14 +421,18 @@ function cleanupLine(last) {
 }
 
 function thresholdEmail(severity, usage, message, last, reminder) {
-    const label = { 1: 'Storage early warning', 2: 'High storage usage', 3: 'CRITICAL: storage almost full', 4: 'Storage capacity reached' }[severity];
+    const alert = usage.alert;
+    const what = alert.resource === 'database' ? 'database' : 'storage';
+    const label = { 1: `${what === 'database' ? 'Database' : 'Storage'} early warning`, 2: `High ${what} usage`, 3: `CRITICAL: ${what} almost full`, 4: `${what === 'database' ? 'Database' : 'Storage'} capacity reached` }[severity];
     return {
-        subject: `${reminder ? 'Reminder: ' : ''}${label} — ${pctText(usage.percentUsed)} used`,
+        subject: `${reminder ? 'Reminder: ' : ''}${label} — ${pctText(alert.percent)} used`,
         lines: [
             message,
-            `Used: ${formatBytes(usage.usedBytes)} of ${formatBytes(usage.capacityBytes)} (${pctText(usage.percentUsed)}). Remaining: ${formatBytes(usage.availableBytes)}.`,
+            `${what === 'database' ? 'Database' : 'File storage'}: ${formatBytes(alert.usedBytes)} of ${formatBytes(alert.capacityBytes)} used (${pctText(alert.percent)}). Remaining: ${formatBytes(alert.availableBytes)}.`,
             cleanupLine(last),
-            'Recommended: an administrator can open Storage → "Download now", save the ZIP somewhere safe, and then clean up the downloaded files. Contact your administrator if more storage is required.',
+            what === 'database'
+                ? 'Recommended: downloading files does not free database space. Remove old records you no longer need (for example old campaign logs or messages), or upgrade the Supabase plan.'
+                : 'Recommended: an administrator can open Storage → "Download now", save the ZIP somewhere safe, and then clean up the downloaded files. Contact your administrator if more storage is required.',
         ],
     };
 }
@@ -422,12 +460,12 @@ async function evaluate() {
             const message = messageFor(severity, usage);
             const email = thresholdEmail(severity, usage, message, await lastCleanup(), reminder);
             notified = await notify({ kind: reminder ? 'reminder' : 'threshold', severity, usage, message, subject: email.subject, emailLines: email.lines });
-            await supabase.from('storage_alert_state').update({ level: severity, last_notified_at: now.toISOString(), last_percent: usage.percentUsed, updated_at: now.toISOString() }).eq('id', 1);
+            await supabase.from('storage_alert_state').update({ level: severity, last_notified_at: now.toISOString(), last_percent: usage.alert.percent, updated_at: now.toISOString() }).eq('id', 1);
         } else if (severity !== previous) {
             // Usage fell (files removed or capacity raised): reset so the
             // next crossing alerts again.
-            await supabase.from('storage_alert_state').update({ level: severity, last_percent: usage.percentUsed, updated_at: now.toISOString() }).eq('id', 1);
-            emitStatus({ kind: 'level', severity, percentUsed: usage.percentUsed, message: messageFor(severity, usage), at: now.toISOString() });
+            await supabase.from('storage_alert_state').update({ level: severity, last_percent: usage.alert.percent, updated_at: now.toISOString() }).eq('id', 1);
+            emitStatus({ kind: 'level', severity, percentUsed: usage.alert.percent, message: messageFor(severity, usage), at: now.toISOString() });
         }
         statusCache = null;
         return { usage, severity, previous, notified };
@@ -459,7 +497,8 @@ async function publicStatus() {
     const usage = await measureUsage();
     const last = await lastCleanup();
     const value = {
-        configured: usage.capacityBytes != null,
+        configured: usage.alert.capacityBytes != null,
+        alert: usage.alert,
         severity: usage.severity,
         severityName: SEVERITY_NAMES[usage.severity],
         percentUsed: usage.percentUsed,
@@ -487,6 +526,7 @@ module.exports = {
     setIo,
     tryLock,
     unlock,
+    PLANS,
     getSettings,
     validateSettings,
     updateSettings,

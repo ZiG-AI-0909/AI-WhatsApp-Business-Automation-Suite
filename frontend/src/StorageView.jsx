@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import Badge from './components/Badge.jsx'
-import EmptyState from './components/EmptyState.jsx'
 import Icon from './components/Icon.jsx'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import StorageDonut from './storage/StorageDonut.jsx'
 import StorageTrend from './storage/StorageTrend.jsx'
 import DownloadCleanup from './storage/DownloadCleanup.jsx'
+import StorageFiles from './storage/StorageFiles.jsx'
 import { StorageBanner } from './storage/StorageAlerts.jsx'
 import { refreshStorageStatus } from './storage/useStorageStatus.js'
 import { bucketLabel, formatBytes, formatDateTime, formatPercent, severityMeta } from './storage/storageFormat.js'
@@ -36,133 +36,17 @@ function Tile({ label, value, note }) {
   )
 }
 
-// ── Files ───────────────────────────────────────────────────────────────────
-
-function FileList({ buckets }) {
-  const [filters, setFilters] = useState({ bucket: '', type: '', minMb: '', q: '', sort: 'size', page: 1 })
-  const [search, setSearch] = useState('')
-  const [data, setData] = useState(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setFilters((current) => (current.q === search.trim() ? current : { ...current, q: search.trim(), page: 1 })), 300)
-    return () => window.clearTimeout(timer)
-  }, [search])
-
-  const query = new URLSearchParams(Object.entries({ ...filters, pageSize: 25 }).filter(([, value]) => value !== '' && value != null)).toString()
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    apiFetch(`/storage/files?${query}`)
-      .then((result) => { if (!cancelled) { setData(result); setError('') } })
-      .catch((err) => { if (!cancelled) setError(errorText(err, 'Stored files')) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [query])
-
-  const set = (key) => (event) => setFilters((current) => ({ ...current, [key]: event.target.value, page: 1 }))
-  const download = async (file) => {
-    try {
-      const { url } = await apiFetch(`/storage/files/download?bucket=${encodeURIComponent(file.bucket)}&name=${encodeURIComponent(file.name)}`)
-      window.open(url, '_blank', 'noopener')
-    } catch (err) {
-      setError(errorText(err, 'Download'))
-    }
-  }
-
-  const files = data?.files || []
-  const pages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1
-  const baseName = (name) => name.split('/').pop()
-
-  return (
-    <section className="panel storage-section" aria-labelledby="storage-files-title">
-      <header className="storage-section-head">
-        <div>
-          <h2 id="storage-files-title">Files</h2>
-          <p className="muted-copy">Largest first by default. Download single files here; to free space use "Download now &amp; clean up" above.</p>
-        </div>
-      </header>
-      <div className="kyc-filters storage-filters">
-        <label className="form-label">Location
-          <select value={filters.bucket} onChange={set('bucket')}>
-            <option value="">All</option>
-            {buckets.map((bucket) => <option key={bucket} value={bucket}>{bucketLabel(bucket)}</option>)}
-          </select>
-        </label>
-        <label className="form-label">Type
-          <select value={filters.type} onChange={set('type')}>
-            <option value="">All types</option>
-            <option value="pdf">PDF</option>
-            <option value="image">Images</option>
-            <option value="spreadsheet">Spreadsheets / Office</option>
-          </select>
-        </label>
-        <label className="form-label">Min size
-          <select value={filters.minMb} onChange={set('minMb')}>
-            <option value="">Any</option>
-            <option value="1">1 MB+</option>
-            <option value="5">5 MB+</option>
-            <option value="20">20 MB+</option>
-          </select>
-        </label>
-        <label className="form-label">Sort
-          <select value={filters.sort} onChange={set('sort')}>
-            <option value="size">Largest first</option>
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-          </select>
-        </label>
-        <label className="form-label kyc-filter-search">Search
-          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="File name or folder" />
-        </label>
-      </div>
-      {error && <div className="notice error" role="alert">{error}</div>}
-      {loading && !data ? (
-        <div className="muted-copy" role="status">Loading files…</div>
-      ) : !files.length ? (
-        <EmptyState icon="file" title="No files match" description="Change the filters to see more." />
-      ) : (
-        <>
-          <div className="campaign-table-wrap">
-            <table className="kyc-table storage-files-table">
-              <thead>
-                <tr><th scope="col">File</th><th scope="col">Size</th><th scope="col">Type</th><th scope="col">Modified</th><th scope="col"><span className="visually-hidden">Download</span></th></tr>
-              </thead>
-              <tbody>
-                {files.map((file) => (
-                  <tr key={`${file.bucket}/${file.name}`}>
-                    <td className="storage-file-name">
-                      <span title={file.name}>{baseName(file.name)}</span>
-                      <small className="kyc-row-sub">{bucketLabel(file.bucket)}{file.name.includes('/') ? ` · ${file.name.slice(0, file.name.lastIndexOf('/'))}` : ''}</small>
-                    </td>
-                    <td className="num">{formatBytes(file.sizeBytes)}</td>
-                    <td>{file.mimeType || '—'}</td>
-                    <td className="num">{formatDateTime(file.updatedAt)}</td>
-                    <td className="storage-file-actions">
-                      <button type="button" className="ghost-btn" onClick={() => download(file)} aria-label={`Download ${baseName(file.name)}`}><Icon name="download" size={15} /></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="storage-pager">
-            <span className="muted-copy">{data.total} file(s){loading ? ' · updating…' : ''}</span>
-            <button type="button" className="secondary-btn" disabled={filters.page <= 1} onClick={() => setFilters((current) => ({ ...current, page: current.page - 1 }))}>Previous</button>
-            <span className="muted-copy">Page {filters.page} of {pages}</span>
-            <button type="button" className="secondary-btn" disabled={filters.page >= pages} onClick={() => setFilters((current) => ({ ...current, page: current.page + 1 }))}>Next</button>
-          </div>
-        </>
-      )}
-    </section>
-  )
-}
-
 // ── Settings ────────────────────────────────────────────────────────────────
+
+// Supabase plan quotas (same as PLANS in backend/src/storage/storageMonitor.js).
+const PLANS = {
+  free: { label: 'Supabase Free', files: '1 GB', database: '500 MB' },
+  pro: { label: 'Supabase Pro', files: '100 GB', database: '8 GB' },
+}
 
 function toForm(settings) {
   return {
+    plan: PLANS[settings.plan] ? settings.plan : 'custom',
     capacity_gb: settings.capacity_gb ?? '',
     db_capacity_gb: settings.db_capacity_gb ?? '',
     warn_early_pct: settings.warn_early_pct,
@@ -215,11 +99,21 @@ function SettingsForm({ overview, onSaved }) {
       <form onSubmit={save} className="storage-settings">
         <fieldset>
           <legend>Capacity</legend>
-          <p className="muted-copy">Enter your Supabase plan's file-storage quota (Supabase dashboard → Billing / Usage). Supabase does not expose it to the app, so warnings stay off until it is set.</p>
-          <div className="storage-form-grid">
-            <label className="form-label">File storage capacity (GB)<input type="number" min="0" step="0.1" inputMode="decimal" value={form.capacity_gb} onChange={set('capacity_gb')} placeholder="e.g. 1 or 100" />{err('capacity_gb')}</label>
-            <label className="form-label">Database capacity (GB, optional)<input type="number" min="0" step="0.1" inputMode="decimal" value={form.db_capacity_gb} onChange={set('db_capacity_gb')} placeholder="e.g. 0.5 or 8" />{err('db_capacity_gb')}</label>
-          </div>
+          <p className="muted-copy">Your Supabase plan sets how much file storage and database space you have. Warnings follow whichever is fuller.</p>
+          <label className="form-label storage-plan">Supabase plan
+            <select value={form.plan} onChange={set('plan')}>
+              {Object.entries(PLANS).map(([key, plan]) => <option key={key} value={key}>{plan.label} — {plan.files} files, {plan.database} database</option>)}
+              <option value="custom">Custom (enter the numbers)</option>
+            </select>
+          </label>
+          {form.plan === 'custom' ? (
+            <div className="storage-form-grid">
+              <label className="form-label">File storage capacity (GB)<input type="number" min="0" step="0.1" inputMode="decimal" value={form.capacity_gb} onChange={set('capacity_gb')} placeholder="e.g. 1 or 100" />{err('capacity_gb')}</label>
+              <label className="form-label">Database capacity (GB, optional)<input type="number" min="0" step="0.1" inputMode="decimal" value={form.db_capacity_gb} onChange={set('db_capacity_gb')} placeholder="e.g. 0.5 or 8" />{err('db_capacity_gb')}</label>
+            </div>
+          ) : (
+            <p className="muted-copy">File storage: <strong>{PLANS[form.plan].files}</strong> · Database: <strong>{PLANS[form.plan].database}</strong>. If you upgrade in Supabase, change the plan here too.</p>
+          )}
         </fieldset>
         <fieldset>
           <legend>Warning levels</legend>
@@ -281,8 +175,7 @@ export default function StorageView() {
   const meta = severityMeta(alert.severity)
   const lastCleaned = overview.archives.find((item) => item.status === 'cleaned')
   const statusForBanner = {
-    configured: usage.capacityBytes != null, severity: alert.severity, percentUsed: usage.percentUsed, message: alert.message,
-    availableBytes: usage.availableBytes, capacityBytes: usage.capacityBytes,
+    configured: usage.alert.capacityBytes != null, severity: alert.severity, alert: usage.alert, message: alert.message,
     lastCleanup: lastCleaned ? { at: lastCleaned.cleanedAt, by: lastCleaned.cleanedBy, files: lastCleaned.cleanedFiles, bytes: lastCleaned.cleanedBytes } : null,
   }
 
@@ -345,7 +238,7 @@ export default function StorageView() {
 
       <DownloadCleanup folders={overview.folders} archives={overview.archives} limits={overview.limits} onChanged={() => { load(); refreshStorageStatus() }} />
 
-      <FileList buckets={usage.byBucket.map((item) => item.bucket)} />
+      <StorageFiles buckets={usage.byBucket.map((item) => item.bucket)} deletions={overview.deletions} onChanged={() => { load(); refreshStorageStatus() }} />
 
       <SettingsForm overview={overview} onSaved={(data) => { setOverview(data); refreshStorageStatus() }} />
 

@@ -70,6 +70,15 @@ create table if not exists public.storage_settings (
     check (warn_early_pct < warn_high_pct and warn_high_pct < warn_critical_pct)
 );
 insert into public.storage_settings (id) values (1) on conflict (id) do nothing;
+-- Supabase plan: 'free' (1 GB files, 500 MB database), 'pro' (100 GB, 8 GB)
+-- or 'custom' (numbers typed in on the Storage page). This project is on
+-- Free, so the Free quotas are filled in when no capacity was entered yet.
+alter table public.storage_settings
+    add column if not exists plan text not null default 'free' check (plan in ('free', 'pro', 'custom'));
+update public.storage_settings
+   set capacity_bytes = 1073741824,      -- 1 GB
+       db_capacity_bytes = 524288000      -- 500 MB
+ where id = 1 and plan = 'free' and capacity_bytes is null and db_capacity_bytes is null;
 alter table public.storage_settings
     drop column if exists backup_enabled,
     drop column if exists backup_frequency_hours,
@@ -168,6 +177,22 @@ create table if not exists public.storage_archive_files (
     unique (archive_id, bucket_id, object_name)
 );
 create index if not exists storage_archive_files_archive_idx on public.storage_archive_files (archive_id, status);
+
+-- ─── Deleted files (Storage → Files → Delete selected) ───────
+-- One row per file an administrator deleted directly: who, when, what.
+create table if not exists public.storage_deleted_files (
+    id                bigserial primary key,
+    deleted_at        timestamptz not null default now(),
+    deleted_by        uuid references auth.users(id) on delete set null,
+    deleted_by_email  text,
+    bucket_id         text not null,
+    object_name       text not null,
+    size_bytes        bigint not null default 0,
+    mime_type         text
+);
+create index if not exists storage_deleted_files_at_idx on public.storage_deleted_files (deleted_at desc);
+alter table public.storage_deleted_files enable row level security;
+revoke all on public.storage_deleted_files from anon, authenticated;
 
 -- ─── Job locks: one worker at a time, survives restarts ──────
 create table if not exists public.storage_job_locks (
