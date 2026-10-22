@@ -98,6 +98,10 @@ function createFakeSupabase({ rpc = {} } = {}) {
             in(column, values) { state.filters.push(row => parseInList(values).some(value => same(row[column], value))); return b; },
             is(column, value) { state.filters.push(row => (value === null ? row[column] == null : row[column] === value)); return b; },
             not(column, op, value) {
+                if (op === 'in') {
+                    state.filters.push(row => !parseInList(value).some(item => same(row[column], item)));
+                    return b;
+                }
                 if (op !== 'is' || value !== null) throw new Error('fake supabase: unsupported not()');
                 state.filters.push(row => row[column] != null);
                 return b;

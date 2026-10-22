@@ -341,7 +341,12 @@ export function TechnicianDetail({ id, onBack }) {
           const file = registration.documents?.[document.key]
           return (
             <p key={document.key} className="kyc-attachment">
-              {file ? (
+              {file?.archived ? (
+                <>
+                  <span className="muted-copy"><Icon name="download" size={14} /> {document.label} archived offline</span>
+                  <small>{formatDate(file.archived.at, { withTime: true })}{file.archived.by ? ` by ${file.archived.by}` : ''} · in {file.archived.archive}</small>
+                </>
+              ) : file ? (
                 <>
                   {links[document.key] && !linksExpired
                     ? <a href={links[document.key]} target="_blank" rel="noopener noreferrer"><Icon name="external" size={14} /> Open {document.label}</a>

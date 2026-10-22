@@ -112,6 +112,9 @@ app.use('/api/auth', require('./routes/auth'));
 // Must stay above every app.use('/api', requireAuth, …) catch-all mount.
 app.use('/api/public/kyc', require('./routes/kycPublic'));
 app.use('/api/public/technician', require('./routes/technicianPublic'));
+// Storage: external cron trigger (no session; shared secret).
+// Other /api/storage routes fall through to the mount below.
+app.use('/api/storage', require('./routes/storage').publicRouter);
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 app.use('/api/whatsapp', requireAuth, require('./routes/whatsapp'));
 app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/whatsappWebhook'));
@@ -134,6 +137,8 @@ app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware
 app.use('/api/kyc', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/kyc'));
 // Mechanic / technician registrations: same KYC reviewers.
 app.use('/api/technicians', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/technicians'));
+// Storage monitoring / alerts / download + clean up (see routes/storage.js).
+app.use('/api/storage', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/storage').router);
 
 app.use('/api', requireAuth, (req, res) => {
     res.status(404).json({ error: 'Route not found' });
@@ -202,6 +207,7 @@ async function startServer() {
         };
         startResumeRetries();
         schedulerService.startPolling(io);
+        require('./storage/storageJobs').start(io);
         server.listen(PORT, () => {
             console.log(`🚀 Sudarshan Pipes AI Assistant API started on http://localhost:${PORT}`);
             console.log('📱 WhatsApp sessions: per-user (lazy) — users connect via their own QR.');

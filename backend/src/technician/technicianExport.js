@@ -41,7 +41,7 @@ function excelColumns() {
         { header: 'Longitude', key: 'shop_longitude', width: 11, value: (row) => row.shop_longitude },
         { header: 'Location Accuracy (m)', key: 'shop_location_accuracy_m', width: 11, value: (row) => row.shop_location_accuracy_m },
         { header: 'Location Source', key: 'shop_location_source', width: 20, value: (row) => SOURCE_LABELS[row.shop_location_source] || '' },
-        { header: 'Aadhaar Uploaded', key: 'aadhaar', width: 10, value: (row) => (row.documents?.aadhaar ? 'Yes' : 'No') },
+        { header: 'Aadhaar Uploaded', key: 'aadhaar', width: 10, value: (row) => (row.documents?.aadhaar ? (row.documents.aadhaar.archived ? `Yes (archived offline ${formatDate(row.documents.aadhaar.archived.at)})` : 'Yes') : 'No') },
         { header: 'Review Remarks', key: 'review_remarks', width: 36, value: (row) => row.review_remarks },
         { header: 'Last Reviewed (IST)', key: 'reviewed_at', width: 17, value: (row) => formatDateTime(row.reviewed_at) },
     ];

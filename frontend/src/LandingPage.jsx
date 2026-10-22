@@ -165,7 +165,7 @@ export default function LandingPage({ onSignIn }) {
         <div className="landing-header-inner">
           <div className="landing-brand">
             <BrandLogo height={30} />
-            <span>AI Assistant</span>
+            <span>Online Portal</span>
           </div>
           <nav className="landing-header-nav" aria-label="Page sections">
             {[['how-it-works', 'How it works'], ['features', 'Features'], ['why-ai', 'Why AI replies']].map(([id, label]) => (
@@ -272,7 +272,7 @@ export default function LandingPage({ onSignIn }) {
       </main>
 
       <footer className="landing-footer">
-        <span>© {new Date().getFullYear()} Sudarshan Pipes &amp; Fittings · AI Assistant. All rights reserved.</span>
+        <span>© {new Date().getFullYear()} Sudarshan Pipes &amp; Fittings · Online Portal. All rights reserved.</span>
       </footer>
     </div>
   )

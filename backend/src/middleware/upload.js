@@ -59,6 +59,8 @@ async function uploadToStorage(bucket, filePath, fileBuffer, fileName, contentTy
         throw new Error(`Failed to upload file: ${error.message}`);
     }
 
+    require('../storage/storageJobs').checkSoon(); // refresh storage usage
+
     // Get the public URL
     const { data: urlData } = supabaseStorage
         .storage

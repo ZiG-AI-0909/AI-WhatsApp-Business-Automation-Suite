@@ -332,7 +332,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
 
         <div className="auth-brand">
           <BrandLogo height={58} />
-          <p className="auth-product">AI Assistant</p>
+          <p className="auth-product">Online Portal</p>
         </div>
 
         <h1 id="auth-title">{title}</h1>
@@ -538,7 +538,7 @@ export default function WelcomeAuthPage({ onAuthSuccess, initialMode }) {
 
         {/* Card footer */}
         <p className="auth-footer"><Icon name="shield" size={14} /> Secured by Supabase Auth · Encrypted sessions</p>
-        <p className="auth-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · AI Assistant</p>
+        <p className="auth-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · Online Portal</p>
       </main>
     </div>
   );

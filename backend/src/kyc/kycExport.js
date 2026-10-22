@@ -241,7 +241,7 @@ async function renderKycPdf(submission, { reference = '' } = {}) {
                 .text(document.label, left + PAD, y + (file ? 6 : 7), { width: labelW, height: 11, ellipsis: true });
             if (file) {
                 doc.font('Helvetica').fontSize(6.8).fillColor(C.muted)
-                    .text(pdfText(file.file_name || ''), left + PAD, y + 18, { width: labelW, height: 11, ellipsis: true });
+                    .text(pdfText(`${file.file_name || ''}${file.archived ? ` · archived offline ${formatDate(file.archived.at)}` : ''}`), left + PAD, y + 18, { width: labelW, height: 11, ellipsis: true });
             }
             if (document.mandatory) {
                 const tagX = left + docW - 70;
@@ -388,7 +388,7 @@ function excelColumns() {
         ...schema.FIELDS.filter((item) => item.section === 3).map((item) => fromField(item.key, null, 36)),
         ...schema.FIELDS.filter((item) => item.section === 4).map((item) => fromField(item.key, item.key === 'currency' ? 'Currency' : null)),
         ...schema.DOCUMENTS.flatMap((document) => [
-            { header: `${document.label}: Attached`, key: `doc_${document.key}`, width: 14, value: (row) => (row.documents?.[document.key] ? 'Yes' : 'N/A') },
+            { header: `${document.label}: Attached`, key: `doc_${document.key}`, width: 14, value: (row) => (row.documents?.[document.key] ? (row.documents[document.key].archived ? `Yes (archived offline ${formatDate(row.documents[document.key].archived.at)})` : 'Yes') : 'N/A') },
             { header: `${document.label}: Verified`, key: `docv_${document.key}`, width: 14, value: (row) => (row.documents?.[document.key] ? (row.documents_verified?.[document.key] === 'yes' ? 'Yes' : 'Pending') : '') },
         ]),
         fromField('authorized_person_name', 'Authorized Person Name'),

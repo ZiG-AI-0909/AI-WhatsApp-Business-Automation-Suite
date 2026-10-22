@@ -101,6 +101,7 @@ async function createRegistration({ values, documents, meta = {}, clientId }) {
         await removeObjects(stored.map((item) => item.objectPath));
         throw dbError(error, 'Your form could not be saved. Please try again in a few minutes.');
     }
+    require('../storage/storageJobs').checkSoon(); // refresh storage usage
     return { id: data.id, submitted_at: data.submitted_at, reference: referenceFor(data.id) };
 }
 
@@ -157,7 +158,8 @@ async function getRegistration(id) {
 /** Short-lived signed URLs for every uploaded document: { [type]: url }. */
 async function documentLinks(registration) {
     const entries = DOCUMENTS
-        .map((document) => [document.key, registration.documents?.[document.key]?.path])
+        // Archived documents were downloaded and removed from storage.
+        .map((document) => [document.key, registration.documents?.[document.key]?.archived ? null : registration.documents?.[document.key]?.path])
         .filter(([, objectPath]) => objectPath);
     if (!entries.length) return {};
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUrls(entries.map(([, objectPath]) => objectPath), SIGNED_URL_SECONDS);

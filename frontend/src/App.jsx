@@ -5,6 +5,9 @@ import LandingPage from './LandingPage.jsx'
 import OnboardingChecklist from './OnboardingChecklist.jsx'
 import WelcomeAuthPage from './WelcomeAuthPage.jsx'
 import ImageExtractorView from './ImageExtractorView.jsx'
+import StorageView from './StorageView.jsx'
+import { StorageBanner, StorageCard } from './storage/StorageAlerts.jsx'
+import useStorageStatus from './storage/useStorageStatus.js'
 import AskAiView from './AskAiView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
@@ -31,12 +34,16 @@ import { COUNTRIES } from './countries.js'
 // Sidebar navigation. The item keys are the view names used by renderView();
 // NAV_META only adds the icon and a friendlier label for the menu.
 const NAV_GROUPS = [
-  { title: 'Overview', items: ['Dashboard', 'Analytics'] },
-  { title: 'Messaging', items: ['Inbox', 'Campaigns', 'Contacts', 'Templates'] },
+  { title: 'Overview', items: ['Dashboard'] },
+  // Everything that works with WhatsApp: the connection, chats, bulk
+  // campaigns, contacts and templates, the knowledge base the automatic
+  // WhatsApp replies draw on, and the message / campaign analytics.
+  { title: 'WhatsApp', items: ['WhatsApp Connection', 'Inbox', 'Campaigns', 'Contacts', 'Templates', 'Knowledge Base', 'Analytics'] },
   // 'Submitted Forms' is only shown to KYC reviewers (see kycStaff in App).
   { title: 'Documents', items: ['Document Intelligence', 'Image Extractor', 'Submitted Forms'] },
-  { title: 'AI assistant', items: ['Ask AI', 'Knowledge Base'] },
-  { title: 'Setup', items: ['WhatsApp Connection', 'Settings'] },
+  { title: 'AI tools', items: ['Ask AI'] },
+  // 'Storage' is only shown to storage administrators (the KYC staff list).
+  { title: 'Setup', items: ['Storage', 'Settings'] },
 ]
 const NAV_META = {
   Dashboard: { icon: 'dashboard' },
@@ -48,6 +55,7 @@ const NAV_META = {
   'Document Intelligence': { icon: 'clipboard', label: 'BOQ & quotations' },
   'Image Extractor': { icon: 'image', label: 'Image extractor' },
   'Submitted Forms': { icon: 'receipt', label: 'Submitted forms' },
+  Storage: { icon: 'layers' },
   'Ask AI': { icon: 'sparkles' },
   'Knowledge Base': { icon: 'book', label: 'Knowledge base' },
   'WhatsApp Connection': { icon: 'phone', label: 'WhatsApp connection' },
@@ -1893,6 +1901,8 @@ function App() {
             count) and hides itself once dismissed or fully complete. */}
         <OnboardingChecklist onNavigate={setActiveView} dashboard={dashboard} whatsappConnected={isConnected} />
 
+        <StorageBanner status={storage.status} onOpenStorage={openStorage} />
+
         <section className="kpi-grid" aria-label="Campaign results">
           {kpis.map((kpi) => (
             <article key={kpi.label} className={`stat-card kpi-tile ${kpi.accent}`}>
@@ -1941,6 +1951,8 @@ function App() {
             </ul>
           </section>
         </div>
+
+        <StorageCard status={storage.status} error={storage.error} loading={storage.loading} onOpenStorage={openStorage} />
 
         <div className="dashboard-grid">
           <article className="panel">
@@ -2019,6 +2031,7 @@ function App() {
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
     if (activeView === 'Submitted Forms') return <KycSubmissionsView />
+    if (activeView === 'Storage') return kycStaff ? <StorageView /> : null
     if (activeView === 'Dashboard') return renderDashboard()
 
     return (
@@ -2050,7 +2063,19 @@ function App() {
       .catch(() => { if (!cancelled) setKycStaff(false) })
     return () => { cancelled = true }
   }, [session?.user?.id])
-  const navGroups = NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => item !== 'Submitted Forms' || kycStaff) }))
+  const navGroups = NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => (item !== 'Submitted Forms' && item !== 'Storage') || kycStaff) }))
+
+  // Storage status for everyone signed in (dashboard card + warning banner).
+  const storage = useStorageStatus(Boolean(session?.user?.id))
+  const openStorage = () => setActiveView('Storage')
+  // An alert email links to /?view=storage#/app: open the Storage page once.
+  useEffect(() => {
+    if (!session?.user?.id) return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('view') !== 'storage') return
+    setActiveView('Storage')
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash)
+  }, [session?.user?.id])
 
   // Load the workspaces shared with this user. On first sign-in with a
   // shared workspace (and no remembered choice) open the shared data, which
@@ -2106,7 +2131,7 @@ function App() {
       <div className="app-splash" role="status" aria-live="polite">
         <BrandLogo height={46} />
         <span className="app-splash-spinner" aria-hidden="true" />
-        <p>Loading Sudarshan Pipes AI Assistant…</p>
+        <p>Loading Sudarshan Pipes Online Portal…</p>
       </div>
     )
   }
@@ -2147,7 +2172,7 @@ function App() {
         <div className="sidebar-brand">
           <div className="sidebar-brand-text brand-full">
             <BrandLogo height={34} />
-            <span className="sidebar-product">AI Assistant</span>
+            <span className="sidebar-product">Online Portal</span>
           </div>
           <span className="brand-mark-only"><BrandLogo variant="mark" height={32} /></span>
           <button type="button" className="icon-btn collapse-btn" onClick={toggleSidebar} aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
@@ -2217,9 +2242,10 @@ function App() {
                 <DocumentIntelView active={activeView === 'Document Intelligence'} onActivity={setBoqActivity} />
               </div>
             )}
+            {activeView !== 'Dashboard' && activeView !== 'Storage' && <StorageBanner status={storage.status} onOpenStorage={openStorage} everywhere />}
             {renderView()}
           </div>
-          <footer className="page-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · AI Assistant</footer>
+          <footer className="page-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · Online Portal</footer>
         </main>
       </div>
     </div>

@@ -365,7 +365,12 @@ function KycDetail({ id, onBack }) {
                         {document.mandatory && <> <Badge tone="cold">Mandatory</Badge></>}
                       </td>
                       <td>
-                        {file ? (
+                        {file?.archived ? (
+                          <span className="kyc-attachment">
+                            <span className="muted-copy"><Icon name="download" size={14} /> Archived offline</span>
+                            <small title={file.archived.archive}>{file.file_name} · {formatDate(file.archived.at, { withTime: true })}{file.archived.by ? ` by ${file.archived.by}` : ''} · in {file.archived.archive}</small>
+                          </span>
+                        ) : file ? (
                           <span className="kyc-attachment">
                             {links[document.key] && !linksExpired
                               ? <a href={links[document.key]} target="_blank" rel="noopener noreferrer"><Icon name="external" size={14} /> Open</a>

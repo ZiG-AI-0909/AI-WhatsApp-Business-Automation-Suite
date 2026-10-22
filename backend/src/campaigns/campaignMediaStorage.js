@@ -130,6 +130,7 @@ async function deleteCampaignMedia(campaign) {
     }
     const { error } = await supabase.storage.from(bucket).remove([objectPath]);
     if (error) throw new Error(`Could not delete campaign attachment (${bucket}/${objectPath}): ${error.message}`);
+    require('../storage/storageJobs').checkSoon(); // refresh storage usage
     return true;
 }
 
