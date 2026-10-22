@@ -253,9 +253,7 @@ export default function TechnicianRegistrationPage() {
   const label = (name) => (
     <label className="kyc-label" htmlFor={`tech-${name}`}>
       {t(name)}
-      {REQUIRED.includes(name)
-        ? <><span className="kyc-required" aria-hidden="true"> *</span><span className="visually-hidden"> ({t('required')})</span></>
-        : <span className="kyc-optional"> {t('optional')}</span>}
+      {REQUIRED.includes(name) && <><span className="kyc-required" aria-hidden="true"> *</span><span className="visually-hidden"> ({t('required')})</span></>}
     </label>
   )
   const error = (name) => errors[name] && <p id={`tech-${name}-error`} className="kyc-error" role="alert">{t.error(errors[name], name)}</p>
@@ -376,7 +374,7 @@ export default function TechnicianRegistrationPage() {
 
                 {/* Shop location: device location button, or a pasted Maps link */}
                 <div className="kyc-field is-wide tech-location" role="group" aria-labelledby="tech-shop_location-label" aria-describedby={errors.shop_location ? 'tech-shop_location-error' : undefined}>
-                  <span className="kyc-label" id="tech-shop_location-label">{t('shop_location')}<span className="kyc-optional"> {t('optional')}</span></span>
+                  <span className="kyc-label" id="tech-shop_location-label">{t('shop_location')}</span>
                   <p className="field-help">{t('locationWhy')}</p>
                   {hasDeviceLocation ? (
                     <div className="tech-location-card">
@@ -415,7 +413,7 @@ export default function TechnicianRegistrationPage() {
 
                 {/* Aadhaar (optional upload) */}
                 <div className="kyc-field is-wide">
-                  <span className="kyc-label" id="tech-aadhaar-label">{t('aadhaar')}<span className="kyc-optional"> {t('optional')}</span></span>
+                  <span className="kyc-label" id="tech-aadhaar-label">{t('aadhaar')}</span>
                   <div className={`kyc-doc tech-doc${errors.aadhaar ? ' has-error' : ''}${file ? ' has-file' : ''}`}>
                     <div className="kyc-doc-text">
                       <small className="field-help">{t('aadhaarHelp')}</small>

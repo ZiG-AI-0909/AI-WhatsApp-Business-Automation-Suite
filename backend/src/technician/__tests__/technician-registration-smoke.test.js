@@ -182,6 +182,7 @@ async function main() {
         assert.equal(i18n.LANGUAGES[0].code, 'ta');
         const { en, ta } = i18n.TRANSLATIONS;
         assert.ok(!JSON.stringify(ta).includes('கூட்டாளர்'), 'Partner is பார்ட்னர், never கூட்டாளர்');
+        assert.ok(!/optional/i.test(JSON.stringify(en)) && !JSON.stringify(ta).includes('விருப்பத்தேர்வு'), 'no visible "Optional" wording (fields stay optional in validation)');
         assert.match(ta.heading, /பார்ட்னர்/);
         assert.equal(ta.heading, 'எங்கள் மெக்கானிக் / டெக்னீஷியன் பார்ட்னர் பதிவு படிவம்');
         assert.equal(ta.submit, 'பதிவைப் பூர்த்தி செய்யவும்');
