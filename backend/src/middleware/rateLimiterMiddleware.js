@@ -97,4 +97,26 @@ const _technicianSubmit = rateLimit({
     ...json429('Too many form submissions from this network. Please try again in an hour.'),
 });
 
-module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter };
+// Staff mode of the same form (?staff=1): one staff member registers many
+// partners from one phone, so it gets a larger bucket. Every request in it
+// must still pass the Staff ID + PIN (or linked account) check, so claiming
+// staff mode only buys a rejected request.
+function technicianStaffSubmitLimiter(req, res, next) { return _technicianStaffSubmit(req, res, next); }
+const _technicianStaffSubmit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: Number(process.env.TECHNICIAN_STAFF_SUBMIT_LIMIT_PER_HOUR || 60),
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    ...json429('Too many form submissions from this network. Please try again in an hour.'),
+});
+
+// Staff ID + PIN check on the public form. Wrong PINs also lock the Staff
+// ID itself (technician/technicianStaff.js); this caps guessing per network.
+function technicianStaffVerifyLimiter(req, res, next) { return _technicianStaffVerify(req, res, next); }
+const _technicianStaffVerify = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.TECHNICIAN_STAFF_VERIFY_LIMIT_PER_15MIN || 30),
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    ...json429('Too many staff checks from this network. Please try again in 15 minutes.'),
+});
+
+module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter, technicianStaffSubmitLimiter, technicianStaffVerifyLimiter };

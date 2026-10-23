@@ -6,7 +6,7 @@ import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import { downloadResponse } from './utils/download.js'
 import { formatBytes, formatDate } from './kyc/kycForm.js'
-import { DOCUMENTS, STATUS_META, formatDmy } from './technician/technicianForm.js'
+import { DOCUMENTS, REGISTRATION_SOURCE_META, STATUS_META, formatDmy } from './technician/technicianForm.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // "Submitted forms" — mechanic / technician partner registrations, shown
@@ -41,6 +41,24 @@ function StatusBadge({ status }) {
   return <Badge tone={meta.tone} dot>{meta.label}</Badge>
 }
 
+/** "Self-registered", or the staff member who registered the partner. */
+function RegisteredBy({ row }) {
+  if (row.registration_source !== 'staff') return <span className="muted-copy">{REGISTRATION_SOURCE_META.self.label}</span>
+  return (
+    <>
+      {row.staff_name}
+      <small className="kyc-row-sub">{row.staff_code} · staff</small>
+    </>
+  )
+}
+
+/** Query params for the "Registered by" filter: '' | 'self' | 'staff' | a staff member's id. */
+function registeredByParams(value) {
+  if (!value) return {}
+  if (value === 'self' || value === 'staff') return { source: value }
+  return { source: 'staff', staff: value }
+}
+
 function CopyLinkButton() {
   const [copied, setCopied] = useState(false)
   const url = `${window.location.origin}${FORM_PATH}`
@@ -62,8 +80,9 @@ function CopyLinkButton() {
 
 // ── List ────────────────────────────────────────────────────────────────────
 
-export function TechnicianList({ onOpen }) {
+export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegisteredBy = () => {} }) {
   const [data, setData] = useState(null)
+  const [roster, setRoster] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
@@ -76,7 +95,17 @@ export function TechnicianList({ onOpen }) {
     return () => window.clearTimeout(timer)
   }, [search])
 
-  const query = new URLSearchParams(Object.entries({ status, q }).filter(([, value]) => value)).toString()
+  // Staff names for the "Registered by" filter; without the staff migration
+  // the list simply has no staff options.
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/technicians/staff')
+      .then((result) => { if (!cancelled) setRoster(result.staff || []) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  const query = new URLSearchParams(Object.entries({ status, q, ...registeredByParams(registeredBy) }).filter(([, value]) => value)).toString()
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -87,14 +116,17 @@ export function TechnicianList({ onOpen }) {
     return () => { cancelled = true }
   }, [query])
 
-  const filtered = Boolean(status || q)
+  const filtered = Boolean(status || q || registeredBy)
   const rows = data?.registrations || []
 
   // Same filters as the list, so the file matches what is on screen.
   const exportExcel = async () => {
     setExporting(true)
     try {
-      await downloadResponse(await apiFetchRaw(`/technicians/export/excel${query ? `?${query}` : ''}`), 'technician-partner-registrations.xlsx')
+      // The staff member's name for the file's "Export info" sheet.
+      const member = roster.find((row) => row.id === registeredBy)
+      const exportQuery = member ? `${query}&staff_label=${encodeURIComponent(`${member.full_name} (${member.staff_code})`)}` : query
+      await downloadResponse(await apiFetchRaw(`/technicians/export/excel${exportQuery ? `?${exportQuery}` : ''}`), 'technician-partner-registrations.xlsx')
     } catch (err) {
       setError(errorText(err, 'Excel export'))
     } finally {
@@ -111,6 +143,7 @@ export function TechnicianList({ onOpen }) {
         </div>
         <div className="button-row">
           <CopyLinkButton />
+          {onOpenStaff && <button type="button" className="secondary-btn" onClick={onOpenStaff}><Icon name="users" size={15} /> Staff &amp; targets</button>}
           <button type="button" className="primary-btn" onClick={exportExcel} disabled={exporting || !rows.length}>
             <Icon name="download" size={15} /> {exporting ? 'Exporting…' : `Export Excel${filtered ? ' (filtered)' : ''}`}
           </button>
@@ -124,10 +157,22 @@ export function TechnicianList({ onOpen }) {
             {Object.entries(STATUS_META).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}
           </select>
         </label>
-        <label className="form-label kyc-filter-search">Search
-          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, shop, mobile, place, district" />
+        <label className="form-label">Registered by
+          <select value={registeredBy} onChange={(event) => setRegisteredBy(event.target.value)}>
+            <option value="">Anyone</option>
+            <option value="self">{REGISTRATION_SOURCE_META.self.label}</option>
+            <option value="staff">{REGISTRATION_SOURCE_META.staff.label} (any staff)</option>
+            {roster.length > 0 && (
+              <optgroup label="Staff member">
+                {roster.map((member) => <option key={member.id} value={member.id}>{member.full_name} ({member.staff_code}){member.active ? '' : ' – inactive'}</option>)}
+              </optgroup>
+            )}
+          </select>
         </label>
-        {filtered && <button type="button" className="ghost-btn" onClick={() => { setSearch(''); setQ(''); setStatus('') }}>Clear filters</button>}
+        <label className="form-label kyc-filter-search">Search
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, shop, mobile, place, district, staff" />
+        </label>
+        {filtered && <button type="button" className="ghost-btn" onClick={() => { setSearch(''); setQ(''); setStatus(''); setRegisteredBy('') }}>Clear filters</button>}
       </section>
 
       {error && <div className="notice error" role="alert">{error}</div>}
@@ -156,6 +201,7 @@ export function TechnicianList({ onOpen }) {
                   <th scope="col">State</th>
                   <th scope="col">Contact number</th>
                   <th scope="col">Status</th>
+                  <th scope="col">Registered by</th>
                   <th scope="col">Submitted</th>
                 </tr>
               </thead>
@@ -179,6 +225,7 @@ export function TechnicianList({ onOpen }) {
                     <td>{row.state}</td>
                     <td className="num">{row.mobile}</td>
                     <td><StatusBadge status={row.status} /></td>
+                    <td><RegisteredBy row={row} /></td>
                     <td className="num">{formatDate(row.submitted_at, { withTime: true })}</td>
                   </tr>
                 ))}
@@ -302,6 +349,9 @@ export function TechnicianDetail({ id, onBack }) {
           <h2>{registration.full_name}</h2>
           <div className="kyc-detail-meta">
             <StatusBadge status={registration.status} />
+            {registration.registration_source === 'staff'
+              ? <Badge tone={REGISTRATION_SOURCE_META.staff.tone}>Registered by staff: {registration.staff_name} ({registration.staff_code})</Badge>
+              : <Badge tone={REGISTRATION_SOURCE_META.self.tone}>{REGISTRATION_SOURCE_META.self.label}</Badge>}
             {registration.reviewed_at && <span className="muted-copy">Last reviewed {formatDate(registration.reviewed_at, { withTime: true })}</span>}
           </div>
         </div>

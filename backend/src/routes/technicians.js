@@ -3,12 +3,16 @@
 //
 // Mounted behind requireAuth; every route also requires the KYC reviewer
 // list (private.kyc_staff), the same people who see vendor KYC forms.
+// They also manage the field-staff roster used by the form's Staff mode
+// (/staff) and see each staff member's registrations and targets
+// (/staff/performance). Field staff themselves have no access here.
 // =============================================================
 const express = require('express');
 const { requireKycStaff, SIGNED_URL_SECONDS } = require('../kyc/kycService');
 const service = require('../technician/technicianService');
 const { validateReview } = require('../technician/technicianSchema');
 const { buildTechnicianWorkbook } = require('../technician/technicianExport');
+const staffService = require('../technician/technicianStaff');
 
 const router = express.Router();
 
@@ -35,6 +39,8 @@ router.get('/export/excel', async (req, res) => {
         const { rows } = await service.exportRegistrations(filters);
         const label = [
             filters.status && `status=${filters.status}`,
+            filters.source && `registered by=${filters.source === 'staff' ? 'staff' : 'self'}`,
+            filters.staff && `staff=${req.query.staff_label || filters.staff}`,
             req.query.from && `from=${req.query.from}`,
             req.query.to && `to=${req.query.to}`,
             filters.q && `search="${filters.q}"`,
@@ -45,6 +51,46 @@ router.get('/export/excel', async (req, res) => {
         res.send(buffer);
     } catch (error) {
         fail(res, error, 'Could not export technician registrations.');
+    }
+});
+
+// ── Field-staff roster + performance (before /:id) ────────────────────
+
+const actor = (req) => ({ id: req.user?.authId, email: req.user?.email });
+
+router.get('/staff', async (req, res) => {
+    try {
+        res.json({ staff: await staffService.listStaff() });
+    } catch (error) {
+        fail(res, error, 'Could not load the staff list.');
+    }
+});
+
+router.get('/staff/performance', async (req, res) => {
+    try {
+        res.json(await staffService.performance(staffService.readRange(req.query)));
+    } catch (error) {
+        fail(res, error, 'Could not load the staff report.');
+    }
+});
+
+router.post('/staff', async (req, res) => {
+    try {
+        const { staff, errors } = await staffService.createStaff(req.body || {}, actor(req));
+        if (!staff) return res.status(400).json({ error: 'Please correct the highlighted fields.', fields: errors });
+        res.status(201).json({ staff, fields: errors });
+    } catch (error) {
+        fail(res, error, 'Could not add the staff member.');
+    }
+});
+
+router.put('/staff/:id', async (req, res) => {
+    try {
+        const { staff, errors } = await staffService.updateStaff(req.params.id, req.body || {}, actor(req));
+        if (!staff) return res.status(400).json({ error: 'Please correct the highlighted fields.', fields: errors });
+        res.json({ staff, fields: errors });
+    } catch (error) {
+        fail(res, error, 'Could not save the staff member.');
     }
 });
 

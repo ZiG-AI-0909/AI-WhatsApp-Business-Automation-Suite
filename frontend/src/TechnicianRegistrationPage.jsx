@@ -3,10 +3,11 @@ import BrandLogo from './components/BrandLogo.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
 import Icon from './components/Icon.jsx'
 import { API_URL } from './api.js'
+import { supabase } from './supabaseClient.js'
 import { formatBytes, todayInIndia } from './kyc/kycForm.js'
 import {
   DISTRICTS, DOCUMENT_ACCEPT, FIELD_ORDER, INITIAL_VALUES, REQUIRED, STATES,
-  formatDmy, mapsLink, shrinkImage, validateDocument, validateField, validateForm,
+  formatDmy, mapsLink, normalizeStaffCode, shrinkImage, validateDocument, validateField, validateForm, validateStaffLogin,
 } from './technician/technicianForm.js'
 import { DEFAULT_LANGUAGE, LANGUAGES, translator } from './technician/i18n.js'
 
@@ -17,6 +18,13 @@ import { DEFAULT_LANGUAGE, LANGUAGES, translator } from './technician/i18n.js'
 // switching language keeps everything typed. Staff review submissions under
 // "Submitted forms" (TechnicianSubmissions). Uses the vendor KYC form's page
 // styles (kyc-* classes) plus tech-* additions in App.css.
+//
+// Two modes: the partner registers themselves (default, 'self'), or a field
+// staff member registers them ('staff') with their Staff ID + PIN — or,
+// when signed in to the app with a linked account, automatically. The
+// server checks the staff member on every submit; switching mode always
+// clears the staff identity, so a registration is never credited to the
+// wrong person.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LANG_STORAGE_KEY = 'sp-partner-form-lang'
@@ -63,6 +71,46 @@ function LanguageSwitcher({ lang, onChange, t }) {
 }
 
 const NO_LOCATION = { status: 'idle', lat: null, lng: null, accuracy: null }
+const NO_STAFF_INPUT = { staff_code: '', staff_pin: '' }
+const STAFF_FIELDS = ['staff_code', 'staff_pin']
+
+/** Access token of a signed-in app user on this browser, or null. */
+async function appAccessToken() {
+  if (!supabase) return null
+  try {
+    const { data } = await supabase.auth.getSession()
+    return data?.session?.access_token || null
+  } catch {
+    return null
+  }
+}
+
+function ModeSwitch({ mode, onChange, t }) {
+  const options = [
+    { value: 'self', icon: 'user', label: t('modeSelf'), hint: t('modeSelfHint') },
+    { value: 'staff', icon: 'users', label: t('modeStaff'), hint: t('modeStaffHint') },
+  ]
+  return (
+    <section className="panel tech-mode" aria-labelledby="tech-mode-label">
+      <p className="kyc-label" id="tech-mode-label">{t('modeQuestion')}</p>
+      <div className="tech-mode-options" role="radiogroup" aria-labelledby="tech-mode-label">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={mode === option.value}
+            className={`tech-mode-btn${mode === option.value ? ' is-active' : ''}`}
+            onClick={() => onChange(option.value)}
+          >
+            <Icon name={mode === option.value ? 'check-circle' : option.icon} size={22} />
+            <span><strong>{option.label}</strong><small>{option.hint}</small></span>
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
 
 export default function TechnicianRegistrationPage() {
   const [lang, setLang] = useState(readLang)
@@ -76,6 +124,11 @@ export default function TechnicianRegistrationPage() {
   const [submitting, setSubmitting] = useState(false)
   const [notice, setNotice] = useState(null)
   const [result, setResult] = useState(null)
+  const [mode, setMode] = useState('self')
+  const [staffInput, setStaffInput] = useState(NO_STAFF_INPUT)
+  const [staff, setStaff] = useState(null) // { staff_code, full_name, via: 'pin' | 'account' } once checked
+  const [staffChecking, setStaffChecking] = useState('') // '' | 'account' | 'pin'
+  const staffRunRef = useRef(0) // bumped on every mode/staff change, so late answers are dropped
   const submittingRef = useRef(false)
   const clientIdRef = useRef(null)
   const noticeRef = useRef(null)
@@ -125,6 +178,92 @@ export default function TechnicianRegistrationPage() {
     if (attempted || String(values[name] ?? '').trim()) setFieldError(errorKey(name), validateField(name, values))
   }
 
+  // ── Mode + staff identity ─────────────────────────────────────────────
+  const clearStaff = () => {
+    staffRunRef.current += 1
+    setStaff(null)
+    setStaffInput(NO_STAFF_INPUT)
+    setStaffChecking('')
+    setErrors((current) => {
+      if (!STAFF_FIELDS.some((key) => current[key])) return current
+      const next = { ...current }
+      STAFF_FIELDS.forEach((key) => delete next[key])
+      return next
+    })
+    // Someone else (or nobody) is submitting now: never reuse the id.
+    clientIdRef.current = null
+  }
+
+  const verifyRequest = (body, token) => fetch(`${API_URL}/public/technician/staff/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(body),
+  })
+
+  // Signed in to the app with an account linked to a Staff ID → no PIN needed.
+  const checkAccount = async () => {
+    const run = staffRunRef.current
+    const token = await appAccessToken()
+    if (!token || run !== staffRunRef.current) return
+    setStaffChecking('account')
+    try {
+      const response = await verifyRequest({}, token)
+      const data = await response.json().catch(() => ({}))
+      if (run !== staffRunRef.current) return
+      if (data.staff) setStaff(data.staff)
+      else if (data.fields) setErrors((current) => ({ ...current, ...data.fields }))
+    } catch {
+      // Not recognised: the Staff ID + PIN fields stay.
+    } finally {
+      if (run === staffRunRef.current) setStaffChecking('')
+    }
+  }
+
+  const changeMode = (next) => {
+    if (next === mode) return
+    clearStaff()
+    setMode(next)
+    setNotice(null)
+    if (next === 'staff') checkAccount()
+  }
+
+  const changeStaff = () => {
+    clearStaff()
+    window.setTimeout(() => document.getElementById('tech-staff_code')?.focus(), 0)
+  }
+
+  const onStaffInput = (name, value) => {
+    setStaffInput((current) => ({ ...current, [name]: value }))
+    if (errors[name]) setFieldError(name, '')
+  }
+
+  const verifyStaff = async () => {
+    const found = validateStaffLogin(staffInput)
+    if (Object.keys(found).length) {
+      setErrors((current) => ({ ...current, ...found }))
+      return
+    }
+    const run = staffRunRef.current
+    setStaffChecking('pin')
+    try {
+      const response = await verifyRequest({ staff_code: normalizeStaffCode(staffInput.staff_code), staff_pin: staffInput.staff_pin.trim() })
+      const data = await response.json().catch(() => ({}))
+      if (run !== staffRunRef.current) return
+      if (response.ok && data.staff) {
+        setStaff(data.staff)
+        STAFF_FIELDS.forEach((key) => setFieldError(key, ''))
+      } else if (data.fields) {
+        setErrors((current) => ({ ...current, ...data.fields }))
+      } else {
+        setFieldError('staff_pin', response.status === 429 ? 'staff_locked' : 'staff_check_failed')
+      }
+    } catch {
+      if (run === staffRunRef.current) setFieldError('staff_pin', 'staff_check_failed')
+    } finally {
+      if (run === staffRunRef.current) setStaffChecking('')
+    }
+  }
+
   // ── Shop location: asked for only when the button is tapped, once ──────
   const shareLocation = () => {
     if (!window.isSecureContext || !navigator.geolocation) {
@@ -159,7 +298,7 @@ export default function TechnicianRegistrationPage() {
   }
 
   const focusFirst = (found) => {
-    const first = FIELD_ORDER.find((key) => found[key])
+    const first = [...STAFF_FIELDS, ...FIELD_ORDER].find((key) => found[key])
     const element = first && (document.getElementById(`tech-${first}`) || document.getElementById(first === 'shop_location' ? 'tech-shop_maps_url' : ''))
     if (element) {
       element.focus({ preventScroll: true })
@@ -172,6 +311,7 @@ export default function TechnicianRegistrationPage() {
     if (submittingRef.current || preparingFile) return // no duplicate submissions
     setAttempted(true)
     const found = validateForm(values, { aadhaar: file }, { hasDeviceLocation })
+    if (mode === 'staff' && !staff) Object.assign(found, validateStaffLogin(staffInput))
     setErrors(found)
     if (Object.keys(found).length) {
       setNotice({ type: 'error', key: 'fixErrors', vars: { count: Object.keys(found).length } })
@@ -194,14 +334,28 @@ export default function TechnicianRegistrationPage() {
       form.append('shop_location_accuracy', String(location.accuracy ?? ''))
     }
     if (file) form.append('aadhaar', file)
+    // Staff fields only in Staff mode; the server ignores them otherwise.
+    const headers = {}
+    if (mode === 'staff') {
+      form.append('registration_source', 'staff')
+      if (staff?.via === 'account') {
+        const token = await appAccessToken()
+        if (token) headers.Authorization = `Bearer ${token}`
+      } else {
+        form.append('staff_code', normalizeStaffCode(staff?.staff_code || staffInput.staff_code))
+        form.append('staff_pin', staffInput.staff_pin.trim())
+      }
+    }
     const controller = new AbortController()
     const timer = window.setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS)
     try {
-      const response = await fetch(`${API_URL}/public/technician`, { method: 'POST', body: form, signal: controller.signal })
+      const response = await fetch(`${API_URL}/public/technician${mode === 'staff' ? '?staff=1' : ''}`, { method: 'POST', body: form, headers, signal: controller.signal })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
         const fields = data.fields && typeof data.fields === 'object' ? data.fields : {}
         if (Object.keys(fields).length) {
+          // Staff ID / PIN refused (e.g. deactivated meanwhile): ask for it again.
+          if (STAFF_FIELDS.some((key) => fields[key])) setStaff(null)
           setErrors(fields)
           setNotice({ type: 'error', key: 'fixErrors', vars: { count: Object.keys(fields).length } })
           focusFirst(fields)
@@ -224,6 +378,8 @@ export default function TechnicianRegistrationPage() {
     }
   }
 
+  // Staff mode stays on with the same checked staff member (their name stays
+  // on screen), so they can register the next partner straight away.
   const reset = () => {
     setValues(INITIAL_VALUES)
     setFile(null)
@@ -287,6 +443,9 @@ export default function TechnicianRegistrationPage() {
             <p>{t('successRef')}</p>
             <p className="kyc-reference">{result.reference}</p>
             <p className="muted-copy">{t('successBody', { mobile: `+91 ${values.mobile.replace(/\D/g, '').slice(-10)}` })}</p>
+            {result.registered_by && (
+              <p className="tech-staff-credit"><Icon name="user" size={16} /> {t('successStaff', { name: result.registered_by.full_name, code: result.registered_by.staff_code })}</p>
+            )}
             <div className="button-row"><button type="button" className="secondary-btn tech-big-btn" onClick={reset}>{t('registerAnother')}</button></div>
           </section>
         ) : (
@@ -301,11 +460,67 @@ export default function TechnicianRegistrationPage() {
               <p className="muted-copy">{t('requiredNote')}</p>
             </section>
 
+            <ModeSwitch mode={mode} onChange={changeMode} t={t} />
+
+            {/* Staff mode only: who is registering this partner */}
+            {mode === 'staff' && (
+              <section className="panel kyc-section tech-staff" aria-labelledby="tech-section-staff">
+                <header className="kyc-section-head">
+                  <span className="kyc-section-number" aria-hidden="true"><Icon name="user" size={16} /></span>
+                  <div>
+                    <h2 id="tech-section-staff">{t('staffSection')}</h2>
+                    {!staff && <p className="muted-copy">{t('staffSectionNote')}</p>}
+                  </div>
+                </header>
+                {staff ? (
+                  <div className="tech-location-card" role="status">
+                    <p className="tech-location-ok"><Icon name="check-circle" size={18} /> {t('staffVerified', { name: staff.full_name, code: staff.staff_code })}</p>
+                    <small className="field-help">{t(staff.via === 'account' ? 'staffViaAccount' : 'staffViaPin')}</small>
+                    <div><button type="button" className="ghost-btn tech-big-btn" onClick={changeStaff}>{t('changeStaff')}</button></div>
+                  </div>
+                ) : staffChecking === 'account' ? (
+                  <p className="field-help" role="status"><span className="tech-spinner" aria-hidden="true" /> {t('checkingAccount')}</p>
+                ) : (
+                  <div className="kyc-grid">
+                    {STAFF_FIELDS.map((name) => (
+                      <div className="kyc-field" key={name}>
+                        <label className="kyc-label" htmlFor={`tech-${name}`}>
+                          {t(name)}<span className="kyc-required" aria-hidden="true"> *</span><span className="visually-hidden"> ({t('required')})</span>
+                        </label>
+                        <input
+                          id={`tech-${name}`}
+                          name={name}
+                          value={staffInput[name]}
+                          onChange={(event) => onStaffInput(name, event.target.value)}
+                          onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); verifyStaff() } }}
+                          aria-invalid={errors[name] ? 'true' : undefined}
+                          aria-describedby={errors[name] ? `tech-${name}-error` : undefined}
+                          aria-required="true"
+                          placeholder={t(`${name}Placeholder`)}
+                          lang="en"
+                          {...(name === 'staff_pin'
+                            ? { type: 'password', inputMode: 'numeric', maxLength: 8, autoComplete: 'off' }
+                            : { type: 'text', maxLength: 20, autoCapitalize: 'characters', autoComplete: 'off', spellCheck: false })}
+                        />
+                        {error(name)}
+                      </div>
+                    ))}
+                    <div className="kyc-field is-wide">
+                      <button type="button" className="secondary-btn tech-big-btn" onClick={verifyStaff} disabled={Boolean(staffChecking)} aria-busy={staffChecking === 'pin'}>
+                        {staffChecking === 'pin' ? <span className="tech-spinner" aria-hidden="true" /> : <Icon name="shield" size={16} />}
+                        {staffChecking === 'pin' ? t('verifyingStaff') : t('verifyStaff')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+
             {/* Section 1 — fields 1–8 (all required except Shop Name) */}
             <section className="panel kyc-section" aria-labelledby="tech-section-main">
               <header className="kyc-section-head">
                 <span className="kyc-section-number" aria-hidden="true">1</span>
-                <div><h2 id="tech-section-main">{t('sectionMain')}</h2></div>
+                <div><h2 id="tech-section-main">{t(mode === 'staff' ? 'sectionMainStaff' : 'sectionMain')}</h2></div>
               </header>
               <div className="kyc-grid">
                 {textField('full_name', { input: { autoComplete: 'name' } })}

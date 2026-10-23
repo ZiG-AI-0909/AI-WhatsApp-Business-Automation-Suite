@@ -120,6 +120,28 @@ export function validateForm(values, files, { hasDeviceLocation = false } = {}) 
   return errors
 }
 
+// ── Staff mode (same rules as technicianStaff.js on the server) ─────────
+
+export const normalizeStaffCode = (value) => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '')
+
+/** Error codes for the Staff ID + PIN before they are sent: { staff_code?, staff_pin? }. */
+export function validateStaffLogin({ staff_code: code, staff_pin: pin }) {
+  const errors = {}
+  const staffCode = normalizeStaffCode(code)
+  if (!staffCode) errors.staff_code = 'staff_required'
+  else if (!/^[A-Z0-9][A-Z0-9-]{1,19}$/.test(staffCode)) errors.staff_code = 'staff_invalid'
+  const pinText = String(pin ?? '').trim()
+  if (!pinText) errors.staff_pin = 'staff_pin_required'
+  else if (!/^\d{4,8}$/.test(pinText)) errors.staff_pin = 'staff_invalid'
+  return errors
+}
+
+export const REGISTRATION_SOURCE_META = {
+  self: { label: 'Self-registered', tone: 'neutral' },
+  staff: { label: 'Staff-registered', tone: 'cold' },
+}
+export const TARGET_PERIOD_LABELS = { day: 'per day', week: 'per week', month: 'per month' }
+
 /** yyyy-mm-dd → DD/MM/YYYY */
 export function formatDmy(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))

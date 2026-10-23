@@ -6,6 +6,7 @@ import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import { downloadResponse } from './utils/download.js'
 import { TechnicianDetail, TechnicianList } from './TechnicianSubmissions.jsx'
+import TechnicianStaffView from './TechnicianStaffView.jsx'
 import {
   CHECK_STATUSES, DOCUMENTS, FIELDS, FINAL_DECISIONS, INTERNAL_CHECKS, SECTIONS, STATUS_META,
   formatBytes, formatDate,
@@ -485,15 +486,26 @@ function KycDetail({ id, onBack }) {
 
 export default function KycSubmissionsView() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS)
-  // { form: 'kyc' | 'technician', id } — the open submission, if any.
+  // { form: 'kyc' | 'technician', id } — the open submission, if any;
+  // { form: 'technician-staff' } — the staff registrations & targets view.
   const [selected, setSelected] = useState(null)
+  // Partner list "Registered by" filter, kept while a registration is open.
+  const [registeredBy, setRegisteredBy] = useState('')
   const back = () => setSelected(null)
   if (selected?.form === 'kyc') return <KycDetail id={selected.id} onBack={back} />
   if (selected?.form === 'technician') return <TechnicianDetail id={selected.id} onBack={back} />
+  if (selected?.form === 'technician-staff') {
+    return <TechnicianStaffView onBack={back} onShowRegistrations={(staff) => { setRegisteredBy(staff.id); back() }} />
+  }
   return (
     <div className="kyc-forms-stack">
       <KycList filters={filters} setFilters={setFilters} onOpen={(id) => setSelected({ form: 'kyc', id })} />
-      <TechnicianList onOpen={(id) => setSelected({ form: 'technician', id })} />
+      <TechnicianList
+        onOpen={(id) => setSelected({ form: 'technician', id })}
+        onOpenStaff={() => setSelected({ form: 'technician-staff' })}
+        registeredBy={registeredBy}
+        setRegisteredBy={setRegisteredBy}
+      />
     </div>
   )
 }

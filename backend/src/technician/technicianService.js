@@ -15,12 +15,13 @@ const TABLE = 'technician_partner_registrations';
 const PREFIX = 'technicians';
 const LIST_LIMIT = 1000;
 const EXPORT_LIMIT = 5000;
-const LIST_COLUMNS = 'id, submitted_at, status, full_name, shop_name, mobile, place, district, state, shop_maps_url';
-const MIGRATION_MESSAGE = 'Technician partner registration needs a database update: run supabase-technician-registration-migration.sql in the Supabase SQL Editor.';
+const LIST_COLUMNS = 'id, submitted_at, status, full_name, shop_name, mobile, place, district, state, shop_maps_url, registration_source, staff_code, staff_name';
+const SOURCES = ['self', 'staff'];
+const MIGRATION_MESSAGE = 'Technician partner registration needs a database update: run supabase-technician-registration-migration.sql, then supabase-technician-staff-migration.sql, in the Supabase SQL Editor.';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function dbError(error, message) {
-    if (isMissingSchema(error)) return new KycError(MIGRATION_MESSAGE, 503, 'TECH_MIGRATION_PENDING');
+    if (isMissingSchema(error) || error?.code === '42703') return new KycError(MIGRATION_MESSAGE, 503, 'TECH_MIGRATION_PENDING');
     console.error(`[technician] ${message}: ${error?.code || ''} ${error?.message || error}`);
     return new KycError(message, 500, 'TECH_DB_ERROR');
 }
@@ -44,10 +45,17 @@ async function removeObjects(paths) {
     }
 }
 
+/** What the form shows after saving; registered_by only for Staff mode. */
+function savedResult(row, attribution) {
+    const result = { id: row.id, submitted_at: row.submitted_at, reference: referenceFor(row.id) };
+    if (attribution) result.registered_by = { staff_code: attribution.staff_code, full_name: attribution.staff_name };
+    return result;
+}
+
 async function findExisting(id) {
-    const { data, error } = await supabase.from(TABLE).select('id, submitted_at').eq('id', id).maybeSingle();
+    const { data, error } = await supabase.from(TABLE).select('*').eq('id', id).maybeSingle();
     if (error) throw dbError(error, 'Your form could not be saved. Please try again in a few minutes.');
-    return data ? { id: data.id, submitted_at: data.submitted_at, reference: referenceFor(data.id), duplicate: true } : null;
+    return data ? { ...savedResult(data, data.registration_source === 'staff' ? data : null), duplicate: true } : null;
 }
 
 /**
@@ -55,8 +63,11 @@ async function findExisting(id) {
  * `clientId` is a UUID the form makes once per fill-in: a retry after a
  * dropped connection (the first request may have saved) returns the
  * existing registration instead of creating a second one.
+ * `attribution` (Staff mode only) comes from technicianStaff.attributionFor;
+ * a self-registration leaves those columns to their database default
+ * ('self', no staff).
  */
-async function createRegistration({ values, documents, meta = {}, clientId }) {
+async function createRegistration({ values, documents, meta = {}, clientId, attribution = null }) {
     requireDb();
     const id = UUID.test(String(clientId || '')) ? String(clientId).toLowerCase() : crypto.randomUUID();
     const existing = await findExisting(id);
@@ -87,6 +98,7 @@ async function createRegistration({ values, documents, meta = {}, clientId }) {
         id,
         ...values,
         documents: documentMap,
+        ...(attribution || {}),
         submitter_ip: meta.ip ? String(meta.ip).slice(0, 64) : null,
         submitter_user_agent: meta.userAgent ? String(meta.userAgent).slice(0, 300) : null,
     };
@@ -102,12 +114,14 @@ async function createRegistration({ values, documents, meta = {}, clientId }) {
         throw dbError(error, 'Your form could not be saved. Please try again in a few minutes.');
     }
     require('../storage/storageJobs').checkSoon(); // refresh storage usage
-    return { id: data.id, submitted_at: data.submitted_at, reference: referenceFor(data.id) };
+    return savedResult(data, attribution);
 }
 
 function readFilters(query = {}) {
     return {
         status: STATUSES.includes(query.status) ? query.status : '',
+        source: SOURCES.includes(query.source) ? query.source : '',
+        staff: UUID.test(String(query.staff || '')) ? String(query.staff).toLowerCase() : '',
         // Strip PostgREST filter syntax characters from free text.
         q: String(query.q || '').replace(/[,()*%\\:"]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80),
         from: indiaDayStart(query.from),
@@ -123,11 +137,13 @@ async function queryRegistrations(filters, { columns, limit }) {
     requireDb();
     let query = supabase.from(TABLE).select(columns, { count: 'exact' });
     if (filters.status) query = query.eq('status', filters.status);
+    if (filters.source) query = query.eq('registration_source', filters.source);
+    if (filters.staff) query = query.eq('staff_id', filters.staff);
     if (filters.from) query = query.gte('submitted_at', filters.from);
     if (filters.to) query = query.lt('submitted_at', filters.to);
     if (filters.q) {
         const like = `"*${filters.q}*"`; // quoted: the term may contain spaces
-        query = query.or(`full_name.ilike.${like},shop_name.ilike.${like},mobile.ilike.${like},place.ilike.${like},district.ilike.${like}`);
+        query = query.or(`full_name.ilike.${like},shop_name.ilike.${like},mobile.ilike.${like},place.ilike.${like},district.ilike.${like},staff_name.ilike.${like},staff_code.ilike.${like}`);
     }
     const { data, error, count } = await query.order('submitted_at', { ascending: false }).range(0, limit - 1);
     if (error) throw dbError(error, 'Could not load technician registrations.');

@@ -274,7 +274,7 @@ async function main() {
             const list = await call('GET', '/technicians?q=coimbatore&status=pending', { token: 'token-staff' });
             assert.equal(list.status, 200);
             assert.equal(list.data.registrations.length, 4, 'every Coimbatore registration so far');
-            assert.deepEqual(Object.keys(list.data.registrations[0]).sort(), ['district', 'full_name', 'id', 'mobile', 'place', 'reference', 'shop_maps_url', 'shop_name', 'state', 'status', 'submitted_at']);
+            assert.deepEqual(Object.keys(list.data.registrations[0]).sort(), ['district', 'full_name', 'id', 'mobile', 'place', 'reference', 'registration_source', 'shop_maps_url', 'shop_name', 'staff_code', 'staff_name', 'state', 'status', 'submitted_at']);
             assert.equal((await call('GET', '/technicians?q=nobody', { token: 'token-staff' })).data.registrations.length, 0);
         });
 
@@ -294,7 +294,7 @@ async function main() {
             const sheet = workbook.getWorksheet('Partner registrations');
             assert.equal(sheet.rowCount, 1 + 4, 'header + the 4 rows the list shows');
             const header = sheet.getRow(1).values.filter(Boolean);
-            assert.deepEqual(header.slice(0, 14), ['Reference', 'Submitted (IST)', 'Status', 'Name', 'District', 'Place', 'Shop Name', 'Contact Number', 'Address', 'Pincode', 'State', 'Date of Birth', 'Date of Marriage', 'Shop Location (Google Maps)']);
+            assert.deepEqual(header.slice(0, 17), ['Reference', 'Submitted (IST)', 'Status', 'Registered By', 'Staff ID', 'Staff Name', 'Name', 'District', 'Place', 'Shop Name', 'Contact Number', 'Address', 'Pincode', 'State', 'Date of Birth', 'Date of Marriage', 'Shop Location (Google Maps)']);
             const rowFor = (reference) => {
                 for (let index = 2; index <= sheet.rowCount; index++) {
                     if (sheet.getRow(index).getCell(1).value === reference) return sheet.getRow(index);
@@ -310,6 +310,8 @@ async function main() {
             assert.equal(located.getCell(col('Shop Name')).value, 'Murugan Motor Works');
             assert.deepEqual(located.getCell(col('Shop Location (Google Maps)')).value, { text: 'https://www.google.com/maps?q=10.658235,77.008123', hyperlink: 'https://www.google.com/maps?q=10.658235,77.008123' });
             assert.equal(located.getCell(col('Location Source')).value, 'Shared from phone');
+            assert.equal(located.getCell(col('Registered By')).value, 'Self-registered', 'rows without a source are self-registered');
+            assert.equal(located.getCell(col('Staff ID')).value, '');
             assert.equal(rowFor(`TEC-${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`).getCell(col('Aadhaar Uploaded')).value, 'Yes');
             const text = JSON.stringify(sheet.getSheetValues());
             assert.ok(!text.includes('technicians/'), 'no Aadhaar storage path in the file');

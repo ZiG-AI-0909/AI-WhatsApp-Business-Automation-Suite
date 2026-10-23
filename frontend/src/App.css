@@ -1034,6 +1034,21 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .tech-page .kyc-doc { margin-top: 2px; }
 .tech-submit { width: 100%; min-height: 56px; gap: var(--space-2); font-size: var(--text-md); }
 .tech-secure { margin: 0; justify-content: center; text-align: center; }
+/* Who fills in the partner form: the partner or a staff member (Staff mode) */
+.tech-mode { display: flex; flex-direction: column; gap: var(--space-2); }
+.tech-mode .kyc-label { margin: 0; }
+.tech-mode-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.tech-mode-btn { display: flex; align-items: center; gap: var(--space-3); min-height: 64px; padding: var(--space-3); border: 2px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--text-primary); text-align: left; cursor: pointer; font: inherit; }
+.tech-mode-btn .icon { flex-shrink: 0; color: var(--text-secondary); }
+.tech-mode-btn span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tech-mode-btn strong { font-size: var(--text-md); line-height: 1.35; }
+.tech-mode-btn small { color: var(--text-secondary); font-size: var(--text-sm); line-height: 1.4; }
+.tech-mode-btn.is-active { border-color: var(--accent); background: var(--surface-subtle); }
+.tech-mode-btn.is-active .icon { color: var(--accent); }
+.tech-mode-btn:focus-visible { outline: none; box-shadow: var(--accent-glow); }
+.tech-staff { border-color: var(--accent-border); }
+.tech-staff-credit { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; font-weight: 600; }
+@media (max-width: 420px) { .tech-mode-options { grid-template-columns: 1fr; } }
 .tech-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: tech-spin 0.8s linear infinite; vertical-align: -3px; }
 @keyframes tech-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .tech-spinner { animation-duration: 2.4s; } }
@@ -1049,6 +1064,16 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 }
 .kyc-forms-stack { display: flex; flex-direction: column; gap: var(--space-8); }
 .tech-list { padding-top: var(--space-6); border-top: 1px solid var(--border-subtle); }
+/* Staff registrations & targets (TechnicianStaffView) */
+.tech-target { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.tech-target small { color: var(--text-secondary); }
+.tech-target-bar { display: block; height: 6px; border-radius: var(--radius-pill); background: var(--border-subtle); overflow: hidden; }
+.tech-target-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.tech-target-bar.is-met i { background: var(--success-text); }
+.tech-target-input { display: flex; gap: var(--space-2); }
+.tech-target-input input { flex: 1; min-width: 0; }
+.tech-target-input select { flex: 0 0 auto; width: auto; }
+.tech-checkbox span { display: inline-flex; align-items: center; gap: var(--space-2); font-weight: 600; }
 
 /* Section 3 cascading category picker (kyc/CategoryPicker.jsx) */
 .kyc-cats { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-4); }
