@@ -5,7 +5,7 @@ import Icon from './components/Icon.jsx'
 import { apiFetch, apiFetchRaw } from './api.js'
 import { friendlyErrorMessage } from './utils/errorMessages.js'
 import { downloadResponse } from './utils/download.js'
-import { formatDate, todayInIndia } from './kyc/kycForm.js'
+import { formatDate } from './kyc/kycForm.js'
 import { TARGET_PERIOD_LABELS } from './technician/technicianForm.js'
 import { EMPLOYEE_FORM_PATH, EMPLOYEE_SOURCE_META, EMPLOYEE_STATES, filterEmployees } from './technician/employeeForm.js'
 
@@ -15,68 +15,16 @@ import { EMPLOYEE_FORM_PATH, EMPLOYEE_SOURCE_META, EMPLOYEE_STATES, filterEmploy
 // themselves through the public link /employee-registration (Employee ID
 // SEPL-{STATE}{NNN} + initial PIN, see EmployeeRegistrationPage); KYC
 // reviewers share that link, search and export the employee list, edit
-// targets, activate / deactivate employees, and see each one's registrations.
+// targets, activate / deactivate employees, and open each one's partner
+// forms (the registrations list filtered by "Registered by", which also shows
+// that employee's counts and target — see TechnicianSubmissions).
 // PINs are never shown here (only their hash exists).
-// Every number comes from /api/technicians/staff/performance, which counts
-// the registration rows themselves:
-//   * Submitted  — Staff-mode registrations by that staff member.
-//   * Counted    — the ones credited toward the target: the first
-//                  registration of that mobile number that was not rejected.
-//   * Not counted — the partner was already registered (by anyone).
-// Self-registrations are never credited to a staff member.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const EMPTY_FORM = { full_name: '', phone: '', state: '', email: '', pin: '', target_count: '', target_period: 'month', account_email: '', active: true }
 
 function errorText(err, context) {
   return err?.code === 'TECH_MIGRATION_PENDING' ? err.message : friendlyErrorMessage(err, { context })
-}
-
-// ── Date ranges (India time, inclusive yyyy-mm-dd) ──────────────────────────
-
-function addDays(day, days) {
-  const date = new Date(`${day}T00:00:00Z`)
-  date.setUTCDate(date.getUTCDate() + days)
-  return date.toISOString().slice(0, 10)
-}
-
-function presetRange(preset) {
-  const today = todayInIndia()
-  const monthStart = `${today.slice(0, 8)}01`
-  switch (preset) {
-    case 'today': return { from: today, to: today }
-    case 'week': return { from: addDays(today, -((new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7)), to: today }
-    case 'month': return { from: monthStart, to: today }
-    case 'last_month': {
-      const lastDay = addDays(monthStart, -1)
-      return { from: `${lastDay.slice(0, 8)}01`, to: lastDay }
-    }
-    default: return { from: '', to: '' }
-  }
-}
-
-const PRESETS = [
-  ['today', 'Today'],
-  ['week', 'This week'],
-  ['month', 'This month'],
-  ['last_month', 'Last month'],
-  ['all', 'All time'],
-  ['custom', 'Custom'],
-]
-
-function TargetCell({ target }) {
-  if (!target) return <span className="kyc-empty">No target</span>
-  const percent = Math.min(100, target.percent)
-  const period = { day: 'today', week: 'this week', month: 'this month' }[target.period]
-  return (
-    <div className="tech-target">
-      <span><strong>{target.credited}</strong> / {target.target} {period}</span>
-      <span className={`tech-target-bar${target.met ? ' is-met' : ''}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} aria-label={`${target.percent}% of target ${period}`}>
-        <i style={{ width: `${percent}%` }} />
-      </span>
-      <small>{target.met ? 'Target met' : `${target.percent}%`}</small>
-    </div>
-  )
 }
 
 // ── Edit an employee (new employees register through the public link) ──────
@@ -240,7 +188,7 @@ function RegistrationLinkPanel() {
 
 // ── Employee directory (search, state filter, status, export) ──────────────
 
-function EmployeeDirectory({ roster, loading, onEdit, onChanged }) {
+function EmployeeDirectory({ roster, loading, onEdit, onChanged, onShowRegistrations }) {
   const [search, setSearch] = useState('')
   const [state, setState] = useState('')
   const [busyId, setBusyId] = useState(null)
@@ -383,6 +331,7 @@ function EmployeeDirectory({ roster, loading, onEdit, onChanged }) {
                           <button type="button" className="ghost-btn" onClick={() => toggleActive(row)} disabled={busyId === row.id}>
                             {busyId === row.id ? 'Saving…' : row.active ? 'Deactivate' : 'Activate'}
                           </button>
+                          <button type="button" className="ghost-btn" onClick={() => onShowRegistrations(row)}>Partner forms</button>
                           <button type="button" className="secondary-btn" onClick={() => onEdit(row)}>Edit</button>
                         </div>
                       </td>
@@ -401,9 +350,6 @@ function EmployeeDirectory({ roster, loading, onEdit, onChanged }) {
 // ── View ────────────────────────────────────────────────────────────────────
 
 export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
-  const [preset, setPreset] = useState('month')
-  const [custom, setCustom] = useState(() => presetRange('month'))
-  const [report, setReport] = useState(null)
   const [roster, setRoster] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -411,23 +357,19 @@ export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
   const [notice, setNotice] = useState(null)
   const [reload, setReload] = useState(0)
 
-  const range = preset === 'custom' ? custom : presetRange(preset)
-  const query = new URLSearchParams(Object.entries(range).filter(([, value]) => value)).toString()
-
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all([apiFetch(`/technicians/staff/performance${query ? `?${query}` : ''}`), apiFetch('/technicians/staff')])
-      .then(([performance, list]) => {
+    apiFetch('/technicians/staff')
+      .then((list) => {
         if (cancelled) return
-        setReport(performance)
         setRoster(list.staff || [])
         setError('')
       })
-      .catch((err) => { if (!cancelled) setError(errorText(err, 'Staff report')) })
+      .catch((err) => { if (!cancelled) setError(errorText(err, 'Staff members')) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [query, reload])
+  }, [reload])
 
   const saved = (staff, linkWarning) => {
     setEditing(null)
@@ -441,10 +383,6 @@ export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
     setReload((value) => value + 1)
   }
 
-  const rosterById = new Map(roster.map((row) => [row.id, row]))
-  const totals = report?.totals
-  const rangeLabel = range.from || range.to ? `${range.from ? formatDate(range.from) : 'start'} – ${range.to ? formatDate(range.to) : 'today'}` : 'all time'
-
   return (
     <div className="view-workspace">
       <div><button type="button" className="ghost-btn" onClick={onBack}><Icon name="chevron-left" size={16} /> All submissions</button></div>
@@ -452,7 +390,7 @@ export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
       <div className="view-toolbar">
         <div>
           <h2>Staff members &amp; targets</h2>
-          <p className="muted-copy">Employees register themselves through the registration link and use their Employee ID + PIN in the partner form's Staff mode.</p>
+          <p className="muted-copy">Employees register themselves through the registration link and use their Employee ID + PIN in the partner form's Staff mode. To see the partner forms an employee filled in, with their counts and target, use Partner forms (or the "Registered by" filter on the registrations list).</p>
         </div>
       </div>
 
@@ -462,104 +400,15 @@ export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
         <StaffForm key={editing.id} initial={editing} onSaved={saved} onDeleted={deleted} onCancel={() => setEditing(null)} />
       )}
       {notice && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
+      {error && <div className="notice error" role="alert">{error}</div>}
 
       <EmployeeDirectory
         roster={roster}
         loading={loading}
         onEdit={(member) => { setEditing(member); setNotice(null); window.scrollTo(0, 0) }}
         onChanged={() => setReload((value) => value + 1)}
+        onShowRegistrations={onShowRegistrations}
       />
-
-      <div className="view-toolbar emp-performance-head">
-        <div>
-          <h3>Partner registrations &amp; targets</h3>
-          <p className="muted-copy">Partners registered by employees through the form's Staff mode. A registration counts toward a target once: when it is the first registration of that mobile number and not rejected. Self-registrations never count for staff.</p>
-        </div>
-      </div>
-
-      <section className="panel kyc-filters" aria-label="Report period">
-        <label className="form-label">Period
-          <select value={preset} onChange={(event) => setPreset(event.target.value)}>
-            {PRESETS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </label>
-        {preset === 'custom' && (
-          <>
-            <label className="form-label">From
-              <input type="date" value={custom.from} max={custom.to || undefined} onChange={(event) => setCustom({ ...custom, from: event.target.value })} />
-            </label>
-            <label className="form-label">To
-              <input type="date" value={custom.to} min={custom.from || undefined} onChange={(event) => setCustom({ ...custom, to: event.target.value })} />
-            </label>
-          </>
-        )}
-      </section>
-
-      {error && <div className="notice error" role="alert">{error}</div>}
-
-      {totals && (
-        <div className="stats-grid compact-stats" aria-label={`Totals, ${rangeLabel}`}>
-          {[
-            ['All registrations', totals.all, 'blue'],
-            ['Self-registered', totals.self, 'green'],
-            ['Staff-registered', totals.staff, 'amber'],
-            ['Counted for staff', totals.credited, 'green'],
-          ].map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value}</strong></article>)}
-        </div>
-      )}
-
-      {loading && !report ? (
-        <div className="panel muted-copy" role="status">Loading staff report…</div>
-      ) : !report?.staff?.length ? (
-        <EmptyState icon="users" title="No staff members yet" description="Share the registration link above. Each employee gets an Employee ID and PIN to use in the partner form's Staff mode." />
-      ) : (
-        <>
-          <p className="muted-copy" role="status">{rangeLabel} · targets show the current day, week or month{loading ? ' · updating…' : ''}</p>
-          <div className="campaign-table-wrap">
-            <table className="kyc-table">
-              <thead>
-                <tr>
-                  <th scope="col">Employee</th>
-                  <th scope="col" className="num">Submitted</th>
-                  <th scope="col" className="num">Counted</th>
-                  <th scope="col" className="num">Not counted</th>
-                  <th scope="col" className="num">Rejected</th>
-                  <th scope="col">Target</th>
-                  <th scope="col"><span className="visually-hidden">Actions</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {report.staff.map((row) => {
-                  const member = rosterById.get(row.id)
-                  return (
-                    <tr key={row.id}>
-                      <td>
-                        <strong>{row.full_name}</strong>
-                        <small className="kyc-row-sub">
-                          {row.staff_code}
-                          {!row.active && <> · <Badge tone="neutral">Inactive</Badge></>}
-                          {member?.account_email && <> · {member.account_email}</>}
-                        </small>
-                      </td>
-                      <td className="num">{row.submitted}</td>
-                      <td className="num"><strong>{row.credited}</strong></td>
-                      <td className="num">{row.duplicates}</td>
-                      <td className="num">{row.rejected}</td>
-                      <td><TargetCell target={row.target} /></td>
-                      <td>
-                        <div className="button-row">
-                          {row.submitted > 0 && <button type="button" className="ghost-btn" onClick={() => onShowRegistrations(row)}>Registrations</button>}
-                          {member && <button type="button" className="secondary-btn" onClick={() => { setEditing(member); setNotice(null) }}>Edit</button>}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
     </div>
   )
 }

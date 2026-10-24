@@ -59,6 +59,55 @@ function registeredByParams(value) {
   return { source: 'staff', staff: value }
 }
 
+// Target progress for the current day / week / month (from /staff/performance).
+function TargetCell({ target }) {
+  if (!target) return <span className="kyc-empty">No target</span>
+  const percent = Math.min(100, target.percent)
+  const period = { day: 'today', week: 'this week', month: 'this month' }[target.period]
+  return (
+    <div className="tech-target">
+      <span><strong>{target.credited}</strong> / {target.target} {period}</span>
+      <span className={`tech-target-bar${target.met ? ' is-met' : ''}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)} aria-label={`${target.percent}% of target ${period}`}>
+        <i style={{ width: `${percent}%` }} />
+      </span>
+      <small>{target.met ? 'Target met' : `${target.percent}%`}</small>
+    </div>
+  )
+}
+
+/**
+ * The employee picked in "Registered by": who they are and how many partner
+ * forms they filled in (all time), counted by /api/technicians/staff/performance:
+ *   * Submitted   — Staff-mode registrations by that employee.
+ *   * Counted     — credited toward the target: the first registration of
+ *                   that mobile number that was not rejected.
+ *   * Not counted — the partner was already registered (by anyone).
+ */
+function EmployeeSummary({ member, stats }) {
+  return (
+    <section className="panel emp-summary" aria-label={`Partner forms by ${member.full_name}`}>
+      <div className="emp-summary-who">
+        <strong className="emp-id">{member.staff_code}</strong>
+        <span>{member.full_name}</span>
+        <small className="muted-copy">{[member.state, member.active ? null : 'Inactive'].filter(Boolean).join(' · ')}</small>
+      </div>
+      {stats ? (
+        <>
+          <dl className="emp-summary-stats">
+            {[
+              ['Submitted', stats.submitted],
+              ['Counted', stats.credited],
+              ['Not counted', stats.duplicates],
+              ['Rejected', stats.rejected],
+            ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+          </dl>
+          <div className="emp-summary-target"><span className="muted-copy">Target</span> <TargetCell target={stats.target} /></div>
+        </>
+      ) : <span className="muted-copy" role="status">Loading counts…</span>}
+    </section>
+  )
+}
+
 function CopyLinkButton() {
   const [copied, setCopied] = useState(false)
   const url = `${window.location.origin}${FORM_PATH}`
@@ -83,6 +132,7 @@ function CopyLinkButton() {
 export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegisteredBy = () => {} }) {
   const [data, setData] = useState(null)
   const [roster, setRoster] = useState([])
+  const [staffStats, setStaffStats] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
@@ -116,6 +166,21 @@ export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegi
     return () => { cancelled = true }
   }, [query])
 
+  // An employee picked in "Registered by" → their counts and target (all time).
+  // Stats are kept with the employee id they belong to, so switching employee
+  // shows "Loading counts…" instead of the previous employee's numbers.
+  const member = roster.find((row) => row.id === registeredBy) || null
+  const memberId = member?.id
+  useEffect(() => {
+    if (!memberId) return undefined
+    let cancelled = false
+    apiFetch('/technicians/staff/performance')
+      .then((report) => { if (!cancelled) setStaffStats({ id: memberId, row: report.staff?.find((row) => row.id === memberId) || null }) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [memberId, query])
+  const memberStats = staffStats?.id === memberId ? staffStats.row : null
+
   const filtered = Boolean(status || q || registeredBy)
   const rows = data?.registrations || []
 
@@ -123,8 +188,7 @@ export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegi
   const exportExcel = async () => {
     setExporting(true)
     try {
-      // The staff member's name for the file's "Export info" sheet.
-      const member = roster.find((row) => row.id === registeredBy)
+      // The employee's name for the file's "Export info" sheet.
       const exportQuery = member ? `${query}&staff_label=${encodeURIComponent(`${member.full_name} (${member.staff_code})`)}` : query
       await downloadResponse(await apiFetchRaw(`/technicians/export/excel${exportQuery ? `?${exportQuery}` : ''}`), 'technician-partner-registrations.xlsx')
     } catch (err) {
@@ -163,19 +227,21 @@ export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegi
             <option value="self">{REGISTRATION_SOURCE_META.self.label}</option>
             <option value="staff">{REGISTRATION_SOURCE_META.staff.label} (any staff)</option>
             {roster.length > 0 && (
-              <optgroup label="Staff member">
-                {roster.map((member) => <option key={member.id} value={member.id}>{member.full_name} ({member.staff_code}){member.active ? '' : ' – inactive'}</option>)}
+              <optgroup label="Employee">
+                {roster.map((row) => <option key={row.id} value={row.id}>{row.staff_code} – {row.full_name}{row.active ? '' : ' (inactive)'}</option>)}
               </optgroup>
             )}
           </select>
         </label>
         <label className="form-label kyc-filter-search">Search
-          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, shop, mobile, place, district, staff" />
+          <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name, shop, mobile, place, district, employee" />
         </label>
         {filtered && <button type="button" className="ghost-btn" onClick={() => { setSearch(''); setQ(''); setStatus(''); setRegisteredBy('') }}>Clear filters</button>}
       </section>
 
       {error && <div className="notice error" role="alert">{error}</div>}
+
+      {member && <EmployeeSummary member={member} stats={memberStats} />}
 
       {loading && !data ? (
         <div className="panel muted-copy" role="status">Loading partner registrations…</div>
