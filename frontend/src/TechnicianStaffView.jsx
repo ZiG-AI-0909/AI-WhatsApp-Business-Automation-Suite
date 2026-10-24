@@ -81,7 +81,7 @@ function TargetCell({ target }) {
 
 // ── Edit an employee (new employees register through the public link) ──────
 
-function StaffForm({ initial, onSaved, onCancel }) {
+function StaffForm({ initial, onSaved, onDeleted, onCancel }) {
   const [form, setForm] = useState(() => ({
     ...EMPTY_FORM,
     full_name: initial.full_name,
@@ -119,6 +119,27 @@ function StaffForm({ initial, onSaved, onCancel }) {
       onSaved(data.staff, data.fields?.account_email)
     } catch (err) {
       setNotice(friendlyErrorMessage(err, { context: 'Save staff member' }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Only members who never registered a partner can be deleted (the server
+  // refuses the others with a "deactivate instead" message).
+  const remove = async () => {
+    if (!window.confirm(`Delete ${initial.full_name} (${initial.staff_code}) permanently?\n\nThis cannot be undone. Their Employee ID will not be issued again. Members who have registered partners cannot be deleted — deactivate them instead.`)) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      const response = await apiFetchRaw(`/technicians/staff/${initial.id}`, { method: 'DELETE' })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || !data.deleted) {
+        setNotice(data.error || `Could not delete (${response.status}).`)
+        return
+      }
+      onDeleted(data.deleted)
+    } catch (err) {
+      setNotice(friendlyErrorMessage(err, { context: 'Delete staff member' }))
     } finally {
       setBusy(false)
     }
@@ -180,6 +201,7 @@ function StaffForm({ initial, onSaved, onCancel }) {
       <div className="button-row">
         <button type="submit" className="primary-btn" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
         <button type="button" className="ghost-btn" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button type="button" className="danger-btn emp-delete-btn" onClick={remove} disabled={busy}><Icon name="trash" size={15} /> Delete member</button>
       </div>
     </form>
   )
@@ -413,6 +435,12 @@ export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
     setReload((value) => value + 1)
   }
 
+  const deleted = (staff) => {
+    setEditing(null)
+    setNotice({ type: 'success', text: `Deleted ${staff.full_name} (${staff.staff_code}).` })
+    setReload((value) => value + 1)
+  }
+
   const rosterById = new Map(roster.map((row) => [row.id, row]))
   const totals = report?.totals
   const rangeLabel = range.from || range.to ? `${range.from ? formatDate(range.from) : 'start'} – ${range.to ? formatDate(range.to) : 'today'}` : 'all time'
@@ -431,7 +459,7 @@ export default function TechnicianStaffView({ onBack, onShowRegistrations }) {
       <RegistrationLinkPanel />
 
       {editing && (
-        <StaffForm key={editing.id} initial={editing} onSaved={saved} onCancel={() => setEditing(null)} />
+        <StaffForm key={editing.id} initial={editing} onSaved={saved} onDeleted={deleted} onCancel={() => setEditing(null)} />
       )}
       {notice && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
 

@@ -110,6 +110,15 @@ router.put('/staff/:id', async (req, res) => {
     }
 });
 
+router.delete('/staff/:id', async (req, res) => {
+    try {
+        const staff = await staffService.deleteStaff(req.params.id, actor(req));
+        res.json({ deleted: { id: staff.id, staff_code: staff.staff_code, full_name: staff.full_name } });
+    } catch (error) {
+        fail(res, error, 'Could not delete the staff member.');
+    }
+});
+
 router.get('/:id', async (req, res) => {
     try {
         const registration = await service.getRegistration(req.params.id);

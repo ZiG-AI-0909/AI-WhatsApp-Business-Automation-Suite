@@ -52,6 +52,16 @@ const fake = createFakeSupabase({
         resolve_data_owner: ({ p_auth_user_id: auth, p_requested_owner_id: owner }) => ({ data: !owner || owner === auth ? auth : null, error: null }),
         technician_staff_account_emails: () => ({ data: [], error: null }),
         register_employee: registerEmployeeRpc,
+        // Same rules as public.delete_technician_staff().
+        delete_technician_staff: ({ p_staff_id: id }, store) => {
+            const row = store.technician_staff.find((item) => item.id === id);
+            if (!row) return { data: 'not_found', error: null };
+            if (store.technician_partner_registrations.some((item) => item.staff_id === id)) return { data: 'has_registrations', error: null };
+            const match = /^SEPL-([A-Z]{2})([0-9]+)$/.exec(row.staff_code);
+            if (match) store.sequences[match[1]] = Math.max(store.sequences[match[1]] || 0, Number(match[2]));
+            store.technician_staff.splice(store.technician_staff.indexOf(row), 1);
+            return { data: 'deleted', error: null };
+        },
     },
 });
 const store = fake.store;
@@ -258,6 +268,25 @@ async function main() {
             assert.equal(sheet.rowCount, 1 + 2, 'header + the 2 Karnataka employees');
             assert.equal(sheet.getRow(2).getCell(3).value, '9123456781', 'mobile kept as text');
             assert.match(String(workbook.getWorksheet('Export info').getRow(2).getCell(2).value), /state=Karnataka/);
+        });
+
+        await check('delete: reviewers only; members with partner registrations kept; a deleted ID is never reissued', async () => {
+            const hari = store.technician_staff.find((row) => row.staff_code === 'SEPL-TN004');
+            assert.equal((await call('DELETE', `/technicians/staff/${hari.id}`)).status, 401);
+            assert.equal((await call('DELETE', `/technicians/staff/${hari.id}`, { token: 'token-user' })).status, 403);
+            const removed = await call('DELETE', `/technicians/staff/${hari.id}`, { token: 'token-reviewer' });
+            assert.equal(removed.status, 200, JSON.stringify(removed.data));
+            assert.deepEqual(removed.data.deleted, { id: hari.id, staff_code: 'SEPL-TN004', full_name: 'Hari' });
+            assert.ok(!store.technician_staff.some((row) => row.id === hari.id));
+            assert.equal((await call('DELETE', `/technicians/staff/${hari.id}`, { token: 'token-reviewer' })).status, 404);
+            assert.equal((await register({ full_name: 'Indu', mobile: '9123456786', state: 'Tamil Nadu' })).data.employee.employee_id, 'SEPL-TN005', 'TN004 is not reissued');
+            // A member who registered a partner is kept.
+            store.technician_partner_registrations.push({ id: crypto.randomUUID(), mobile: '9999999999', staff_id: tn1.id, registration_source: 'staff' });
+            const refused = await call('DELETE', `/technicians/staff/${tn1.id}`, { token: 'token-reviewer' });
+            assert.equal(refused.status, 409);
+            assert.match(refused.data.error, /Deactivate them instead/);
+            assert.ok(store.technician_staff.some((row) => row.id === tn1.id));
+            assert.equal((await call('DELETE', '/technicians/staff/not-a-uuid', { token: 'token-reviewer' })).status, 404);
         });
 
         await check('logs never contain a PIN or a full mobile number', async () => {

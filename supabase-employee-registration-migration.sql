@@ -132,6 +132,38 @@ $$;
 revoke all on function public.register_employee(text, text, text, text, text, text, uuid) from public, anon, authenticated;
 grant execute on function public.register_employee(text, text, text, text, text, text, uuid) to service_role;
 
+-- ─── Delete a staff member / employee ────────────────────────
+-- Returns 'deleted', 'not_found' or 'has_registrations'. Anyone who has
+-- registered a partner is kept (their attribution is history; deactivate
+-- them instead). A deleted SEPL-XXnnn code raises its state counter to at
+-- least nnn, so the ID is never issued again.
+create or replace function public.delete_technician_staff(p_staff_id uuid)
+returns text
+language plpgsql security definer set search_path = ''
+as $$
+declare
+    code  text;
+    parts text[];
+begin
+    select s.staff_code into code from public.technician_staff s where s.id = p_staff_id for update;
+    if not found then return 'not_found'; end if;
+    if exists (select 1 from public.technician_partner_registrations r where r.staff_id = p_staff_id) then
+        return 'has_registrations';
+    end if;
+    parts := regexp_match(code, '^SEPL-([A-Z]{2})([0-9]+)$');
+    if parts is not null then
+        insert into public.employee_id_sequences as q (state_code, last_value, updated_at)
+        values (parts[1], parts[2]::integer, now())
+        on conflict (state_code) do update set last_value = greatest(q.last_value, excluded.last_value), updated_at = now();
+    end if;
+    delete from public.technician_staff s where s.id = p_staff_id;
+    return 'deleted';
+end;
+$$;
+
+revoke all on function public.delete_technician_staff(uuid) from public, anon, authenticated;
+grant execute on function public.delete_technician_staff(uuid) to service_role;
+
 -- RLS on, no policies; no grants for the browser roles.
 alter table public.employee_id_sequences enable row level security;
 revoke all on public.employee_id_sequences from anon, authenticated;

@@ -276,6 +276,24 @@ async function updateStaff(id, body, actor = {}) {
     return { staff, errors: linkErrors || undefined };
 }
 
+/**
+ * Delete a staff member who never registered a partner. Anyone with
+ * registrations is kept (attribution is history): deactivate them instead.
+ * The database also retires a SEPL- Employee ID so it is never issued again.
+ */
+async function deleteStaff(id, actor = {}) {
+    const staff = await getStaff(id);
+    const { data, error } = await supabase.rpc('delete_technician_staff', { p_staff_id: id });
+    // 23503: a registration arrived between the check and the delete.
+    if (error && error.code !== '23503') throw dbError(error, 'Could not delete the staff member.');
+    if (data === 'not_found') throw new KycError('Staff member not found.', 404, 'TECH_STAFF_NOT_FOUND');
+    if (data !== 'deleted') {
+        throw new KycError(`${staff.full_name} (${staff.staff_code}) has registered partners, so they cannot be deleted. Deactivate them instead; their history stays.`, 409, 'TECH_STAFF_HAS_REGISTRATIONS');
+    }
+    console.log(`[technician-staff] ${staff.staff_code} deleted by ${actor.email || 'unknown'}`);
+    return staff;
+}
+
 // ── Performance ────────────────────────────────────────────────────────
 
 /** Start/end (ISO) of the current day, week (Monday start) or month in India time. */
@@ -387,6 +405,7 @@ module.exports = {
     listStaff,
     createStaff,
     updateStaff,
+    deleteStaff,
     periodWindow,
     creditedIds,
     readRange,
