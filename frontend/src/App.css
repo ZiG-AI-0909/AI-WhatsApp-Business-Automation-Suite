@@ -1049,6 +1049,34 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .tech-staff { border-color: var(--accent-border); }
 .tech-staff-credit { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; font-weight: 600; }
 @media (max-width: 420px) { .tech-mode-options { grid-template-columns: 1fr; } }
+/* Employee self-registration (EmployeeRegistrationPage) + employee list (TechnicianStaffView) */
+.emp-success { align-items: stretch; text-align: left; }
+.emp-success > h1, .emp-success > .kyc-success-icon, .emp-success > .muted-copy { align-self: center; text-align: center; }
+.emp-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-3); }
+.emp-details > div { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-subtle); min-width: 0; }
+.emp-details dt { color: var(--text-secondary); font-size: var(--text-sm); }
+.emp-details dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.emp-details .emp-key { border-color: var(--accent-border); background: var(--accent-bg); }
+.emp-details .kyc-reference { font-size: var(--text-xl); }
+.emp-pin-note { display: flex; gap: var(--space-2); align-items: flex-start; margin: 0 0 var(--space-3); }
+.emp-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.emp-actions > * { justify-content: center; }
+.emp-link-panel { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4); border-color: var(--accent-border); }
+.emp-link-panel > div:first-child { flex: 1 1 360px; min-width: 0; }
+.emp-link-panel .muted-copy { margin: var(--space-1) 0 var(--space-2); }
+.emp-link-url { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--surface-subtle); font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.emp-directory { display: flex; flex-direction: column; gap: var(--space-3); }
+.emp-directory h3, .emp-performance-head h3 { margin: 0; }
+.emp-state-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.emp-chip { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 32px; padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); color: var(--text-secondary); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.emp-chip strong { color: var(--text-primary); font-family: var(--font-mono); }
+.emp-chip.is-active { border-color: var(--accent); background: var(--accent-bg); color: var(--accent-text); }
+.emp-chip:focus-visible { outline: none; box-shadow: var(--accent-glow); }
+.emp-id { font-family: var(--font-mono); white-space: nowrap; }
+.emp-performance-head { margin-top: var(--space-4); }
+@media (max-width: 520px) {
+  .emp-details, .emp-actions { grid-template-columns: 1fr; }
+}
 .tech-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: tech-spin 0.8s linear infinite; vertical-align: -3px; }
 @keyframes tech-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .tech-spinner { animation-duration: 2.4s; } }

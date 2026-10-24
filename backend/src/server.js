@@ -112,6 +112,7 @@ app.use('/api/auth', require('./routes/auth'));
 // Must stay above every app.use('/api', requireAuth, …) catch-all mount.
 app.use('/api/public/kyc', require('./routes/kycPublic'));
 app.use('/api/public/technician', require('./routes/technicianPublic'));
+app.use('/api/public/employee-registration', require('./routes/employeePublic'));
 // Storage: external cron trigger (no session; shared secret).
 // Other /api/storage routes fall through to the mount below.
 app.use('/api/storage', require('./routes/storage').publicRouter);

@@ -22,8 +22,9 @@ const { normalizeMobile } = require('./technicianSchema');
 
 const TABLE = 'technician_staff';
 const REGISTRATIONS = 'technician_partner_registrations';
-const PUBLIC_COLUMNS = 'id, created_at, updated_at, staff_code, full_name, phone, active, target_count, target_period, auth_user_id, created_by_email, updated_by_email';
-const MIGRATION_MESSAGE = 'Staff registration tracking needs a database update: run supabase-technician-staff-migration.sql in the Supabase SQL Editor.';
+// state … registration_source come from supabase-employee-registration-migration.sql.
+const PUBLIC_COLUMNS = 'id, created_at, updated_at, staff_code, full_name, phone, active, target_count, target_period, auth_user_id, created_by_email, updated_by_email, state, state_code, email, registration_source';
+const MIGRATION_MESSAGE = 'Staff registration tracking needs a database update: run supabase-technician-staff-migration.sql, then supabase-employee-registration-migration.sql, in the Supabase SQL Editor.';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STAFF_CODE = /^[A-Z0-9][A-Z0-9-]{1,19}$/;
 const PIN = /^\d{4,8}$/;
@@ -173,6 +174,17 @@ function validateStaff(body = {}, { creating = false } = {}) {
     }
     if ('target_period' in body || creating) {
         values.target_period = TARGET_PERIODS.includes(body.target_period) ? body.target_period : 'month';
+    }
+    // State of operation can change; the Employee ID keeps the state it was issued for.
+    if ('state' in body) {
+        const { STATE_CODES } = require('./employeeRegistration');
+        values.state = String(body.state ?? '').trim() || null;
+        values.state_code = values.state ? STATE_CODES[values.state] || null : null;
+        if (values.state && !values.state_code) errors.state = 'Choose a state from the list.';
+    }
+    if ('email' in body) {
+        values.email = String(body.email ?? '').trim().toLowerCase() || null;
+        if (values.email && (values.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email))) errors.email = 'Enter a valid email, or leave it empty.';
     }
     if ('active' in body) values.active = body.active === true || body.active === 'true';
     else if (creating) values.active = true;

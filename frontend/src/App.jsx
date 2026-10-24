@@ -13,6 +13,7 @@ import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
 import VendorKycPage from './VendorKycPage.jsx'
 import TechnicianRegistrationPage from './TechnicianRegistrationPage.jsx'
+import EmployeeRegistrationPage from './EmployeeRegistrationPage.jsx'
 import CopilotPanel from './CopilotPanel.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
@@ -62,7 +63,7 @@ const NAV_META = {
   Settings: { icon: 'sliders' },
 }
 // Public forms, open to everyone signed in or not (see readRoute in App).
-const PUBLIC_FORM_ROUTES = ['/vendor-kyc', '/technician-registration']
+const PUBLIC_FORM_ROUTES = ['/vendor-kyc', '/technician-registration', '/employee-registration']
 const navLabel = (view) => NAV_META[view]?.label || view
 const navGroupOf = (view) => NAV_GROUPS.find((group) => group.items.includes(view))?.title || ''
 const CURRENT_YEAR = new Date().getFullYear()
@@ -1670,6 +1671,8 @@ function App() {
   //               to everyone, signed in or not (the link sent to vendors)
   // '#/technician-registration' or the path /technician-registration →
   //               public mechanic / technician registration, same rules
+  // '#/employee-registration' or the path /employee-registration →
+  //               public employee self-registration, same rules
   // Any other hash falls back to the landing page for logged-out users.
   const readRoute = () => {
     const hash = window.location.hash.replace(/^#/, '')
@@ -2146,6 +2149,7 @@ function App() {
   // Public vendor KYC form: no sign-in and no waiting for the auth check.
   if (route === '/vendor-kyc') return <VendorKycPage />
   if (route === '/technician-registration') return <TechnicianRegistrationPage />
+  if (route === '/employee-registration') return <EmployeeRegistrationPage />
 
   if (authChecking) {
     return (

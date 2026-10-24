@@ -11,7 +11,8 @@ const express = require('express');
 const { requireKycStaff, SIGNED_URL_SECONDS } = require('../kyc/kycService');
 const service = require('../technician/technicianService');
 const { validateReview } = require('../technician/technicianSchema');
-const { buildTechnicianWorkbook } = require('../technician/technicianExport');
+const { buildTechnicianWorkbook, buildEmployeeWorkbook } = require('../technician/technicianExport');
+const { filterEmployees } = require('../technician/employeeRegistration');
 const staffService = require('../technician/technicianStaff');
 
 const router = express.Router();
@@ -63,6 +64,21 @@ router.get('/staff', async (req, res) => {
         res.json({ staff: await staffService.listStaff() });
     } catch (error) {
         fail(res, error, 'Could not load the staff list.');
+    }
+});
+
+// Employees (the roster) as Excel, with the screen's search + state filter. No PINs.
+router.get('/staff/export/excel', async (req, res) => {
+    try {
+        const filters = { q: String(req.query.q || '').slice(0, 100), state: String(req.query.state || '').slice(0, 40) };
+        const rows = filterEmployees(await staffService.listStaff(), filters);
+        const label = [filters.state && `state=${filters.state}`, filters.q && `search="${filters.q}"`].filter(Boolean).join(', ');
+        const buffer = await buildEmployeeWorkbook(rows, { filtersLabel: label });
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="sepl-employees-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+        res.send(buffer);
+    } catch (error) {
+        fail(res, error, 'Could not export the employees.');
     }
 });
 

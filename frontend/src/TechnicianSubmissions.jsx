@@ -143,7 +143,7 @@ export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegi
         </div>
         <div className="button-row">
           <CopyLinkButton />
-          {onOpenStaff && <button type="button" className="secondary-btn" onClick={onOpenStaff}><Icon name="users" size={15} /> Staff &amp; targets</button>}
+          {onOpenStaff && <button type="button" className="secondary-btn" onClick={onOpenStaff}><Icon name="users" size={15} /> Staff members &amp; targets</button>}
           <button type="button" className="primary-btn" onClick={exportExcel} disabled={exporting || !rows.length}>
             <Icon name="download" size={15} /> {exporting ? 'Exporting…' : `Export Excel${filtered ? ' (filtered)' : ''}`}
           </button>

@@ -119,4 +119,14 @@ const _technicianStaffVerify = rateLimit({
     ...json429('Too many staff checks from this network. Please try again in 15 minutes.'),
 });
 
-module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter, technicianStaffSubmitLimiter, technicianStaffVerifyLimiter };
+// Public employee self-registration — one small JSON form per person, but
+// colleagues may register together from one office network.
+function employeeRegisterLimiter(req, res, next) { return _employeeRegister(req, res, next); }
+const _employeeRegister = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: Number(process.env.EMPLOYEE_REGISTER_LIMIT_PER_HOUR || 20),
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    ...json429('Too many registrations from this network. Please try again in an hour.'),
+});
+
+module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter, technicianStaffSubmitLimiter, technicianStaffVerifyLimiter, employeeRegisterLimiter };

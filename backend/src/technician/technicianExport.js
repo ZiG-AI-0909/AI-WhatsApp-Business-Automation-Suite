@@ -95,4 +95,42 @@ async function buildTechnicianWorkbook(rows, { filtersLabel = '' } = {}) {
     return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-module.exports = { buildTechnicianWorkbook, excelColumns };
+// Employees (staff roster). PINs are never exported — only their hash exists.
+const EMPLOYEE_SOURCE_LABELS = { self: 'Self-registered', manual: 'Added manually' };
+
+async function buildEmployeeWorkbook(rows, { filtersLabel = '' } = {}) {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Sudarshan Pipes AI Assistant';
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet('Employees', { views: [{ state: 'frozen', xSplit: 1, ySplit: 1 }] });
+    const columns = [
+        ['Employee ID', 'staff_code', 14, (row) => row.staff_code],
+        ['Name', 'full_name', 24, (row) => row.full_name],
+        ['Mobile', 'phone', 13, (row) => row.phone],
+        ['State of Operation', 'state', 18, (row) => row.state],
+        ['Email', 'email', 28, (row) => row.email],
+        ['Status', 'active', 10, (row) => (row.active ? 'Active' : 'Inactive')],
+        ['Registered', 'registration_source', 16, (row) => EMPLOYEE_SOURCE_LABELS[row.registration_source] || EMPLOYEE_SOURCE_LABELS.manual],
+        ['Registration Date (IST)', 'created_at', 17, (row) => formatDateTime(row.created_at)],
+    ];
+    sheet.columns = columns.map(([header, key, width]) => ({ header, key, width }));
+    for (const row of rows) {
+        // Text only, so mobile numbers never become numbers.
+        sheet.addRow(Object.fromEntries(columns.map(([, key, , value]) => [key, String(value(row) ?? '')])));
+    }
+    const header = sheet.getRow(1);
+    header.font = { bold: true };
+    header.eachCell((cellRef) => {
+        cellRef.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+    });
+    sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+    const info = workbook.addWorksheet('Export info');
+    info.addRow(['Exported', formatDateTime(new Date())]);
+    info.addRow(['Filters', filtersLabel || 'none (all employees)']);
+    info.addRow(['Rows', rows.length]);
+    info.getColumn(1).width = 12;
+    info.getColumn(2).width = 60;
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+module.exports = { buildTechnicianWorkbook, buildEmployeeWorkbook, excelColumns };
