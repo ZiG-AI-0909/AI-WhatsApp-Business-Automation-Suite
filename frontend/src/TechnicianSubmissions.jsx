@@ -179,7 +179,7 @@ export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegi
       .catch(() => {})
     return () => { cancelled = true }
   }, [memberId, query])
-  const memberStats = staffStats?.id === memberId ? staffStats.row : null
+  const memberStats = memberId && staffStats?.id === memberId ? staffStats.row : null
 
   const filtered = Boolean(status || q || registeredBy)
   const rows = data?.registrations || []
