@@ -1235,4 +1235,4 @@ function serializeDoc(doc) {
     };
 }
 
-module.exports = { router, buildRfqPdf, rfqRows, sanitizeFilename, requireConfirmedDocument, parseJsonArray };
+module.exports = { router, buildRfqPdf, rfqRows, sanitizeFilename, requireConfirmedDocument, parseJsonArray, loadExtractionClient };

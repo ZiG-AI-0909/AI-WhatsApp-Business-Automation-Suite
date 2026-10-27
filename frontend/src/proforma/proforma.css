@@ -1,0 +1,120 @@
+/* Proforma Invoice Maker (frontend/src/proforma). Uses the app tokens;
+   the invoice preview is always black on white, like the printed sheet. */
+
+.proforma-view .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.pf-saved summary { cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.pf-saved[open] summary { margin-bottom: 12px; }
+.pf-search { max-width: 360px; margin-bottom: 12px; }
+.pf-current td { background: var(--row-selected); }
+
+.pf-editor { display: flex; flex-direction: column; gap: var(--space-4, 16px); }
+.pf-editor-head { flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.pf-editor-head h2 { overflow-wrap: anywhere; }
+.pf-state { display: inline-block; margin-top: 4px; font-size: var(--text-xs); font-weight: 700; border-radius: var(--radius-pill); padding: 2px 10px; border: 1px solid transparent; }
+.pf-state.is-dirty { background: var(--warning-bg); color: var(--warning-text); border-color: var(--warning-border); }
+.pf-state.is-clean { background: var(--surface-muted); color: var(--text-secondary); border-color: var(--border-subtle); }
+
+.pf-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); scrollbar-width: thin; }
+.pf-tabs button { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: var(--touch, 40px); padding: 6px 14px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--text-secondary); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+.pf-tabs button:hover { color: var(--text-primary); }
+.pf-tabs button.active { color: var(--accent-text); border-bottom-color: var(--accent); }
+.pf-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pf-badge { min-width: 20px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--danger); color: var(--text-inverse); font-size: .72rem; line-height: 20px; text-align: center; }
+
+.pf-tabpanel { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.pf-section { display: flex; flex-direction: column; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--border-subtle); min-width: 0; }
+.pf-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.pf-section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.pf-section-head h3 { font-size: var(--text-md); margin: 0 0 2px; }
+.pf-section-head .muted-copy { margin: 0; max-width: 72ch; }
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px 16px; align-items: start; }
+.pf-wide { grid-column: 1 / -1; }
+.pf-field input, .pf-field select { min-height: 40px; }
+.pf-textarea, .form-label textarea.pf-textarea { min-height: 0; resize: vertical; font: inherit; line-height: 1.45; }
+.pf-required { color: var(--danger-text); }
+.pf-invalid input, .pf-invalid select, .pf-invalid textarea,
+.pf-items [aria-invalid='true'], .pf-term [aria-invalid='true'] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+.pf-error, .form-label small.pf-error { color: var(--danger-text); font-size: var(--text-xs); font-weight: 600; }
+.pf-ok { color: var(--success-text); font-size: var(--text-sm); font-weight: 700; }
+
+.pf-suggest { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.pf-suggest .form-label { flex: 0 1 220px; }
+.pf-suggest small { flex-basis: 100%; }
+.pf-figure { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-subtle); border: 1px solid var(--border-subtle); font-size: var(--text-sm); color: var(--text-secondary); }
+.pf-figure strong { color: var(--text-primary); font-family: var(--font-mono); font-size: var(--text-md); }
+.pf-charge { padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+
+.pf-items { min-width: 1480px; }
+.pf-items td { vertical-align: top; }
+.pf-items textarea { min-height: 40px; height: 40px; resize: vertical; }
+.pf-items tfoot td { border-top: 2px solid var(--border-strong); padding-top: 10px; }
+.pf-total-label { text-align: right; font-weight: 700; }
+.pf-col-desc { width: 200px; }
+.pf-col-md { width: 200px; }
+.pf-col-sm { width: 140px; }
+.pf-col-xs { width: 72px; }
+.pf-col-actions { width: 270px; }
+.pf-row-actions { display: flex; flex-wrap: nowrap; gap: 4px; }
+.pf-items .pf-row-actions { white-space: nowrap; }
+.pf-row-actions .ghost-btn, .pf-row-actions .danger-btn { min-height: 32px; padding: 4px 10px; }
+.pf-table-actions { margin-top: 4px; }
+
+.pf-terms { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.pf-term { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface); }
+.pf-term-number { font-weight: 800; color: var(--text-secondary); padding-top: 9px; text-align: center; }
+.pf-term-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pf-term-body input { font-weight: 700; }
+.pf-resolved { margin: 0; font-size: var(--text-xs); color: var(--text-secondary); white-space: pre-line; }
+.pf-resolved > span:first-child { color: var(--text-muted); }
+
+.pf-totals dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 0; }
+.pf-totals dl > div { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-subtle); border: 1px solid var(--border-subtle); }
+.pf-totals dt { font-size: var(--text-xs); color: var(--text-secondary); font-weight: 600; }
+.pf-totals dd { margin: 4px 0 0; font-family: var(--font-mono); font-size: var(--text-md); font-weight: 700; }
+.pf-totals .pf-grand { background: var(--accent-bg); border-color: var(--accent-border); }
+
+.pf-footer { position: sticky; bottom: 0; z-index: 2; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin: 0 calc(-1 * var(--space-4, 16px)) calc(-1 * var(--space-4, 16px)); padding: 12px var(--space-4, 16px); border-top: 1px solid var(--border); background: var(--surface-raised, var(--surface)); border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.pf-footer > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pf-footer strong { font-family: var(--font-mono); font-size: var(--text-lg); }
+.pf-footer small { max-width: 60ch; }
+
+/* Invoice preview: the exported sheet's grid (A..L, 806 px). */
+.pv-wrap { overflow-x: auto; padding: 16px; background: var(--surface-muted); border-radius: var(--radius-sm); }
+.pv-sheet { width: 806px; table-layout: fixed; border-collapse: collapse; margin: 0 auto; background: #fff; color: #000; font-family: Calibri, Carlito, 'Segoe UI', sans-serif; font-size: 13.3px; line-height: 1.25; box-shadow: 0 2px 10px rgb(0 0 0 / 18%); }
+.pv-sheet td { padding: 1px 3px; height: 17px; vertical-align: middle; border: 0; overflow-wrap: anywhere; color: #000; background: #fff; font-size: inherit; cursor: default; }
+.pv-sheet tbody tr:hover > td { background: #fff; }
+.pv-sheet td strong, .pv-sheet td small { display: inline; color: inherit; font-size: inherit; margin: 0; }
+.pv-sheet .pv-t { border-top: 1px solid #000; }
+.pv-sheet .pv-l { border-left: 1px solid #000; }
+.pv-sheet .pv-b { border-bottom: 1px solid #000; }
+.pv-sheet .pv-r { border-right: 1px solid #000; }
+.pv-sheet .pv-bold { font-weight: 700; }
+.pv-sheet .pv-center { text-align: center; }
+.pv-sheet .pv-right { text-align: right; font-variant-numeric: tabular-nums; }
+.pv-sheet .pv-top { vertical-align: top; }
+.pv-sheet .pv-small { font-size: 10px; }
+.pv-sheet .pv-under { text-decoration: underline; }
+.pv-sheet .pv-pre { white-space: pre-line; }
+.pv-sheet .pv-head td { height: 34px; }
+.pv-sheet .pv-sign td { height: 68px; }
+.pv-sheet sup { font-size: 70%; }
+
+@media (max-width: 720px) {
+  .pf-term { grid-template-columns: 24px minmax(0, 1fr); }
+  .pf-term .pf-row-actions { grid-column: 2; }
+  .pf-footer { margin: 0 -12px -12px; padding: 10px 12px; }
+  .pf-footer .button-row { width: 100%; }
+  .pf-footer .primary-btn { flex: 1; }
+}
+
+/* Upload -> auto-fill and the review of fields it could not read. */
+.pf-upload { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 16px; border: 1px dashed var(--accent-border); border-radius: var(--radius-sm); background: var(--accent-bg); }
+.pf-upload .muted-copy { margin: 2px 0 0; max-width: 70ch; }
+.pf-upload-error { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.pf-review { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 16px; border: 1px solid var(--warning-border); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning-text); font-size: var(--text-sm); }
+.pf-review p { margin: 0; }
+.pf-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.pf-flag, .form-label small.pf-flag { color: var(--warning-text); font-size: var(--text-xs); font-weight: 600; }
+.pf-flagged input, .pf-flagged select, .pf-flagged textarea, .pf-cell-flagged input, .pf-cell-flagged textarea { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning); background: var(--warning-bg); }
+.pf-badge-flag { background: var(--warning); color: var(--text-primary); }

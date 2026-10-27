@@ -11,6 +11,7 @@ import useStorageStatus from './storage/useStorageStatus.js'
 import AskAiView from './AskAiView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
+import ProformaView from './proforma/ProformaView.jsx'
 import VendorKycPage from './VendorKycPage.jsx'
 import TechnicianRegistrationPage from './TechnicianRegistrationPage.jsx'
 import EmployeeRegistrationPage from './EmployeeRegistrationPage.jsx'
@@ -42,6 +43,8 @@ const NAV_GROUPS = [
   { title: 'WhatsApp', items: ['WhatsApp Connection', 'Inbox', 'Campaigns', 'Contacts', 'Templates', 'Knowledge Base', 'Analytics'] },
   // 'Submitted Forms' is only shown to KYC reviewers (see kycStaff in App).
   { title: 'Documents', items: ['Document Intelligence', 'Image Extractor', 'Submitted Forms'] },
+  // Its own entry for every signed-in user (no staff allowlist).
+  { title: 'Export', items: ['Proforma Maker'] },
   { title: 'AI tools', items: ['Ask AI'] },
   // 'Storage' is only shown to storage administrators (the KYC staff list).
   { title: 'Setup', items: ['Storage', 'Settings'] },
@@ -56,6 +59,7 @@ const NAV_META = {
   'Document Intelligence': { icon: 'clipboard', label: 'BOQ & quotations' },
   'Image Extractor': { icon: 'image', label: 'Image extractor' },
   'Submitted Forms': { icon: 'receipt', label: 'Submitted forms' },
+  'Proforma Maker': { icon: 'invoice' },
   Storage: { icon: 'layers' },
   'Ask AI': { icon: 'sparkles' },
   'Knowledge Base': { icon: 'book', label: 'Knowledge base' },
@@ -2055,6 +2059,7 @@ function App() {
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
     if (activeView === 'Submitted Forms') return <KycSubmissionsView />
+    if (activeView === 'Proforma Maker') return <ProformaView />
     if (activeView === 'Storage') return kycStaff ? <StorageView /> : null
     if (activeView === 'Dashboard') return renderDashboard()
 

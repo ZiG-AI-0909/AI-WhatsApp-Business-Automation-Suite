@@ -102,6 +102,10 @@ const ENDPOINT_TIMEOUT_MS = {
   '/campaigns/validate-excel': 90000, // file upload, storage, and workbook validation
   '/campaigns': 120000, // create and persist all contacts for larger multi-sheet workbooks
   '/boq/process': 180000, // server wall budget is 150s (BOQ_TOTAL_BUDGET_MS) — covers parsing + page rendering + parallel OCR + every AI chunk + margin
+  // Proforma upload: two requests, each with its own 100s server budget
+  // (PROFORMA_OCR_BUDGET_MS / PROFORMA_EXTRACT_BUDGET_MS) + margin.
+  '/proforma/upload/ocr': 120000,
+  '/proforma/upload/extract': 120000,
 }
 
 function timeoutForPath(path) {

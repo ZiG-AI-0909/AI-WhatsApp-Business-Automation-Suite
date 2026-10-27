@@ -134,6 +134,9 @@ app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware'
 app.use('/api', requireAuth, require('./routes/quotations'));
 app.use('/api/boq', requireAuth, require('./routes/boq').router);
 app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
+// Proforma Invoice Maker: any signed-in user; no mutation limiter (like
+// quotations) because the form previews on every edit (see routes/proforma.js).
+app.use('/api/proforma', requireAuth, require('./routes/proforma'));
 // Vendor KYC review/export: signed-in KYC staff only (see routes/kyc.js).
 app.use('/api/kyc', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/kyc'));
 // Mechanic / technician registrations: same KYC reviewers.
