@@ -39,6 +39,8 @@ export default function PartiesForm({ form, invoice }) {
         <TextField form={form} path="buyer.contact_person" label="Contact person" />
         <TextField form={form} path="buyer.email" label="Email address" type="email" disabled={same} />
         <TextField form={form} path="buyer.phone" label="Contact number" disabled={same} />
+        <TextField form={form} path="buyer.signatory_name" label="Signature line name" wide
+          hint='Printed as "For …" under Accepted By Buyer. Leave empty to use the name in capitals.' />
       </Section>
     </>
   )

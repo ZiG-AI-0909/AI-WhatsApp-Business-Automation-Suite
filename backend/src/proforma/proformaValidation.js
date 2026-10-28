@@ -20,11 +20,12 @@ const LONG = 2000;
 
 const SHAPE = {
     invoice: ['number', 'date', 'enquiry_ref', 'po_number', 'po_date', 'currency'],
-    exporter: ['name', 'address', 'contact_person', 'phone', 'gstin', 'iec', 'signatory_name'],
+    exporter: ['name', 'address', 'contact', 'gstin', 'iec', 'signatory_name'],
     consignee: ['name', 'address', 'country', 'tax_id', 'acid', 'email', 'phone'],
-    buyer: ['name', 'address', 'country', 'tax_id', 'email', 'contact_person', 'phone'],
+    buyer: ['name', 'address', 'country', 'tax_id', 'email', 'contact_person', 'phone', 'signatory_name'],
     shipping: ['pre_carriage', 'place_of_receipt', 'place_of_delivery', 'container_no', 'vessel_no', 'port_of_loading', 'port_of_discharge', 'origin_country', 'destination_country', 'incoterm', 'incoterm_place', 'delivery_terms'],
     bank: ['name', 'branch', 'account', 'swift', 'ifsc'],
+    letterhead: ['footer_title', 'footer_address', 'footer_contact'],
 };
 const MULTILINE = new Set(['exporter.address', 'consignee.address', 'buyer.address', 'invoice.enquiry_ref']);
 const ITEM_TEXT = ['description', 'size', 'specification', 'pressure', 'coupler', 'hsn'];
@@ -64,6 +65,7 @@ function sanitizeInvoice(body) {
     }
     result.invoice.currency = CURRENCIES[result.invoice.currency] ? result.invoice.currency : (result.invoice.currency || 'USD');
     result.buyer.same_as_consignee = object(source.buyer).same_as_consignee === true;
+    result.letterhead.show_logo = object(source.letterhead).show_logo !== false;
     const payment = object(source.payment);
     result.payment = { advance: numberField(payment.advance), summary: text(payment.summary, LONG, true) };
 
@@ -214,6 +216,7 @@ function sanitizeProfile(body) {
     const digits = Number(numbering.seq_digits);
     return {
         exporter: pick(source.exporter, SHAPE.exporter, ['address']),
+        letterhead: { ...pick(source.letterhead, SHAPE.letterhead), show_logo: object(source.letterhead).show_logo !== false },
         bank: pick(source.bank, SHAPE.bank),
         shipping: pick(source.shipping, ['pre_carriage', 'place_of_receipt', 'port_of_loading', 'origin_country', 'incoterm']),
         inland_freight: pick(source.inland_freight, ['description', 'unit']),

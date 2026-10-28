@@ -20,33 +20,41 @@ const CURRENCIES = {
 
 const INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
 
-// Wording copied from the reference invoice as supplied (including its
-// spelling); edit per invoice or in the saved profile, never here silently.
+// Wording copied from the signed sample invoice Alfatth_26-27/PI-04 as
+// supplied (including its spelling); edit per invoice or in the saved
+// profile, never here silently. "CFR" became {incoterm} so the terms follow
+// the invoice's Incoterm.
 const DEFAULT_TERMS = [
-    { title: 'Price Validity', text: 'The prices are **valid** for 7 days from the date of Proforma Invoice.' },
-    { title: 'INCO Terms', text: '{incoterm} {incoterm_place}' },
-    { title: 'Extra Charges (Other than INCO Terms)', text: 'Import duties, inland freight, insurance, and any other applicable duties and charges are to be borne by the customer. These charges are in addition to the above-mentioned price of the goods.' },
-    { title: 'Payment Terms', text: '**{currency} {advance} advance** along with confirmed purchase order and the **balance** amount of **{currency} {balance}** payable against a scanned copy of draft Bill of Lading (BL).' },
-    { title: 'Bank Charges', text: "Any bank or commission charges incurred for the transfer of funds will be charged to customer's account." },
-    { title: 'Inspection', text: 'Any inspections required for the goods will be charged separately and are to be borne by the buyer.' },
+    { title: 'Price Validity', text: 'Pirce **valid** for 7 days from Proforma Invoice Date.' },
+    { title: 'Extra Charges (Other than Incoterms)', text: 'Import duties, inland freight, insurance, and any other applicable duties and charges are to be borne by the customer. These charges are in addition to the above-mentioned price of the goods.' },
+    { title: 'Incoterms ® 2020', text: '**{incoterm}** {incoterm_place}. Risk in the goods passes from seller to buyer once the goods are loaded on board the vessel at the Port of Loading.' },
+    { title: 'Insurance', text: '**Marine Insurance** is not included in the {incoterm} Price. Buyer is responsible for arranging adequate transit insurance from the Port of loading to the final destination.' },
+    { title: 'Bank Charges', text: "All bank charges outside India are for Buyuers'account." },
+    { title: 'Inspection', text: "Third-party inspection, if required, shall be at Buyer's cost." },
     { title: 'Beneficiary Details', text: 'Payment to be made to: M/s Sudarshan Extrusions Pvt. Ltd.' },
     { title: 'Advising Bank Details', text: '{bank_name}, {bank_branch}\nAccount No.: **{bank_account}** SWIFT Code: **{bank_swift}** IFSC: {bank_ifsc}' },
-    { title: 'Variance Clause', text: 'The final quantities and total values of the goods to be shipped may vary by up to **±10%** based on actual space availability in the container. The Overall Length of each Pipe will be 3.0 meters (**±50 mm**). Coupler is additionally fitted.' },
-    { title: 'Shipment Terms', text: 'Shipment within **30 to 40 working days** from receipt of confirmed PO, advance payment and all import-related approvals. Partial shipment and transhipment are allowed. Shipment by a non-conference vessel is acceptable. Telescopic stuffing is permitted.' },
-    { title: 'Origin of Goods (Country)', text: 'The Goods listed in this Proforma Invoice are of Indian Origin.' },
-    { title: 'Force Majeure', text: 'Applicable due to natural disasters, war, strikes, government actions, or other unforeseeable circumstances.' },
-    { title: 'Freight Charges #', text: 'Ocean freight being **reviewed** with the service provider and will be **charged at actual** in the final invoice at the time of shipment. **Any War Risk / Emergency Charges** will be charged extra at actuals incurred at any point till the arrival of consignemnt to the port of destination.' },
+    { title: 'Shipment Terms', text: 'Shipment within **30 to 40 working days** after receipt of accpted PI / confirmed PO, advance payment and all import approvals. Partial shipment, transshipment, telescopic stuffings and non-conference vessel permitted.' },
+    { title: 'Variance Clause', text: 'Final shipment quantities and invoice value may vary by **±10%** based on available space and actulal container loading. The length of each Pipe will be 3.0 meters with tolerence of **±50 mm**. Coupler is additionally fitted.' },
+    { title: 'Origin of Goods', text: 'The Goods listed in this Proforma Invoice are of Indian Origin.' },
+    { title: 'Force Majeure', text: 'Seller shall not be liable for delay or non-performance caused by the events beyond its reasonable control incldiung natural disasters, wars, strikes, government restrictions or any other force majeure events.' },
+    { title: 'Freight Charges #', text: 'Ocean freight is indicative and subject to revision and will be charged at actual in the final invoice at the time of shipment. **Any War Risk, Emergency Surcharge, Peak Season or Carrier imposed charges** shall be borne and payable by the buyer at actuals.' },
 ];
 
 const DEFAULT_PROFILE = {
     exporter: {
         name: 'M/s. Sudarshan Extrusions Pvt. Ltd.',
         address: '105, Phase IV, Bommasandra Industrial Area, Hosur Road\nBangalore - 560099, Karnataka, India',
-        contact_person: 'Mr. Aayush Salampuria',
-        phone: '+91 97423 50063',
+        contact: 'Aayush +91 97423 50063 | Sunil +91 93422 39695',
         gstin: '29AACCK1590L1Z6',
         iec: '0705014487',
         signatory_name: 'Sudarshan Extrusions Pvt. Ltd.',
+    },
+    // Logo above the title and the coloured footer band, as on the letterhead.
+    letterhead: {
+        show_logo: true,
+        footer_title: 'SUDARSHAN EXTRUSIONS PVT. LTD.',
+        footer_address: '#105, Phase IV, Bommasandra Industrial Area, Hosur Road, Bangalore, Karnataka - 560099',
+        footer_contact: 'sales@sudarshanpipes.com || www.sudarshanpipes.com',
     },
     bank: {
         name: 'State Bank of India',
@@ -57,15 +65,15 @@ const DEFAULT_PROFILE = {
     },
     shipping: {
         pre_carriage: 'Road',
-        place_of_receipt: 'Bangalore / Chennai Port, India',
-        port_of_loading: 'Chennai Port, India',
+        place_of_receipt: 'Bangalore / Chennai, India',
+        port_of_loading: 'Chennai / Ennore / Katupalli Port, India',
         origin_country: 'INDIA',
         incoterm: 'CFR',
     },
     inland_freight: { description: 'Inland Freight (Ex Works - Bangalore to Chennai Port, India)', unit: 'Container' },
     ocean_freight_unit: 'Container',
-    payment_summary: '**Payment: {currency} {advance} advance** along with confirmed purchase order and the **balance amount of {currency} {balance}** payable against a scanned copy of the draft Bill of Lading (B/L)',
-    enquiry_ref: 'Based on WhatsApp correspondence & subsequent telephonic discussions',
+    payment_summary: '**Payment: {currency} {advance}** advance on PI acceptance & order confirmation.\nBalance **{currency} {balance}** payable against draft BL copy.',
+    enquiry_ref: 'Ref: WhatsApp correspondence & telephonic discussion',
     product_group: 'PVC Pipes - uPVC Column Pipes',
     terms: DEFAULT_TERMS,
     // {prefix} {fy} (26-27, April-March) {seq}; seq_digits pads {seq}.
@@ -93,8 +101,9 @@ function blankInvoice(profile = DEFAULT_PROFILE, today = new Date().toISOString(
     return {
         invoice: { number: '', date: today, enquiry_ref: p.enquiry_ref, po_number: '', po_date: '', currency: 'USD' },
         exporter: { ...p.exporter },
+        letterhead: { ...p.letterhead },
         consignee: { name: '', address: '', country: '', tax_id: '', acid: '', email: '', phone: '' },
-        buyer: { same_as_consignee: false, name: '', address: '', country: '', tax_id: '', email: '', contact_person: '', phone: '' },
+        buyer: { same_as_consignee: false, name: '', address: '', country: '', tax_id: '', email: '', contact_person: '', phone: '', signatory_name: '' },
         shipping: {
             pre_carriage: p.shipping.pre_carriage,
             place_of_receipt: p.shipping.place_of_receipt,
@@ -119,14 +128,14 @@ function blankInvoice(profile = DEFAULT_PROFILE, today = new Date().toISOString(
     };
 }
 
-// The supplied reference invoice, for "Load sample" and the tests.
+// The signed sample invoice (Alfatth_26-27/PI-04), for "Load sample" and the tests.
 function sampleInvoice(profile = DEFAULT_PROFILE) {
-    const invoice = blankInvoice(profile, '2026-10-26');
+    const invoice = blankInvoice(profile, '2026-10-27');
     const group = 'PVC Pipes - uPVC Column Pipes';
     const item = (size, specification, pressure, coupler, qty, rate) => ({ id: newId('i'), description: group, size, specification, pressure, coupler, length: 3, hsn: '39172390', qty, rate });
     return {
         ...invoice,
-        invoice: { ...invoice.invoice, number: 'Alfatth_26-27/PI-03R5', date: '2026-10-26' },
+        invoice: { ...invoice.invoice, number: 'Alfatth_26-27/PI-04', date: '2026-10-27' },
         consignee: {
             name: 'PMtech Water Solutions',
             address: 'K28, Plot 39-Abu Rawash Industrial Zone, Giza, Egypt',
@@ -145,6 +154,7 @@ function sampleInvoice(profile = DEFAULT_PROFILE) {
             email: 'Abdelhamed@alfatth-uae.com',
             contact_person: '',
             phone: '+971 54 733 1749',
+            signatory_name: 'ALFATTH IMPORT & EXPORT FZ-LLC',
         },
         shipping: {
             ...invoice.shipping,
@@ -154,7 +164,7 @@ function sampleInvoice(profile = DEFAULT_PROFILE) {
             incoterm: 'CFR',
             incoterm_place: 'Alexandria Port, Egypt',
         },
-        payment: { ...invoice.payment, advance: 10000 },
+        payment: { ...invoice.payment, advance: 30000 },
         items: [
             item('3"', 'Super Deluxe / Standard', '17 kgf/cm²', 'Standard Coupler', 1720, 10),
             item('4"', 'Super Deluxe / Standard', '17 kgf/cm²', 'Standard Coupler', 2020, 14.25),

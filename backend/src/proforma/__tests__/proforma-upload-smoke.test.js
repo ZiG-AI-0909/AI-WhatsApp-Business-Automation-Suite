@@ -119,12 +119,13 @@ async function run() {
             assert.equal(invoice[section][field], value, `${section}.${field} round-trips`);
         }
     }
-    for (const field of ['name', 'address', 'country', 'tax_id', 'email', 'phone']) assert.equal(invoice.buyer[field], sample.buyer[field], `buyer.${field}`);
+    for (const field of ['name', 'address', 'country', 'tax_id', 'email', 'phone', 'signatory_name']) assert.equal(invoice.buyer[field], sample.buyer[field], `buyer.${field}`);
     for (const [field, value] of Object.entries(sample.shipping)) {
         if (field !== 'delivery_terms') assert.equal(invoice.shipping[field], value, `shipping.${field}`);
     }
-    assert.equal(invoice.invoice.number, 'Alfatth_26-27/PI-03R5');
-    assert.equal(invoice.invoice.date, '2026-10-26');
+    assert.equal(invoice.invoice.number, 'Alfatth_26-27/PI-04');
+    assert.equal(invoice.invoice.date, '2026-10-27');
+    assert.equal(invoice.invoice.enquiry_ref, 'Ref: WhatsApp correspondence & telephonic discussion');
     assert.equal(invoice.invoice.currency, 'USD');
     assert.equal(invoice.items.length, 6);
     invoice.items.forEach((item, index) => {
@@ -137,47 +138,60 @@ async function run() {
     });
     assert.equal(invoice.items[1].description, 'PVC Pipes - uPVC Column Pipes', 'the group heading carries down to rows without one');
     assert.deepEqual([invoice.inland_freight.qty, invoice.inland_freight.rate, invoice.ocean_freight.qty, invoice.ocean_freight.rate], [3, 1100, 3, 6400]);
-    assert.equal(invoice.payment.advance, 10000);
-    assert.equal(invoice.payment.summary, 'Payment: {currency} {advance} advance along with confirmed purchase order and the balance amount of {currency} {balance} payable against a scanned copy of the draft Bill of Lading (B/L)');
+    assert.equal(invoice.payment.advance, 30000);
+    assert.equal(invoice.payment.summary, sample.payment.summary.replace(/\*\*/g, ''), 'payment wording with live {advance}/{balance}');
     assert.equal(invoice.terms.length, 13);
-    assert.equal(invoice.terms[3].text, '{currency} {advance} advance along with confirmed purchase order and the balance amount of {currency} {balance} payable against a scanned copy of draft Bill of Lading (BL).');
-    assert.equal(invoice.terms[12].text, sample.terms[12].text.replace(/\*\*/g, ''), 'terms are kept verbatim (spelling included)');
+    invoice.terms.forEach((term, index) => assert.equal(term.title, sample.terms[index].title, `term ${index + 1} title`));
+    assert.equal(invoice.terms[11].text, sample.terms[11].text, 'terms are kept verbatim (spelling included)');
+    assert.equal(invoice.terms[12].text, sample.terms[12].text.replace(/\*\*/g, ''));
 
     assert.deepEqual(validateInvoice(invoice), {}, 'the auto-filled invoice is ready to export');
     const totals = calc.calculate(invoice);
     assert.equal(totals.grand_total, 116621);
-    assert.equal(totals.balance, 106621);
+    assert.equal(totals.balance, 86621);
 
-    // Flags: low confidence, replaced amounts, and the document's own
-    // inconsistent CFR figure / balance; none on the clean product rows.
+    // Flags: low confidence and replaced amounts; the sample's own totals
+    // and balance agree with the rows, so no mismatch is reported.
     assert.match(mapped.flags['consignee.tax_id'], /low confidence/);
     assert.match(mapped.flags['payment.summary'], /live \{advance\}\/\{balance\}/);
-    assert.match(mapped.flags[`terms.${invoice.terms[3].id}.text`], /live/);
-    assert.ok(mapped.warnings.some((warning) => /value in figures is 39,166\.00, but the extracted rows add up to 116,621\.00/.test(warning)), 'the reference CFR figure mismatch is reported');
-    assert.ok(mapped.warnings.some((warning) => /payment balance is 29,166\.00, but Grand Total − advance is 106,621\.00/.test(warning)));
+    assert.deepEqual(mapped.warnings, [], 'the PI-04 sample is internally consistent');
     assert.ok(!Object.keys(mapped.flags).some((key) => key.startsWith('items.')), 'clean rows carry no flags');
-    assert.ok(!mapped.flags['invoice.number'] && !mapped.flags['exporter.name']);
-    assert.deepEqual(mapped.document_totals, { ex_works: 94121, fob: 97421, grand_total: 116621, value_in_figures: 39166, balance: 29166 }, 'printed totals are returned for the live re-check');
+    assert.ok(!mapped.flags['invoice.number'] && !mapped.flags['exporter.name'] && !mapped.flags['exporter.contact']);
+    assert.deepEqual(mapped.document_totals, { ex_works: 94121, fob: 97421, grand_total: 116621, value_in_figures: null, balance: 86621 }, 'printed totals are returned for the live re-check');
+
+    // A document whose own figures disagree with its rows is reported.
+    const inconsistent = JSON.parse(EXTRACTION);
+    inconsistent.totals.value_in_figures = 'USD 39,166.00';
+    inconsistent.payment.text = 'Payment: USD 30,000.00 advance. Balance USD 9,166.00 payable against draft BL copy.';
+    const reported = extractor.mapExtraction(inconsistent, blank).warnings;
+    assert.ok(reported.some((warning) => /value in figures is 39,166\.00, but the extracted rows add up to 116,621\.00/.test(warning)));
+    assert.ok(reported.some((warning) => /payment balance is 9,166\.00, but Grand Total − advance is 86,621\.00/.test(warning)));
 
     // ── Round trip into Excel with working formulas ──────────
     const { buffer, layout } = await exporter.buildProformaWorkbook(invoice);
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(buffer);
     const sheet = workbook.getWorksheet('Proforma Invoice');
-    assert.equal(sheet.getCell('H3').value, 'Alfatth_26-27/PI-03R5');
-    assert.equal(sheet.getCell('A9').value, 'PMtech Water Solutions');
-    assert.equal(sheet.getCell('H9').value, 'ALFATTH Import and Export FZ-LLC');
-    assert.equal(sheet.getCell('H15').value, 'CFR Alexandria Port, Egypt');
-    for (let row = 24; row <= 29; row++) {
+    const text = (address) => {
+        const value = sheet.getCell(address).value;
+        return value?.richText ? value.richText.map((run) => run.text).join('') : value;
+    };
+    assert.equal(text('H4'), 'Alfatth_26-27/PI-04');
+    assert.equal(text('A8'), 'Contact: Aayush +91 97423 50063 | Sunil +91 93422 39695');
+    assert.equal(text('A10'), 'PMtech Water Solutions');
+    assert.equal(text('H10'), 'ALFATTH Import and Export FZ-LLC');
+    assert.equal(text('H18'), 'Delivery: CFR Alexandria Port, Egypt');
+    for (let row = layout.firstItemRow + 1; row <= layout.lastItemRow; row++) {
         assert.equal(typeof sheet.getCell(`J${row}`).value, 'number', `J${row} quantity is numeric in Excel`);
         assert.equal(typeof sheet.getCell(`K${row}`).value, 'number', `K${row} price is numeric in Excel`);
         assert.equal(formulaOf(sheet.getCell(`L${row}`)), `IF(OR(J${row}="",K${row}=""),"",ROUND(J${row}*K${row},2))`);
     }
     assert.equal(sheet.getCell(`L${layout.grandRow}`).value.result, 116621);
     assert.equal(formulaOf(sheet.getCell(`L${layout.grandRow}`)), `SUM(L${layout.fobRow},L${layout.oceanRow})`);
-    assert.equal(sheet.getCell('O3').value, 10000);
-    assert.match(formulaOf(sheet.getCell('H16')), /FIXED\(\$O\$3,2\).*FIXED\(\$L\$35-\$O\$3,2\)/);
-    assert.equal(sheet.getCell('H16').value.result, 'Payment: USD 10,000.00 advance along with confirmed purchase order and the balance amount of USD 106,621.00 payable against a scanned copy of the draft Bill of Lading (B/L)');
+    assert.equal(sheet.getCell('O3').value, 30000);
+    assert.ok(formulaOf(sheet.getCell(layout.paymentCell)).includes(`FIXED($L$${layout.grandRow}-$O$3,2)`));
+    assert.equal(sheet.getCell(layout.paymentCell).value.result, 'Payment: USD 30,000.00 advance on PI acceptance & order confirmation.\nBalance USD 86,621.00 payable against draft BL copy.');
+    assert.equal(text(`A${layout.signRow + 1}`), 'For ALFATTH IMPORT & EXPORT FZ-LLC');
     assert.equal(sheet.getCell(`E${layout.wordsRow}`).value.result, 'United States Dollars One Hundred Sixteen Thousand Six Hundred Twenty One and Zero Cents only.');
 
     // ── Messy readings are flagged, not guessed ──────────────
@@ -226,12 +240,13 @@ async function run() {
     const aiCall = calls.ai[0];
     assert.ok(Math.abs(aiCall.options.deadlineMs - aiCall.at - 90000) < 1000, 'extraction gets its own full budget, untouched by OCR time');
     assert.equal(aiCall.options.timeoutMs, 90000);
-    assert.ok(aiCall.messages[0].content.includes('Alfatth_26-27/PI-03R5'), 'the OCR text is in the prompt');
+    assert.ok(aiCall.messages[0].content.includes('Alfatth_26-27/PI-04'), 'the OCR text is in the prompt');
     assert.equal(extract.body.invoice.items.length, 6);
     assert.equal(extract.body.totals.grand_total, 116621);
     assert.equal(extract.body.valid, true);
     assert.ok(extract.body.flags['consignee.tax_id']);
-    assert.ok(extract.body.warnings.length >= 2);
+    assert.deepEqual(extract.body.warnings, []);
+    assert.equal(extract.body.document_totals.grand_total, 116621);
 
     // Extraction timeout: retryable, OCR text not needed again.
     const okReply = aiReply;

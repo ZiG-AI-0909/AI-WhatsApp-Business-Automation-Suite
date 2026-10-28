@@ -24,9 +24,9 @@ function buildExtractionPrompt(documentText) {
 Shape (use null for anything not plainly present; never invent or infer values):
 {"is_proforma_invoice":true,
  "invoice":{"number":null,"date":null,"enquiry_ref":null,"po_number":null,"po_date":null,"currency":null},
- "exporter":{"name":null,"address":null,"contact_person":null,"phone":null,"gstin":null,"iec":null},
+ "exporter":{"name":null,"address":null,"contact":null,"gstin":null,"iec":null},
  "consignee":{"name":null,"address":null,"country":null,"tax_id":null,"acid":null,"email":null,"phone":null},
- "buyer":{"name":null,"address":null,"country":null,"tax_id":null,"email":null,"contact_person":null,"phone":null},
+ "buyer":{"name":null,"address":null,"country":null,"tax_id":null,"email":null,"contact_person":null,"phone":null,"signatory_name":null},
  "shipping":{"pre_carriage":null,"place_of_receipt":null,"place_of_delivery":null,"container_no":null,"vessel_no":null,"port_of_loading":null,"port_of_discharge":null,"origin_country":null,"destination_country":null,"incoterm":null,"incoterm_place":null},
  "payment":{"advance_amount":null,"text":null},
  "bank":{"name":null,"branch":null,"account":null,"swift":null,"ifsc":null},
@@ -47,6 +47,7 @@ Rules:
 - incoterm is the code only (CFR, FOB, CIF, EXW ...); incoterm_place the named port/place after it.
 - payment.advance_amount is the advance in the payment terms; payment.text is the payment sentence under "Terms of Delivery and Payment" copied verbatim.
 - terms: every numbered term and condition, title and full text copied verbatim (keep spelling; join wrapped lines with spaces).
+- exporter.contact is the whole contact line after "Contact:" (names and numbers). buyer.signatory_name is the buyer name exactly as printed after "For" in the signature block.
 - Addresses: keep line breaks as "\\n".
 - uncertain: dotted paths of fields you filled but could not read with confidence, e.g. "consignee.tax_id", "items.2.unit_price" (0-based item index).
 
@@ -192,13 +193,13 @@ function mapExtraction(raw, blank) {
         flag('invoice.currency', currency ? `The document's currency "${currency}" is not supported; ${invoice.invoice.currency} was kept.` : `Currency not stated: ${invoice.invoice.currency} was kept. Check it.`);
     }
 
-    for (const field of ['name', 'address', 'contact_person', 'phone', 'gstin', 'iec']) {
+    for (const field of ['name', 'address', 'contact', 'gstin', 'iec']) {
         take('exporter', field, source.exporter[field], { required: ['name', 'address'].includes(field), keepDefault: true });
     }
     for (const field of ['name', 'address', 'country', 'tax_id', 'acid', 'email', 'phone']) {
         take('consignee', field, source.consignee[field], { required: ['name', 'address'].includes(field) });
     }
-    for (const field of ['name', 'address', 'country', 'tax_id', 'email', 'contact_person', 'phone']) {
+    for (const field of ['name', 'address', 'country', 'tax_id', 'email', 'contact_person', 'phone', 'signatory_name']) {
         take('buyer', field, source.buyer[field]);
     }
     invoice.buyer.same_as_consignee = false;

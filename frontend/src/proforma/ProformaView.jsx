@@ -37,7 +37,7 @@ const DRAFT_KEY = 'sp-proforma-draft:'
 
 function tabOf(path) {
   if (/^(invoice\.|payment\.|shipping\.incoterm)/.test(path)) return 'invoice'
-  if (/^(exporter|bank)\./.test(path)) return 'company'
+  if (/^(exporter|bank|letterhead)\./.test(path)) return 'company'
   if (/^(consignee|buyer)\./.test(path)) return 'parties'
   if (path.startsWith('shipping.')) return 'shipping'
   if (path.startsWith('items')) return 'products'
@@ -236,6 +236,7 @@ export default function ProformaView() {
     const next = {
       ...blank,
       exporter: { ...invoice.exporter },
+      letterhead: { ...(invoice.letterhead || blank.letterhead) },
       bank: { ...invoice.bank },
       terms: invoice.terms.map((term) => ({ ...term, id: newId('t') })),
       payment: { ...blank.payment, summary: invoice.payment.summary },
@@ -342,6 +343,7 @@ export default function ProformaView() {
       const profile = {
         ...config.profile,
         exporter: invoice.exporter,
+        letterhead: invoice.letterhead,
         bank: invoice.bank,
         terms: invoice.terms.map(({ title, text }) => ({ title, text })),
         payment_summary: invoice.payment.summary,

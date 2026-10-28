@@ -123,12 +123,15 @@ function amountInWords(value, currencyCode = 'USD') {
 function excelString(text) {
     // A string constant inside a formula is limited to 255 characters:
     // 120 raw characters stay under it even when every one is a doubled quote.
-    const raw = Array.from(String(text));
-    const parts = [];
-    for (let index = 0; index < raw.length || !parts.length; index += 120) {
-        parts.push(`"${raw.slice(index, index + 120).join('').replace(/"/g, '""')}"`);
-    }
-    return parts.join('&');
+    // Line breaks become CHAR(10) (shown when the cell wraps text).
+    return String(text).split('\n').map((line) => {
+        const raw = Array.from(line);
+        const parts = [];
+        for (let index = 0; index < raw.length || !parts.length; index += 120) {
+            parts.push(`"${raw.slice(index, index + 120).join('').replace(/"/g, '""')}"`);
+        }
+        return parts.join('&');
+    }).join('&CHAR(10)&');
 }
 
 function chooseList(words) {

@@ -8,7 +8,7 @@ export default function ShippingDetailsForm({ form, deliveryTerms }) {
         <TextField form={form} path="shipping.place_of_receipt" label="Place of receipt by pre-carrier" />
         <TextField form={form} path="shipping.port_of_loading" label="Port of loading" required />
         <TextField form={form} path="shipping.port_of_discharge" label="Port of discharge" required />
-        <TextField form={form} path="shipping.place_of_delivery" label="Place of delivery" hint="Printed beside the port of discharge." />
+        <TextField form={form} path="shipping.place_of_delivery" label="Final destination" hint="Printed beside the port of discharge, e.g. Giza, Egypt." />
         <TextField form={form} path="shipping.container_no" label="Container number" hint="Optional" />
         <TextField form={form} path="shipping.vessel_no" label="Vessel / flight number" hint="Optional" />
         <TextField form={form} path="shipping.origin_country" label="Country of origin of goods" required />

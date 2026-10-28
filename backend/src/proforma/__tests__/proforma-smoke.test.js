@@ -157,7 +157,7 @@ const formulaOf = (cell) => cell.value?.formula || cell.value?.sharedFormula || 
 const resultOf = (cell) => cell.value?.result;
 
 async function run() {
-    // ── Calculation on the reference invoice ─────────────────
+    // ── Calculation on the signed sample invoice (PI-04) ─────────────────
     const sample = sanitizeInvoice(defaults.sampleInvoice());
     const totals = calc.calculate(sample);
     assert.deepEqual(totals.items.map((item) => item.amount), [17200, 28785, 11225, 22470, 9500, 4941], 'reference line amounts');
@@ -167,7 +167,7 @@ async function run() {
     assert.equal(totals.fob, 97421);
     assert.equal(totals.ocean_freight, 19200);
     assert.equal(totals.grand_total, 116621);
-    assert.equal(totals.balance, 106621, 'balance = grand total - advance');
+    assert.equal(totals.balance, 86621, 'balance = grand total - advance');
     assert.equal(totals.amount_in_words, 'United States Dollars One Hundred Sixteen Thousand Six Hundred Twenty One and Zero Cents only.');
     assert.deepEqual(validateInvoice(sample), {}, 'the reference sample is valid');
 
@@ -241,124 +241,160 @@ async function run() {
     assert.equal(messy.consignee.address, 'Line 1\nLine 2', 'multiline addresses keep their lines');
     assert.equal(messy.invoice.number, 'A B', 'single-line fields drop line breaks');
 
-    // ── Excel: layout replicating the reference ──────────────
+    // ── Excel: layout replicating the signed sample (PI-04) ──
     const { buffer, layout } = await exporter.buildProformaWorkbook(sample);
     const { workbook, sheet } = await loadSheet(buffer);
-    assert.equal(sheet.getCell('A1').value, 'PROFORMA INVOICE');
-    assert.equal(sheet.getCell('A1').font.bold, true);
-    assert.equal(sheet.getCell('A2').value, 'Manufacturer & Exporter:');
-    assert.equal(sheet.getCell('A3').value, 'M/s. Sudarshan Extrusions Pvt. Ltd.');
-    assert.equal(sheet.getCell('A4').value, '105, Phase IV, Bommasandra Industrial Area, Hosur Road');
-    assert.equal(sheet.getCell('A5').value, 'Bangalore - 560099, Karnataka, India');
-    assert.equal(sheet.getCell('A6').value, 'Contact: Mr. Aayush Salampuria - (M) +91 97423 50063');
-    assert.equal(sheet.getCell('A7').value, 'GSTIN: 29AACCK1590L1Z6; IEC: 0705014487');
-    assert.equal(sheet.getCell('H3').value, 'Alfatth_26-27/PI-03R5');
-    assert.deepEqual(sheet.getCell('H4').value.richText.map((run) => run.text), ['Dated: 26', 'th', ' October 2026']);
-    assert.equal(sheet.getCell('H4').value.richText[1].font.vertAlign, 'superscript', '"th" is superscript as in the reference');
-    assert.equal(sheet.getCell('H6').value, 'Based on WhatsApp correspondence & subsequent telephonic discussions');
-    assert.equal(sheet.getCell('H7').value, 'Emailid: Abdelhamed@alfatth-uae.com, Tel. +971 54 733 1749');
-    assert.equal(sheet.getCell('A9').value, 'PMtech Water Solutions');
-    assert.equal(sheet.getCell('A10').value, 'K28, Plot 39-Abu Rawash Industrial Zone, Giza, Egypt', 'country not repeated when the address ends with it');
-    assert.equal(sheet.getCell('A11').value, 'Tax Registration Number: 757121691');
-    assert.equal(sheet.getCell('A12').value, 'ACID No.: To be provided by Buyer prior to the shipment.');
-    assert.equal(sheet.getCell('A13').value, 'Email ID: Abdelhamed@pmtech-egypt.com, Tel. +20 10 0439 6443');
-    assert.equal(sheet.getCell('H9').value, 'ALFATTH Import and Export FZ-LLC');
-    assert.equal(sheet.getCell('H10').value, 'A2-1505A, Building no. A2, Al Hamra Industrial Zone-FZ\nRas Al Khaimah, UAE, Tax Regn. No. 104817492200001');
-    assert.equal(sheet.getCell('H13').value, 'INDIA');
-    assert.equal(sheet.getCell('K13').value, 'EGYPT');
-    assert.equal(sheet.getCell('A15').value, 'Road');
-    assert.equal(sheet.getCell('D15').value, 'Bangalore / Chennai Port, India');
-    assert.equal(sheet.getCell('H15').value, 'CFR Alexandria Port, Egypt');
-    assert.equal(sheet.getCell('D18').value, 'Chennai Port, India');
-    assert.equal(sheet.getCell('A20').value, 'Alexandria Port, Egypt');
-    assert.equal(sheet.getCell('D20').value, 'Giza, Egypt');
-    assert.equal(sheet.getCell('H19').font.underline, true);
-    assert.equal(sheet.getCell('H20').value, 'State Bank of India, Electronic City Branch, Bangalore, India');
-    assert.equal(sheet.getCell('H21').value, 'A/c No.: 37365498723 SWIFT Code: SBININBBA32 IFSC: SBIN0063971');
+    const text = (address) => {
+        const value = sheet.getCell(address).value;
+        return value?.richText ? value.richText.map((run) => run.text).join('') : value;
+    };
+    const boldRuns = (address) => sheet.getCell(address).value.richText.filter((run) => run.font?.bold).map((run) => run.text);
+    assert.equal(sheet.getImages().length, 1, 'letterhead logo above the title');
+    assert.equal(layout.titleRow, 2);
+    assert.equal(text('A2'), 'PROFORMA INVOICE');
+    assert.equal(sheet.getCell('A2').font.bold, true);
+    assert.equal(text('A3'), 'Manufacturer & Exporter:');
+    assert.equal(text('A4'), 'M/s. Sudarshan Extrusions Pvt. Ltd.');
+    assert.equal(text('A5'), '105, Phase IV, Bommasandra Industrial Area, Hosur Road');
+    assert.equal(text('A6'), 'Bangalore - 560099, Karnataka, India');
+    assert.equal(text('A7'), 'GSTIN: 29AACCK1590L1Z6 | IEC: 0705014487');
+    assert.deepEqual(boldRuns('A7'), ['GSTIN: ', 'IEC: '], 'labels bold, values plain, as printed');
+    assert.equal(text('A8'), 'Contact: Aayush +91 97423 50063 | Sunil +91 93422 39695');
+    assert.equal(text('H4'), 'Alfatth_26-27/PI-04');
+    assert.deepEqual(sheet.getCell('H5').value.richText.map((run) => run.text), ['Dated: 27', 'th', ' October 2026']);
+    assert.equal(sheet.getCell('H5').value.richText[1].font.vertAlign, 'superscript', '"th" is superscript as in the sample');
+    assert.equal(text('H7'), "Buyer's Enquiry / Purchase Order No. & Date");
+    assert.equal(text('H8'), 'Ref: WhatsApp correspondence & telephonic discussion');
+    assert.equal(text('A10'), 'PMtech Water Solutions');
+    assert.equal(text('A11'), 'K28, Plot 39-Abu Rawash Industrial Zone, Giza, Egypt', 'country not repeated when the address ends with it');
+    assert.equal(text('A12'), 'Tax Registration Number: 757121691');
+    assert.equal(text('A13'), 'ACID No.: To be provided by Buyer prior to the shipment.');
+    assert.equal(text('A14'), 'Email ID: Abdelhamed@pmtech-egypt.com | Tel. +20 10 0439 6443');
+    assert.equal(text('H10'), 'ALFATTH Import and Export FZ-LLC');
+    assert.equal(text('H11'), 'A2-1505A, Building no. A2, Al Hamra Industrial Zone-FZ');
+    assert.equal(text('H12'), 'Ras Al Khaimah, UAE');
+    assert.equal(text('H13'), 'Tax Registration Number: 104817492200001');
+    assert.equal(text('H14'), 'Emailid: Abdelhamed@alfatth-uae.com | Tel. +971 54 733 1749');
+    assert.equal(text('H15'), 'Country of Origin of Goods');
+    assert.equal(text('H16'), 'INDIA');
+    assert.equal(text('K16'), 'EGYPT');
+    assert.equal(text('A16'), 'Road');
+    assert.equal(text('D16'), 'Bangalore / Chennai, India');
+    assert.equal(text('A17'), 'Container No.');
+    assert.equal(text('A19'), 'Vessel / Flight No.');
+    assert.equal(text('D18'), 'Chennai / Ennore / Katupalli Port, India');
+    assert.equal(text('H18'), 'Delivery: CFR Alexandria Port, Egypt');
+    assert.equal(text('A20'), 'Port of Discharge');
+    assert.equal(text('D20'), 'Final Destination');
+    assert.equal(text('A21'), 'Alexandria Port, Egypt');
+    assert.equal(text('D21'), 'Giza, Egypt');
+    assert.equal(sheet.getCell('H21').font.underline, true);
+    assert.equal(text('H22'), 'State Bank of India, Electronic City Branch, Bangalore, India');
+    assert.equal(text('H23'), 'A/c No.: 37365498723 SWIFT Code: SBININBBA32 IFSC: SBIN0063971');
+    assert.deepEqual(boldRuns('H23'), ['37365498723', 'SBININBBA32']);
 
     const merges = sheet.model.merges;
-    for (const range of ['A1:L1', 'A2:G2', 'H2:L2', 'H10:L11', 'H12:J12', 'K12:L12', 'A14:C14', 'D14:G14', 'A16:C17', 'D16:G17', 'H16:L18', 'A20:C21', 'D20:G21', 'B22:G22']) {
+    for (const range of ['A2:L2', 'A3:G3', 'H3:L3', 'H5:L6', 'A9:G9', 'H9:L9', 'A15:C15', 'D15:G15', 'H15:J15', 'K15:L15', 'D18:G19', 'H19:L20', 'A21:C23', 'D21:G23', 'B24:G24']) {
         assert.ok(merges.includes(range), `merged ${range}`);
     }
-    assert.deepEqual(['A', 'B', 'H', 'I', 'J', 'K', 'L'].map((column) => sheet.getCell(`${column}22`).value),
-        ['Sl. No.', 'Description of Goods', 'Length per Pipe (Mtr.)', 'HSN Code', 'Quantity (Pieces)', 'Unit Price (USD / Piece)', 'Amount (USD)']);
+    assert.equal(layout.headerRow, 24);
+    assert.deepEqual(['A', 'B', 'H', 'I', 'J', 'K', 'L'].map((column) => text(`${column}24`)),
+        ['Sl. No.', 'Description of Goods', 'Length per Piece', 'H S Code', 'Quantity (Pieces)', 'Unit Price (USD / Piece)', 'Amount (USD)']);
     const widthsPx = sheet.columns.slice(0, 12).map((column) => Math.round(column.width * 7 + 5));
     assert.deepEqual(widthsPx, exporter.COLUMN_PX, 'column widths match the reference (px)');
-    assert.equal(sheet.getCell('A22').border.top.style, 'thin', 'table header is boxed');
-    assert.equal(sheet.getCell('H2').border.left.style, 'thin', 'vertical divider between the two header halves');
+    assert.equal(sheet.getCell('A24').border.top.style, 'thin', 'table header is boxed');
+    assert.equal(sheet.getCell('H3').border.left.style, 'thin', 'vertical divider between the two header halves');
 
     // Group heading + items.
-    assert.equal(layout.firstItemRow, 23);
-    assert.equal(sheet.getCell('B23').value, 'PVC Pipes - uPVC Column Pipes');
-    assert.equal(sheet.getCell('B23').font.bold, true);
-    assert.deepEqual(['A', 'B', 'C', 'F', 'G', 'H', 'I', 'J', 'K'].map((column) => sheet.getCell(`${column}24`).value),
+    const first = layout.firstItemRow;
+    assert.equal(first, 25);
+    assert.equal(text(`B${first}`), 'PVC Pipes - uPVC Column Pipes');
+    assert.equal(sheet.getCell(`B${first}`).font.bold, true);
+    assert.deepEqual(['A', 'B', 'C', 'F', 'G', 'H', 'I', 'J', 'K'].map((column) => text(`${column}${first + 1}`)),
         [1, '3"', 'Super Deluxe / Standard', '17 kgf/cm²', '(Standard Coupler)', 3, '39172390', 1720, 10]);
-    assert.equal(sheet.getCell('H24').numFmt, '0.0" Mtr."', 'length shows as "3.0 Mtr." but stays numeric');
-    for (let row = 24; row <= 29; row++) {
+    assert.equal(sheet.getCell(`H${first + 1}`).numFmt, '0.0" Mtr."', 'length shows as "3.0 Mtr." but stays numeric');
+    for (let row = first + 1; row <= first + 6; row++) {
         assert.equal(formulaOf(sheet.getCell(`L${row}`)), `IF(OR(J${row}="",K${row}=""),"",ROUND(J${row}*K${row},2))`, `amount formula row ${row}`);
     }
-    assert.equal(resultOf(sheet.getCell('L25')), 28785);
-    assert.equal(formulaOf(sheet.getCell(`J${layout.exWorksRow}`)), 'SUM(J23:J29)');
-    assert.equal(formulaOf(sheet.getCell(`L${layout.exWorksRow}`)), 'SUM(L23:L29)');
+    assert.equal(resultOf(sheet.getCell(`L${first + 2}`)), 28785);
+    assert.equal(formulaOf(sheet.getCell(`J${layout.exWorksRow}`)), `SUM(J${first}:J${layout.lastItemRow})`);
+    assert.equal(formulaOf(sheet.getCell(`L${layout.exWorksRow}`)), `SUM(L${first}:L${layout.lastItemRow})`);
     assert.equal(resultOf(sheet.getCell(`L${layout.exWorksRow}`)), 94121);
-    assert.equal(sheet.getCell(`A${layout.exWorksRow}`).value, 'I');
-    assert.equal(sheet.getCell(`B${layout.exWorksRow}`).value, 'Total - Ex-Works');
-    assert.equal(sheet.getCell(`B${layout.inlandRow}`).value, 'Inland Freight (Ex Works - Bangalore to Chennai Port, India)');
-    assert.equal(sheet.getCell(`H${layout.inlandRow}`).value, 'Container');
+    assert.equal(text(`A${layout.exWorksRow}`), 'I');
+    assert.equal(text(`B${layout.exWorksRow}`), 'Total - Ex-Works');
+    assert.equal(text(`B${layout.inlandRow}`), 'Inland Freight (Ex Works - Bangalore to Chennai Port, India)');
+    assert.equal(text(`H${layout.inlandRow}`), 'Container');
     assert.equal(formulaOf(sheet.getCell(`L${layout.inlandRow}`)), `IF(OR(J${layout.inlandRow}="",K${layout.inlandRow}=""),"",ROUND(J${layout.inlandRow}*K${layout.inlandRow},2))`);
     assert.equal(formulaOf(sheet.getCell(`L${layout.fobRow}`)), `SUM(L${layout.exWorksRow},L${layout.inlandRow})`);
-    assert.equal(sheet.getCell(`B${layout.fobRow}`).value, 'Total - FOB');
-    assert.equal(sheet.getCell(`B${layout.oceanRow - 1}`).value, 'Freight Charges #');
+    assert.equal(text(`B${layout.fobRow}`), 'Total - FOB Value');
+    assert.equal(text(`B${layout.oceanRow - 1}`), 'Freight Charges #');
     assert.equal(formulaOf(sheet.getCell(`L${layout.grandRow}`)), `SUM(L${layout.fobRow},L${layout.oceanRow})`);
     assert.equal(resultOf(sheet.getCell(`L${layout.grandRow}`)), 116621);
-    assert.equal(sheet.getCell(`A${layout.grandRow}`).value, 'III');
-    assert.equal(sheet.getCell(`A${layout.wordsRow}`).value, 'CFR VALUE (in Words):');
-    assert.equal(formulaOf(sheet.getCell(`E${layout.wordsRow}`)), calc.wordsFormula(`$L$${layout.grandRow}`), 'words follow the grand total cell');
+    assert.equal(text(`A${layout.grandRow}`), 'III');
+    assert.equal(text(`B${layout.grandRow}`), 'Total - CFR Value');
+    assert.equal(text(`A${layout.wordsRow}`), 'Amount in Words:');
+    assert.equal(formulaOf(sheet.getCell(`E${layout.wordsRow}`)), calc.wordsFormula(`$L$${layout.grandRow}`), 'words follow the total cell');
     assert.equal(resultOf(sheet.getCell(`E${layout.wordsRow}`)), totals.amount_in_words);
-    assert.equal(sheet.getCell(`A${layout.figuresRow}`).value, 'CFR VALUE (in Figures):');
-    assert.equal(formulaOf(sheet.getCell(`E${layout.figuresRow}`)), `$L$${layout.grandRow}`);
-    assert.equal(sheet.getCell(`E${layout.figuresRow}`).numFmt, '"USD "#,##0.00');
+    assert.equal(layout.termsLabelRow, layout.wordsRow + 1, 'no separate "in figures" row, as in the sample');
 
-    // Payment text and term 4 are formulas over the advance cell O3.
-    assert.equal(sheet.getCell('O3').value, 10000);
-    const payment = formulaOf(sheet.getCell('H16'));
+    // Payment text is a formula over the advance cell O3 and the total.
+    assert.equal(sheet.getCell('O3').value, 30000);
+    assert.equal(layout.paymentCell, 'H19');
+    const payment = formulaOf(sheet.getCell('H19'));
     assert.ok(payment.includes('FIXED($O$3,2)') && payment.includes(`FIXED($L$${layout.grandRow}-$O$3,2)`), 'payment text quotes the advance and balance by formula');
-    assert.equal(resultOf(sheet.getCell('H16')), 'Payment: USD 10,000.00 advance along with confirmed purchase order and the balance amount of USD 106,621.00 payable against a scanned copy of the draft Bill of Lading (B/L)');
+    assert.ok(payment.includes('&CHAR(10)&'), 'the two payment lines are kept');
+    assert.equal(resultOf(sheet.getCell('H19')), 'Payment: USD 30,000.00 advance on PI acceptance & order confirmation.\nBalance USD 86,621.00 payable against draft BL copy.');
 
     // Terms: 13 numbered rows, bold runs kept, tokens resolved.
     assert.equal(layout.termRows.length, 13);
-    assert.equal(sheet.getCell(`A${layout.termsLabelRow}`).value, 'TERMS & CONDITIONS:');
+    assert.equal(text(`A${layout.termsLabelRow}`), 'TERMS & CONDITIONS:');
     const termCell = (index) => sheet.getCell(`E${layout.termRows[index]}`);
-    assert.equal(sheet.getCell(`B${layout.termRows[0]}`).value, 'Price Validity');
+    const termText = (index) => termCell(index).value.richText.map((run) => run.text).join('');
+    assert.equal(text(`B${layout.termRows[0]}`), 'Price Validity');
     assert.deepEqual(termCell(0).value.richText.map((run) => [run.text, Boolean(run.font.bold)]),
-        [['The prices are ', false], ['valid', true], [' for 7 days from the date of Proforma Invoice.', false]]);
-    assert.equal(termCell(1).value.richText.map((run) => run.text).join(''), 'CFR Alexandria Port, Egypt');
-    assert.ok(formulaOf(termCell(3)).includes('FIXED($O$3,2)'), 'payment term follows the advance');
-    assert.equal(resultOf(termCell(3)), 'USD 10,000.00 advance along with confirmed purchase order and the balance amount of USD 106,621.00 payable against a scanned copy of draft Bill of Lading (BL).');
-    assert.equal(termCell(7).value.richText.map((run) => run.text).join(''), 'State Bank of India, Electronic City Branch, Bangalore, India\nAccount No.: 37365498723 SWIFT Code: SBININBBA32 IFSC: SBIN0063971');
-    assert.ok(termCell(12).value.richText.map((run) => run.text).join('').includes('consignemnt'), 'supplied wording is not silently corrected');
-    assert.ok(sheet.getRow(layout.termRows[9]).height > 12.75, 'multi-line terms get taller rows');
+        [['Pirce ', false], ['valid', true], [' for 7 days from Proforma Invoice Date.', false]]);
+    assert.equal(text(`B${layout.termRows[2]}`), 'Incoterms ® 2020');
+    assert.equal(termText(2), 'CFR Alexandria Port, Egypt. Risk in the goods passes from seller to buyer once the goods are loaded on board the vessel at the Port of Loading.');
+    assert.ok(termText(3).includes('not included in the CFR Price'), 'Incoterm placeholder resolved');
+    assert.equal(termText(7), 'State Bank of India, Electronic City Branch, Bangalore, India\nAccount No.: 37365498723 SWIFT Code: SBININBBA32 IFSC: SBIN0063971');
+    assert.ok(termText(11).includes('incldiung'), 'supplied wording is not silently corrected');
+    assert.ok(sheet.getRow(layout.termRows[8]).height > 12.75, 'multi-line terms get taller rows');
 
-    // Signatures.
-    assert.equal(sheet.getCell(`A${layout.signRow}`).value, 'Accepted By Buyer');
-    assert.equal(sheet.getCell(`A${layout.signRow + 1}`).value, 'For ALFATTH IMPORT AND EXPORT FZ-LLC');
-    assert.equal(sheet.getCell(`H${layout.signRow + 1}`).value, 'For Sudarshan Extrusions Pvt. Ltd.');
-    assert.equal(sheet.getCell(`A${layout.lastRow}`).value, 'Authorised Signatory');
-    assert.equal(sheet.getCell(`H${layout.lastRow}`).value, 'Authorised Signatory');
-    assert.equal(sheet.getCell(`A${layout.lastRow}`).border.bottom.style, 'thin');
+    // Signatures and the letterhead footer.
+    assert.equal(text(`A${layout.signRow}`), 'Accepted By Buyer');
+    assert.equal(text(`A${layout.signRow + 1}`), 'For ALFATTH IMPORT & EXPORT FZ-LLC', 'buyer signature name as printed');
+    assert.equal(text(`H${layout.signRow + 1}`), 'For Sudarshan Extrusions Pvt. Ltd.');
+    const signatureRow = layout.signRow + 6;
+    assert.equal(text(`A${signatureRow}`), 'Authorised Signatory');
+    assert.equal(text(`H${signatureRow}`), 'Authorised Signatory');
+    assert.equal(sheet.getCell(`A${signatureRow}`).border.bottom.style, 'thin');
+    assert.deepEqual([layout.lastRow - 2, layout.lastRow - 1, layout.lastRow].map((row) => text(`A${row}`)), [
+        'SUDARSHAN EXTRUSIONS PVT. LTD.',
+        '#105, Phase IV, Bommasandra Industrial Area, Hosur Road, Bangalore, Karnataka - 560099',
+        'sales@sudarshanpipes.com || www.sudarshanpipes.com',
+    ]);
+    assert.equal(sheet.getCell(`A${layout.lastRow}`).fill.fgColor.argb, 'FFE8732A', 'orange footer band');
 
     // Print setup and calculation mode.
     assert.equal(sheet.pageSetup.paperSize, 9, 'A4');
     assert.equal(sheet.pageSetup.orientation, 'portrait');
     assert.equal(sheet.pageSetup.fitToPage, true);
     assert.equal(sheet.pageSetup.fitToWidth, 1);
-    assert.equal(sheet.pageSetup.fitToHeight, 1, 'the reference fits one page');
+    assert.equal(sheet.pageSetup.fitToHeight, 1, 'the sample fits one page');
     const workbookXml = await (await JSZip.loadAsync(buffer)).file('xl/workbook.xml').async('string');
-    assert.match(workbookXml, new RegExp(`Print_Area[^>]*>&apos;Proforma Invoice&apos;!\\$A\\$1:\\$L\\$${layout.lastRow}<`), 'print area is the whole invoice');
+    assert.match(workbookXml, new RegExp(`Print_Area[^>]*>&apos;Proforma Invoice&apos;!\\$A\\$1:\\$L\\$${layout.lastRow}<`), 'print area is the whole invoice, footer included');
     assert.match(workbookXml, /<calcPr[^>]*fullCalcOnLoad="1"/, 'Excel recalculates on open');
     assert.doesNotMatch(workbookXml, /calcMode="(manual|autoNoTable)"/, 'calculation mode is automatic');
     assert.ok(workbook.worksheets.length === 1);
-    assert.equal(exporter.exportFileName(sample), 'Proforma_Invoice_PI-03R5_2026-10-26.xlsx');
+    assert.equal(exporter.exportFileName(sample), 'Proforma_Invoice_PI-04_2026-10-27.xlsx');
+
+    // Letterhead off: no logo row, no footer band.
+    const plainInvoice = sanitizeInvoice({ ...defaults.sampleInvoice(), letterhead: { show_logo: false, footer_title: '', footer_address: '', footer_contact: '' } });
+    const plain = await exporter.buildProformaWorkbook(plainInvoice);
+    const plainSheet = (await loadSheet(plain.buffer)).sheet;
+    assert.equal(plainSheet.getImages().length, 0);
+    assert.equal(plain.layout.titleRow, 1);
+    assert.equal(plainSheet.getCell(`A${plain.layout.lastRow}`).value, 'Authorised Signatory');
 
     // Every formula in the sheet is within Excel's limits.
     sheet.eachRow((row) => row.eachCell((cell) => {
@@ -394,7 +430,7 @@ async function run() {
     assert.equal(bigSheet.getCell(`B${handRow}`).value, 'Handling (buyer pays locally) (not included in Grand Total)');
     assert.equal(resultOf(bigSheet.getCell(`L${big.layout.grandRow}`)), manyTotals.grand_total);
     assert.equal(bigSheet.pageSetup.fitToHeight, 0, 'long invoices flow onto more pages');
-    assert.equal(bigSheet.pageSetup.printTitlesRow, '22:22', 'table header repeats on every printed page');
+    assert.equal(bigSheet.pageSetup.printTitlesRow, '24:24', 'table header repeats on every printed page');
 
     const single = sanitizeInvoice({ ...base, items: [base.items[3]], inland_freight: { include: false }, ocean_freight: { include: false } });
     const small = await exporter.buildProformaWorkbook(single);
@@ -409,7 +445,7 @@ async function run() {
     assert.equal(defaultsResponse.statusCode, 200);
     assert.equal(defaultsResponse.body.profile.exporter.gstin, '29AACCK1590L1Z6');
     assert.equal(defaultsResponse.body.blank.invoice.number, '', 'no hardcoded invoice number');
-    assert.notEqual(defaultsResponse.body.blank.invoice.date, '2026-10-26', 'no hardcoded invoice date');
+    assert.notEqual(defaultsResponse.body.blank.invoice.date, '2026-10-27', 'no hardcoded invoice date');
     assert.equal(defaultsResponse.body.blank.consignee.name, '', 'parties start empty');
     assert.equal(defaultsResponse.body.persistence, true);
 
@@ -419,14 +455,14 @@ async function run() {
     assert.equal(previewResponse.body.totals.grand_total, 116621);
     assert.equal(previewResponse.body.texts.delivery_terms, 'CFR Alexandria Port, Egypt');
     assert.equal(previewResponse.body.texts.payment.dynamic, true);
-    assert.equal(calc.segmentsToText(previewResponse.body.texts.payment.segments), resultOf(sheet.getCell('H16')), 'preview text equals the Excel cached text');
+    assert.equal(calc.segmentsToText(previewResponse.body.texts.payment.segments), resultOf(sheet.getCell(layout.paymentCell)), 'preview text equals the Excel cached text');
 
     const rejected = await api('POST', '/export', { body: { invoice: defaults.blankInvoice() } });
     assert.equal(rejected.statusCode, 422);
     assert.ok(rejected.body.errors['invoice.number']);
     const exported = await api('POST', '/export', { body: { invoice: defaults.sampleInvoice() } });
     assert.equal(exported.statusCode, 200);
-    assert.equal(exported.headers['content-disposition'], 'attachment; filename="Proforma_Invoice_PI-03R5_2026-10-26.xlsx"');
+    assert.equal(exported.headers['content-disposition'], 'attachment; filename="Proforma_Invoice_PI-04_2026-10-27.xlsx"');
     assert.ok(Buffer.isBuffer(exported.body) && exported.body.length > 5000);
 
     // Save / list / load / update / delete, per user.
@@ -438,7 +474,7 @@ async function run() {
     assert.equal(Number(tables.proforma_invoices[0].grand_total), 116621, 'list total is computed on the server');
     const clash = await api('POST', '/', { body: { invoice: defaults.sampleInvoice() } });
     assert.equal(clash.statusCode, 409, 'the same number cannot be saved twice');
-    assert.match(clash.body.error, /already uses the number "Alfatth_26-27\/PI-03R5"/);
+    assert.match(clash.body.error, /already uses the number "Alfatth_26-27\/PI-04"/);
     const otherUser = await api('POST', '/', { user: USER_B, body: { invoice: defaults.sampleInvoice() } });
     assert.equal(otherUser.statusCode, 201, 'numbers are unique per user only');
     assert.equal((await api('GET', `/${id}`, { user: USER_B })).statusCode, 404, 'another user cannot read it');
@@ -449,7 +485,7 @@ async function run() {
     assert.equal(draft.body.valid, false);
     const listed = await api('GET', '/', { query: { search: 'pmtech' } });
     assert.equal(listed.body.total, 1);
-    assert.equal(listed.body.data[0].invoice_number, 'Alfatth_26-27/PI-03R5');
+    assert.equal(listed.body.data[0].invoice_number, 'Alfatth_26-27/PI-04');
     const edited = defaults.sampleInvoice();
     edited.items[0].qty = 1000;
     const updated = await api('PUT', `/${id}`, { body: { invoice: edited } });
@@ -458,9 +494,9 @@ async function run() {
     const loaded = await api('GET', `/${id}`);
     assert.equal(loaded.body.invoice.items[0].qty, 1000);
 
-    // Next number: after PI-03R5 comes PI-04, per financial year.
+    // Next number: after PI-04 comes PI-05, per financial year.
     const next = await api('GET', '/next-number', { query: { prefix: 'Alfatth', date: '2026-10-27' } });
-    assert.equal(next.body.number, 'Alfatth_26-27/PI-04');
+    assert.equal(next.body.number, 'Alfatth_26-27/PI-05');
     const nextYear = await api('GET', '/next-number', { query: { prefix: 'Alfatth', date: '2027-04-01' } });
     assert.equal(nextYear.body.number, 'Alfatth_27-28/PI-01', 'numbering restarts each April');
     const otherPrefix = await api('GET', '/next-number', { query: { prefix: 'PMtech', date: '2026-10-27' } });

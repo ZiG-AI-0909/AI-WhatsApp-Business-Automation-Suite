@@ -15,11 +15,19 @@ export default function CompanyDetailsForm({ form, onSaveDefaults, profileSaved,
       >
         <TextField form={form} path="exporter.name" label="Company name" required wide />
         <TextField form={form} path="exporter.address" label="Address" required multiline rows={2} wide hint="Two lines, as printed on the invoice." />
-        <TextField form={form} path="exporter.contact_person" label="Contact person" />
-        <TextField form={form} path="exporter.phone" label="Contact number" />
         <TextField form={form} path="exporter.gstin" label="GSTIN" />
         <TextField form={form} path="exporter.iec" label="IEC" />
+        <TextField form={form} path="exporter.contact" label="Contact" wide hint='Printed after "Contact:", e.g. Aayush +91 97423 50063 | Sunil +91 93422 39695' />
         <TextField form={form} path="exporter.signatory_name" label="Signature line name" hint='Printed as "For …" above Authorised Signatory.' wide />
+      </Section>
+
+      <Section title="Letterhead" description="The logo above the title and the coloured footer band. Clear the footer lines to leave the band out.">
+        <label className="check-label pf-wide">
+          <input type="checkbox" checked={form.get('letterhead.show_logo') !== false} onChange={(event) => form.set('letterhead.show_logo', event.target.checked)} /> Show the Sudarshan logo above the title
+        </label>
+        <TextField form={form} path="letterhead.footer_title" label="Footer: company name" wide />
+        <TextField form={form} path="letterhead.footer_address" label="Footer: address" wide />
+        <TextField form={form} path="letterhead.footer_contact" label="Footer: email and website" wide />
       </Section>
 
       <Section title="Bank details" description="Printed under Payment to be made to our bank account, and in term 8 through {bank_…} placeholders.">

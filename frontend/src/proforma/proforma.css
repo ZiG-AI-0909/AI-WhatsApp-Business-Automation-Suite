@@ -118,3 +118,11 @@
 .pf-flag, .form-label small.pf-flag { color: var(--warning-text); font-size: var(--text-xs); font-weight: 600; }
 .pf-flagged input, .pf-flagged select, .pf-flagged textarea, .pf-cell-flagged input, .pf-cell-flagged textarea { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning); background: var(--warning-bg); }
 .pf-badge-flag { background: var(--warning); color: var(--text-primary); }
+
+/* Preview letterhead: logo above the title, orange footer band. */
+.pv-sheet .pv-bottom { vertical-align: bottom; }
+.pv-sheet .pv-logo td { height: 66px; padding: 4px 6px; }
+.pv-sheet .pv-logo img { display: block; height: 58px; width: auto; }
+.pv-sheet .pv-gap td { height: 17px; }
+.pv-sheet .pv-footer td, .pv-sheet tbody tr.pv-footer:hover > td { background: #E8732A; color: #fff; font-weight: 700; text-align: center; font-size: 14.6px; height: 22px; }
+.pv-sheet .pv-footer-title td, .pv-sheet tbody tr.pv-footer-title:hover > td { color: #1F2F7A; font-size: 18.6px; height: 29px; }

@@ -24,6 +24,9 @@ const LINE = 12.75; // points per text line at Calibri 10
 const THIN = { style: 'thin', color: { argb: 'FF000000' } };
 const INPUT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
 const ADVANCE_CELL = '$O$3';
+const FOOTER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8732A' } };
+let LOGO = null;
+try { LOGO = require('fs').readFileSync(require('path').join(__dirname, 'assets', 'sudarshan-logo.png')); } catch { LOGO = null; }
 
 const pxToWidth = (px) => Math.round(((px - 5) / 7) * 100) / 100;
 
@@ -200,95 +203,119 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     };
     const textOf = (text) => (text ? String(text) : null);
 
-    // ── Title ───────────────────────────────────────────────
-    put('A1:L1', 'PROFORMA INVOICE', { bold: true, size: 11, align: 'center', border: 'tlbr' });
-    needHeight(1, 15);
+    // Rich text with bold labels: [['Label: ', true], ['value', false], ...]
+    const labelled = (parts) => {
+        const kept = parts.filter(([text]) => text);
+        return kept.length ? { richText: runs(kept.map(([text, bold]) => ({ text, bold }))) } : null;
+    };
+    const pairs = (...entries) => entries.filter(([, value]) => String(value || '').trim())
+        .flatMap(([label, value], index) => [[index ? ' | ' : '', false], [label, true], [String(value).trim(), false]]);
 
-    // ── Exporter (left) / invoice number, date, enquiry (right): rows 2-7
+    // ── Letterhead logo and title ───────────────────────────
+    const letterhead = invoice.letterhead || {};
+    let row = 1;
+    if (letterhead.show_logo !== false && LOGO) {
+        const logoId = workbook.addImage({ buffer: LOGO, extension: 'png' });
+        sheet.addImage(logoId, { tl: { col: 0.15, row: 0.15 }, ext: { width: 236, height: 60 }, editAs: 'oneCell' });
+        needHeight(row, 50);
+        row++;
+    }
+    const titleRow = row++;
+    put(`A${titleRow}:L${titleRow}`, 'PROFORMA INVOICE', { bold: true, size: 11, align: 'center', border: 'b' });
+    needHeight(titleRow, 16);
+
+    // ── Exporter (left) / number, date, enquiry (right): 6 rows ──
     const exporter = invoice.exporter;
     const [address1, address2] = addressLines(exporter.address, 2);
-    put('A2:G2', 'Manufacturer & Exporter:', { bold: true, border: 'tl' });
-    put('A3:G3', textOf(exporter.name), { bold: true, border: 'l' });
-    put('A4:G4', textOf(address1), { border: 'l' });
-    put('A5:G5', textOf(address2), { border: 'lb' });
-    const contact = joinParts([exporter.contact_person, exporter.phone ? `(M) ${exporter.phone}` : ''], ' - ');
-    put('A6:G6', contact ? `Contact: ${contact}` : null, { border: 'l' });
-    put('A7:G7', joinParts([exporter.gstin ? `GSTIN: ${exporter.gstin}` : '', exporter.iec ? `IEC: ${exporter.iec}` : ''], '; ') || null, { border: 'lb' });
-
-    put('H2:L2', 'Proforma Invoice No. & Date', { bold: true, border: 'tlr' });
-    put('H3:L3', textOf(invoice.invoice.number), { border: 'lr' });
-    put('H4:L4', { richText: runs(datedSegments(invoice.invoice.date)) }, { border: 'lrb' });
-    put('H5:L5', "Buyer's Enquiry Ref. / Purchase Order No. & Date", { bold: true, border: 'lr' });
+    const top = row;
+    const left = (offset, value, options = {}) => put(`A${top + offset}:G${top + offset}`, value, options);
+    left(0, 'Manufacturer & Exporter:', { bold: true, border: 'tl' });
+    left(1, textOf(exporter.name), { bold: true, border: 'l' });
+    left(2, textOf(address1), { border: 'l' });
+    left(3, textOf(address2), { border: 'l' });
+    left(4, labelled(pairs(['GSTIN: ', exporter.gstin], ['IEC: ', exporter.iec])), { border: 'l' });
+    left(5, exporter.contact ? labelled([['Contact: ', true], [exporter.contact, false]]) : null, { border: 'lb' });
+    fitText(top + 5, 1, `Contact: ${exporter.contact}`, 1, 7);
+    put(`H${top}:L${top}`, 'Proforma Invoice No. & Date', { bold: true, border: 'tlr' });
+    put(`H${top + 1}:L${top + 1}`, textOf(invoice.invoice.number), { border: 'lr' });
+    put(`H${top + 2}:L${top + 3}`, { richText: runs(datedSegments(invoice.invoice.date), { bold: true }) }, { valign: 'top', border: 'lrb' });
+    put(`H${top + 4}:L${top + 4}`, "Buyer's Enquiry / Purchase Order No. & Date", { bold: true, border: 'lr' });
     const enquiry = joinParts([
         invoice.invoice.enquiry_ref.replace(/\s*\n\s*/g, ' '),
         invoice.invoice.po_number ? `PO No. ${invoice.invoice.po_number}${invoice.invoice.po_date ? ` dated ${formatDate(invoice.invoice.po_date)}` : ''}` : '',
     ], '; ');
-    put('H6:L6', textOf(enquiry), { size: 8, border: 'lr' });
-    fitText(6, 1, enquiry, 8, 12, 8);
-    const buyer = invoice.buyer;
-    const buyerContact = joinParts([
-        buyer.contact_person ? `Attn: ${buyer.contact_person}` : '',
-        buyer.email ? `Emailid: ${buyer.email}` : '',
-        buyer.phone ? `Tel. ${buyer.phone}` : '',
-    ]);
-    put('H7:L7', textOf(buyerContact), { border: 'lrb' });
-    fitText(7, 1, buyerContact, 8, 12);
+    put(`H${top + 5}:L${top + 5}`, textOf(enquiry), { size: 8, border: 'lrb' });
+    fitText(top + 5, 1, enquiry, 8, 12, 8);
 
-    // ── Consignee (left) / buyer + countries (right): rows 8-13
+    // ── Consignee (left) / buyer (right): 6 rows ────────────
+    const parties = top + 6;
     const consignee = invoice.consignee;
+    const buyer = invoice.buyer;
     const consigneeAddress = withCountry(consignee.address, consignee.country).replace(/\s*\n\s*/g, ', ');
-    put('A8:G8', 'Consignee:', { bold: true, border: 'l' });
-    put('A9:G9', textOf(consignee.name), { bold: true, border: 'l' });
-    put('A10:G10', textOf(consigneeAddress), { border: 'l' });
-    fitText(10, 1, consigneeAddress, 1, 7);
-    put('A11:G11', consignee.tax_id ? `Tax Registration Number: ${consignee.tax_id}` : null, { border: 'l' });
-    put('A12:G12', consignee.acid ? `ACID No.: ${consignee.acid}` : null, { border: 'l' });
-    const consigneeContact = joinParts([consignee.email ? `Email ID: ${consignee.email}` : '', consignee.phone ? `Tel. ${consignee.phone}` : '']);
-    put('A13:G13', textOf(consigneeContact), { border: 'lb' });
-    fitText(13, 1, consigneeContact, 1, 7);
+    const [buyer1, buyer2] = addressLines(withCountry(buyer.address, buyer.country), 2);
+    const partyRows = [
+        ['Consignee:', 'Buyer / Notifying Party: (If other than Consignee)', true],
+        [textOf(consignee.name), textOf(buyer.name), true],
+        [textOf(consigneeAddress), textOf(buyer1), false],
+        [labelled(pairs(['Tax Registration Number: ', consignee.tax_id])), textOf(buyer2), false],
+        [labelled(pairs(['ACID No.: ', consignee.acid])), labelled(pairs(['Tax Registration Number: ', buyer.tax_id])), false],
+        [labelled(pairs(['Email ID: ', consignee.email], ['Tel. ', consignee.phone])), labelled(pairs(['Attn: ', buyer.contact_person], ['Emailid: ', buyer.email], ['Tel. ', buyer.phone])), false],
+    ];
+    partyRows.forEach(([leftValue, rightValue, bold], offset) => {
+        const at = parties + offset;
+        const last = offset === partyRows.length - 1;
+        put(`A${at}:G${at}`, leftValue, { bold, border: last ? 'lb' : 'l' });
+        put(`H${at}:L${at}`, rightValue, { bold, border: last ? 'lrb' : 'lr' });
+    });
+    fitText(parties + 2, 1, consigneeAddress, 1, 7);
+    const plain = (value) => (value?.richText ? value.richText.map((run) => run.text).join('') : String(value || ''));
+    fitText(parties + 5, 1, plain(partyRows[5][0]), 1, 7);
+    fitText(parties + 5, 1, plain(partyRows[5][1]), 8, 12);
+    fitText(parties + 4, 1, plain(partyRows[4][0]), 1, 7);
 
-    put('H8:L8', 'Buyer / Notifying Party: (If other than Consignee)', { bold: true, border: 'lr' });
-    put('H9:L9', textOf(buyer.name), { bold: true, border: 'lr' });
-    const buyerAddress = joinParts([withCountry(buyer.address, buyer.country), buyer.tax_id ? `Tax Regn. No. ${buyer.tax_id}` : '']);
-    put('H10:L11', textOf(buyerAddress), { valign: 'top', border: 'lrb' });
-    fitText(10, 2, buyerAddress, 8, 12);
-    put('H12:J12', 'Country of Origin of Goods', { bold: true, border: 'l' });
-    put('K12:L12', 'Country of Final Destination', { bold: true, border: 'lr' });
-    put('H13:J13', textOf(invoice.shipping.origin_country), { align: 'center', border: 'lb' });
-    put('K13:L13', textOf(invoice.shipping.destination_country), { align: 'center', border: 'lrb' });
-
-    // ── Shipping (left) / delivery, payment, bank (right): rows 14-21
+    // ── Pre-carriage and countries: 2 rows ──────────────────
     const shipping = invoice.shipping;
+    const carriage = parties + 6;
+    put(`A${carriage}:C${carriage}`, 'Pre - Carriage by', { bold: true, border: 'l' });
+    put(`D${carriage}:G${carriage}`, 'Place of Receipt by Pre - Carrier', { bold: true, border: 'l' });
+    put(`H${carriage}:J${carriage}`, 'Country of Origin of Goods', { bold: true, border: 'l' });
+    put(`K${carriage}:L${carriage}`, 'Country of Final Destination', { bold: true, border: 'lr' });
+    put(`A${carriage + 1}:C${carriage + 1}`, textOf(shipping.pre_carriage), { border: 'lb' });
+    put(`D${carriage + 1}:G${carriage + 1}`, textOf(shipping.place_of_receipt), { border: 'lb' });
+    put(`H${carriage + 1}:J${carriage + 1}`, textOf(shipping.origin_country), { align: 'center', border: 'lb' });
+    put(`K${carriage + 1}:L${carriage + 1}`, textOf(shipping.destination_country), { align: 'center', border: 'lrb' });
+    fitText(carriage + 1, 1, shipping.place_of_receipt, 4, 7);
+
+    // ── Container, ports (left) / delivery, payment, bank (right): 7 rows
+    const ports = carriage + 2;
     const deliveryTerms = shipping.delivery_terms.trim() || joinParts([shipping.incoterm, shipping.incoterm_place], ' ');
-    put('A14:C14', 'Pre - Carriage by', { bold: true, border: 'l' });
-    put('D14:G14', 'Place of Receipt by Pre - Carrier', { bold: true, border: 'l' });
-    put('H14:L14', 'Terms of Delivery and Payment:', { bold: true, border: 'lr' });
-    put('A15:C15', textOf(shipping.pre_carriage), { align: 'center', border: 'lb' });
-    put('D15:G15', textOf(shipping.place_of_receipt), { align: 'center', border: 'lb' });
-    put('H15:L15', textOf(deliveryTerms), { bold: true, border: 'lr' });
-    fitText(15, 1, shipping.place_of_receipt, 4, 7);
-    put('A16:C17', 'Container No. -\nVessel / Flight No.', { bold: true, valign: 'top', border: 'l' });
-    put('D16:G17', 'Port of Loading', { bold: true, valign: 'top', border: 'l' });
+    put(`A${ports}:C${ports}`, 'Container No.', { bold: true, border: 'l' });
+    put(`A${ports + 1}:C${ports + 1}`, textOf(shipping.container_no), { border: 'l' });
+    put(`A${ports + 2}:C${ports + 2}`, labelled([['Vessel / Flight No.', true], [shipping.vessel_no ? ` ${shipping.vessel_no}` : '', false]]), { border: 'lb' });
+    put(`D${ports}:G${ports}`, 'Port of Loading', { bold: true, border: 'l' });
+    put(`D${ports + 1}:G${ports + 2}`, textOf(shipping.port_of_loading), { valign: 'bottom', border: 'lb' });
+    put(`A${ports + 3}:C${ports + 3}`, 'Port of Discharge', { bold: true, border: 'l' });
+    put(`D${ports + 3}:G${ports + 3}`, 'Final Destination', { bold: true, border: 'l' });
+    put(`A${ports + 4}:C${ports + 6}`, textOf(shipping.port_of_discharge), { border: 'lb' });
+    put(`D${ports + 4}:G${ports + 6}`, textOf(shipping.place_of_delivery), { border: 'lb' });
+    put(`H${ports}:L${ports}`, 'Terms of Delivery and Payment:', { bold: true, border: 'lr' });
+    put(`H${ports + 1}:L${ports + 1}`, labelled([['Delivery: ', true], [deliveryTerms, false]]), { border: 'lr' });
     const refs = { advance: ADVANCE_CELL, grand: null };
-    const paymentCell = put('H16:L18', null, { valign: 'top', border: 'lr' });
-    const containerVessel = joinParts([shipping.container_no, shipping.vessel_no], ' / ');
-    put('A18:C18', textOf(containerVessel), { border: 'lb' });
-    put('D18:G18', textOf(shipping.port_of_loading), { border: 'lb' });
-    fitText(18, 1, shipping.port_of_loading, 4, 7);
-    put('A19:C19', 'Port of Discharge', { bold: true, border: 'l' });
-    put('D19:G19', null, { border: 'l' });
-    put('H19:L19', 'Payment to be made to our bank account:', { bold: true, underline: true, border: 'lr' });
-    put('A20:C21', textOf(shipping.port_of_discharge), { valign: 'top', border: 'lb' });
-    put('D20:G21', textOf(shipping.place_of_delivery), { valign: 'top', border: 'lb' });
-    fitText(20, 2, shipping.port_of_discharge, 1, 3);
+    const paymentRow = ports + 2;
+    const paymentCell = put(`H${paymentRow}:L${paymentRow + 1}`, null, { valign: 'top', border: 'lr' });
+    put(`H${ports + 4}:L${ports + 4}`, 'Payment to be made to our bank account:', { bold: true, underline: true, border: 'lr' });
     const bank = invoice.bank;
-    put('H20:L20', joinParts([bank.name, bank.branch]) || null, { border: 'lr' });
-    put('H21:L21', joinParts([bank.account ? `A/c No.: ${bank.account}` : '', bank.swift ? `SWIFT Code: ${bank.swift}` : '', bank.ifsc ? `IFSC: ${bank.ifsc}` : ''], ' ') || null, { border: 'lrb' });
+    put(`H${ports + 5}:L${ports + 5}`, joinParts([bank.name, bank.branch]) || null, { border: 'lr' });
+    put(`H${ports + 6}:L${ports + 6}`, labelled([
+        [bank.account ? 'A/c No.: ' : '', false], [bank.account, true],
+        [bank.swift ? ' SWIFT Code: ' : '', false], [bank.swift, true],
+        [bank.ifsc ? ` IFSC: ${bank.ifsc}` : '', false],
+    ]), { border: 'lrb' });
 
     // ── Product table ───────────────────────────────────────
-    const headerRow = 22;
+    const headerRow = ports + 7;
     const headers = [
-        ['A', 'Sl. No.'], ['B:G', 'Description of Goods'], ['H', 'Length per Pipe (Mtr.)'], ['I', 'HSN Code'],
+        ['A', 'Sl. No.'], ['B:G', 'Description of Goods'], ['H', 'Length per Piece'], ['I', 'H S Code'],
         ['J', 'Quantity (Pieces)'], ['K', `Unit Price (${currency.code} / Piece)`], ['L', `Amount (${currency.code})`],
     ];
     for (const [columns, label] of headers) {
@@ -297,7 +324,7 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     }
     needHeight(headerRow, 2 * LINE + 2);
 
-    let row = headerRow + 1;
+    row = headerRow + 1;
     // Seven table boxes per row; `full` adds the top/bottom rule.
     const tableRow = (values, { full = false, bold = false } = {}) => {
         const sides = full ? 'tlbr' : 'lr';
@@ -363,7 +390,7 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     const inlandRow = invoice.inland_freight.include ? freightRow(invoice.inland_freight, totals.inland_freight) : null;
     const fobRow = tableRow({
         A: 'II',
-        B: 'Total - FOB',
+        B: 'Total - FOB Value',
         L: { formula: inlandRow ? `SUM(L${exWorksRow},L${inlandRow})` : `L${exWorksRow}`, result: totals.fob },
     }, { full: true, bold: true });
     const addRows = [`L${fobRow}`];
@@ -388,20 +415,16 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     }
     const grandRow = tableRow({
         A: 'III',
-        B: 'Grand Total',
+        B: `Total - ${joinParts([shipping.incoterm, 'Value'], ' ')}`,
         L: { formula: addRows.length > 1 ? `SUM(${addRows.join(',')})` : addRows[0], result: totals.grand_total },
     }, { full: true, bold: true });
     refs.grand = `$L$${grandRow}`;
 
-    // ── Value in words / figures ────────────────────────────
-    const valueLabel = joinParts([shipping.incoterm, 'VALUE'], ' ');
+    // ── Amount in words (follows the total by formula) ──────
     const wordsRow = row++;
-    put(`A${wordsRow}:D${wordsRow}`, `${valueLabel} (in Words):`, { bold: true, border: 'tlbr' });
-    put(`E${wordsRow}:L${wordsRow}`, { formula: calc.wordsFormula(refs.grand, invoice.invoice.currency), result: totals.amount_in_words }, { bold: true, border: 'tlbr' });
+    put(`A${wordsRow}:D${wordsRow}`, 'Amount in Words:', { bold: true, border: 'tlbr' });
+    put(`E${wordsRow}:L${wordsRow}`, { formula: calc.wordsFormula(refs.grand, invoice.invoice.currency), result: totals.amount_in_words }, { border: 'tlbr' });
     fitText(wordsRow, 1, totals.amount_in_words, 5, 12);
-    const figuresRow = row++;
-    put(`A${figuresRow}:D${figuresRow}`, `${valueLabel} (in Figures):`, { bold: true, border: 'tlbr' });
-    put(`E${figuresRow}:L${figuresRow}`, { formula: refs.grand, result: totals.grand_total }, { bold: true, border: 'tlbr', numFmt: `"${currency.code} "#,##0.00` });
 
     // ── Terms & conditions ──────────────────────────────────
     const termsLabelRow = row++;
@@ -418,7 +441,7 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     });
 
     // ── Acceptance and signatures ───────────────────────────
-    const buyerName = (buyer.name || consignee.name || '').trim().toUpperCase();
+    const buyerName = (buyer.signatory_name || (buyer.name || consignee.name || '').toUpperCase()).trim();
     const signRow = row;
     put(`A${row}:G${row}`, 'Accepted By Buyer', { bold: true, align: 'center', border: 'tl' });
     put(`H${row}:L${row}`, null, { border: 'tr' });
@@ -432,12 +455,26 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     }
     put(`A${row}:G${row}`, 'Authorised Signatory', { bold: true, align: 'center', border: 'lb' });
     put(`H${row}:L${row}`, 'Authorised Signatory', { bold: true, align: 'center', border: 'rb' });
-    const lastRow = row;
+    let lastRow = row;
+
+    // ── Letterhead footer band ──────────────────────────────
+    const footer = [
+        [letterhead.footer_title, 14, 'FF1F2F7A', 22],
+        [letterhead.footer_address, 11, 'FFFFFFFF', 17],
+        [letterhead.footer_contact, 11, 'FFFFFFFF', 17],
+    ].filter(([text]) => String(text || '').trim());
+    if (footer.length) lastRow++;
+    for (const [text, size, color, height] of footer) {
+        lastRow++;
+        const cell = put(`A${lastRow}:L${lastRow}`, String(text).trim(), { align: 'center', fill: FOOTER_FILL, wrap: false });
+        cell.font = { name: FONT, size, bold: true, color: { argb: color } };
+        needHeight(lastRow, height);
+    }
 
     // Payment text needs the grand total row, so it is written last.
     const paymentSegments = calc.parseTemplate(invoice.payment.summary, invoice, totals);
     paymentCell.value = templateValue(paymentSegments, refs);
-    fitText(16, 3, calc.segmentsToText(paymentSegments), 8, 12);
+    fitText(paymentRow, 2, calc.segmentsToText(paymentSegments), 8, 12);
 
     // ── Excel-only input (outside the print area) ───────────
     put('N2:O2', 'Excel inputs (not printed)', { bold: true, wrap: false });
@@ -457,15 +494,15 @@ async function buildProformaWorkbook(invoice, { totals = calc.calculate(invoice)
     sheet.pageSetup.fitToWidth = 1;
     // One page while that stays legible; longer invoices flow onto more
     // pages with the table header repeated.
-    sheet.pageSetup.fitToHeight = rowsUsed <= 75 ? 1 : 0;
-    sheet.headerFooter = { oddFooter: rowsUsed <= 75 ? '' : '&R&8Page &P of &N' };
+    sheet.pageSetup.fitToHeight = rowsUsed <= 80 ? 1 : 0;
+    sheet.headerFooter = { oddFooter: rowsUsed <= 80 ? '' : '&R&8Page &P of &N' };
 
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     return {
         buffer,
         layout: {
             headerRow, firstItemRow, lastItemRow, exWorksRow, inlandRow, fobRow, oceanRow, otherRows, grandRow,
-            wordsRow, figuresRow, termsLabelRow, termRows, signRow, lastRow, advanceCell: ADVANCE_CELL.replace(/\$/g, ''), paymentCell: 'H16',
+            titleRow, top, parties, carriage, ports, wordsRow, termsLabelRow, termRows, signRow, lastRow, advanceCell: ADVANCE_CELL.replace(/\$/g, ''), paymentCell: `H${paymentRow}`,
         },
     };
 }
