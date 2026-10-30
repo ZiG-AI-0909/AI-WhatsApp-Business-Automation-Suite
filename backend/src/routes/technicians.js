@@ -8,7 +8,8 @@
 // (/staff/performance). Field staff themselves have no access here.
 // =============================================================
 const express = require('express');
-const { requireKycStaff, SIGNED_URL_SECONDS } = require('../kyc/kycService');
+const { SIGNED_URL_SECONDS } = require('../kyc/kycService');
+const { requireModule } = require('../security/teamAccess');
 const service = require('../technician/technicianService');
 const { validateReview } = require('../technician/technicianSchema');
 const { buildTechnicianWorkbook, buildEmployeeWorkbook } = require('../technician/technicianExport');
@@ -22,7 +23,8 @@ function fail(res, error, fallback) {
     return res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : fallback, code: error.code });
 }
 
-router.use(requireKycStaff);
+// Technician registrations area (Team & access; before that, the KYC staff list).
+router.use(requireModule('technicians'));
 
 router.get('/', async (req, res) => {
     try {

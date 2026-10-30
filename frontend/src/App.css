@@ -1379,3 +1379,30 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
   .archive-folders { grid-template-columns: minmax(0, 1fr); }
   .archive-whos { flex-direction: column; }
 }
+
+/* Team & access (TeamAccessView) — super admins give areas by email */
+.team-view h3 { margin: 0; font-size: var(--text-md); }
+.team-add, .team-company { display: flex; flex-direction: column; gap: var(--space-3); }
+.team-add p, .team-company p { margin: 0; }
+.team-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: var(--space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.team-picker[disabled] { opacity: 0.6; }
+.team-area, .team-super { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface-subtle); cursor: pointer; }
+.team-area:has(input:checked), .team-super:has(input:checked) { border-color: var(--accent-border); }
+.team-area input, .team-super input { width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0; }
+.team-area span, .team-super span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.team-area small, .team-super small { color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.4; }
+.team-list-section { display: flex; flex-direction: column; gap: var(--space-3); }
+.team-list { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.team-row { display: flex; flex-direction: column; gap: var(--space-2); }
+.team-row.is-editing { border-color: var(--accent-border); }
+.team-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
+.team-who { display: flex; flex: 1 1 220px; flex-direction: column; gap: 2px; min-width: 0; }
+.team-who strong { overflow-wrap: anywhere; }
+.team-areas { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.team-edit { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-2); border-top: 1px dashed var(--border-subtle); }
+.team-remove { margin-left: auto; color: var(--danger-text); }
+.team-company-email { overflow-wrap: anywhere; }
+.team-company-form { display: flex; flex-direction: column; gap: var(--space-2); }
+.team-company-chip { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-secondary); font-size: var(--text-xs); }
+.team-company-chip strong { color: var(--text-primary); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.sidebar-collapsed .team-company-chip { display: none; }

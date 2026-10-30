@@ -484,7 +484,9 @@ function KycDetail({ id, onBack }) {
   )
 }
 
-export default function KycSubmissionsView() {
+// showKyc / showTechnicians: the Vendor KYC and Technician registrations
+// areas (Team & access) — each list appears only with its own area.
+export default function KycSubmissionsView({ showKyc = true, showTechnicians = true }) {
   const [filters, setFilters] = useState(DEFAULT_FILTERS)
   // { form: 'kyc' | 'technician', id } — the open submission, if any;
   // { form: 'technician-staff' } — the staff registrations & targets view.
@@ -499,13 +501,15 @@ export default function KycSubmissionsView() {
   }
   return (
     <div className="kyc-forms-stack">
-      <KycList filters={filters} setFilters={setFilters} onOpen={(id) => setSelected({ form: 'kyc', id })} />
-      <TechnicianList
-        onOpen={(id) => setSelected({ form: 'technician', id })}
-        onOpenStaff={() => setSelected({ form: 'technician-staff' })}
-        registeredBy={registeredBy}
-        setRegisteredBy={setRegisteredBy}
-      />
+      {showKyc && <KycList filters={filters} setFilters={setFilters} onOpen={(id) => setSelected({ form: 'kyc', id })} />}
+      {showTechnicians && (
+        <TechnicianList
+          onOpen={(id) => setSelected({ form: 'technician', id })}
+          onOpenStaff={() => setSelected({ form: 'technician-staff' })}
+          registeredBy={registeredBy}
+          setRegisteredBy={setRegisteredBy}
+        />
+      )}
     </div>
   )
 }

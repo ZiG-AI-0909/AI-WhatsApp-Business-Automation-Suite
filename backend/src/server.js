@@ -14,6 +14,9 @@ const sessionManager = require('./whatsapp/sessionManager');
 const messageQueue = require('./campaigns/messageQueue');
 const schedulerService = require('./campaigns/schedulerService');
 const { requireAuth } = require('./middleware/auth');
+// Team & access: each route group needs its area (security/teamAccess.js).
+const { requireModule, onlyFor } = require('./security/teamAccess');
+const allowSettingsRead = (req, res, next) => (req.method === 'GET' ? next() : requireModule('settings')(req, res, next));
 const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
 const { assertEncryptionKey } = require('./utils/encryption');
 const { startCampaignReliabilityMigrationGuard } = require('./database/campaignReliabilityMigrationGuard');
@@ -119,27 +122,33 @@ app.use('/api/staff-portal', require('./routes/staffPortal'));
 // Other /api/storage routes fall through to the mount below.
 app.use('/api/storage', require('./routes/storage').publicRouter);
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
-app.use('/api/whatsapp', requireAuth, require('./routes/whatsapp'));
+// Team & access: GET /me for everyone signed in; the rest super admins only.
+app.use('/api/team', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/team'));
+app.use('/api/whatsapp', requireAuth, requireModule('whatsapp'), require('./routes/whatsapp'));
 app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/whatsappWebhook'));
-app.use('/api/contacts', requireAuth, require('./routes/contacts'));
-app.use('/api/conversations', requireAuth, require('./middleware/rateLimiterMiddleware').sendLimiter, require('./routes/conversations'));
-app.use('/api/campaigns', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/campaigns'));
-app.use('/api/templates', requireAuth, require('./routes/templates'));
-app.use('/api/knowledge', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/knowledge'));
-app.use('/api/analytics', requireAuth, require('./routes/analytics'));
-app.use('/api/settings', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/settings'));
-app.use('/api/schedules', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/schedules'));
-app.use('/api/image-extractor', requireAuth, require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
-app.use('/api/ask-ai', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
+app.use('/api/contacts', requireAuth, requireModule('whatsapp'), require('./routes/contacts'));
+app.use('/api/conversations', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').sendLimiter, require('./routes/conversations'));
+app.use('/api/campaigns', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/campaigns'));
+app.use('/api/templates', requireAuth, requireModule('whatsapp'), require('./routes/templates'));
+app.use('/api/knowledge', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/knowledge'));
+app.use('/api/analytics', requireAuth, requireModule('whatsapp'), require('./routes/analytics'));
+app.use('/api/settings', requireAuth, allowSettingsRead, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/settings'));
+app.use('/api/schedules', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/schedules'));
+app.use('/api/image-extractor', requireAuth, requireModule('documents'), require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
+app.use('/api/ask-ai', requireAuth, requireModule('ask_ai'), require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
 // Quotations: /api/boq/:id/quotation and /api/quotations/*. Registered before
 // the BOQ router so POST /api/boq/:id/quotation is not taken by boq's '/:id'.
-app.use('/api', requireAuth, require('./routes/quotations'));
-app.use('/api/boq', requireAuth, require('./routes/boq').router);
-app.use('/api/copilot', requireAuth, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
+// Mounted on /api itself, so its area check only covers its own paths.
+app.use('/api', requireAuth, onlyFor(/^\/(quotations(\/|$)|boq\/[^/]+\/quotation$)/, requireModule('documents')), require('./routes/quotations'));
+app.use('/api/boq', requireAuth, requireModule('documents'), require('./routes/boq').router);
+// Copilot briefs appear in the Inbox and Contacts as well as in Ask AI.
+app.use('/api/copilot', requireAuth, requireModule('ask_ai', 'whatsapp'), require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
 // Proforma Invoice Maker: any signed-in user; no mutation limiter (like
 // quotations) because the form previews on every edit (see routes/proforma.js).
-app.use('/api/proforma', requireAuth, require('./routes/proforma'));
-// Vendor KYC review/export: signed-in KYC staff only (see routes/kyc.js).
+app.use('/api/proforma', requireAuth, requireModule('proforma'), require('./routes/proforma'));
+// Vendor KYC review/export, technician registrations and storage check
+// their own area inside the router (vendor_kyc / technicians / storage).
+// Vendor KYC review/export: see routes/kyc.js.
 app.use('/api/kyc', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/kyc'));
 // Mechanic / technician registrations: same KYC reviewers.
 app.use('/api/technicians', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/technicians'));

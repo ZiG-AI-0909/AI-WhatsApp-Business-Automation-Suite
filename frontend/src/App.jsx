@@ -11,6 +11,8 @@ import useStorageStatus from './storage/useStorageStatus.js'
 import AskAiView from './AskAiView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
+import TeamAccessView from './TeamAccessView.jsx'
+import { canOpenView } from './team/teamAreas.js'
 import ProformaView from './proforma/ProformaView.jsx'
 import VendorKycPage from './VendorKycPage.jsx'
 import TechnicianRegistrationPage from './TechnicianRegistrationPage.jsx'
@@ -43,13 +45,13 @@ const NAV_GROUPS = [
   // campaigns, contacts and templates, the knowledge base the automatic
   // WhatsApp replies draw on, and the message / campaign analytics.
   { title: 'WhatsApp', items: ['WhatsApp Connection', 'Inbox', 'Campaigns', 'Contacts', 'Templates', 'Knowledge Base', 'Analytics'] },
-  // 'Submitted Forms' is only shown to KYC reviewers (see kycStaff in App).
   { title: 'Documents', items: ['Document Intelligence', 'Image Extractor', 'Submitted Forms'] },
   // Its own entry for every signed-in user (no staff allowlist).
   { title: 'Export', items: ['Proforma Maker'] },
   { title: 'AI tools', items: ['Ask AI'] },
-  // 'Storage' is only shown to storage administrators (the KYC staff list).
-  { title: 'Setup', items: ['Storage', 'Settings'] },
+  // Every item is shown only to accounts with its area (team/teamAreas.js);
+  // 'Team & access' to super admins only.
+  { title: 'Setup', items: ['Team & access', 'Storage', 'Settings'] },
 ]
 const NAV_META = {
   Dashboard: { icon: 'dashboard' },
@@ -67,6 +69,7 @@ const NAV_META = {
   'Knowledge Base': { icon: 'book', label: 'Knowledge base' },
   'WhatsApp Connection': { icon: 'phone', label: 'WhatsApp connection' },
   Settings: { icon: 'sliders' },
+  'Team & access': { icon: 'shield' },
 }
 // Public forms, open to everyone signed in or not (see readRoute in App).
 // The staff pages have their own Staff ID + PIN sign-in (staff/staffSession.js),
@@ -1658,6 +1661,10 @@ function App() {
   const [dashboardError, setDashboardError] = useState('')
   // Shared workspaces: { self, active, sharedAccess, shared: [{ id, email }] }
   const [workspaces, setWorkspaces] = useState(null)
+  // Team & access (GET /api/team/me): { enforced, super_admin, permissions,
+  // email, company_email }. null until loaded for the signed-in account.
+  const [teamAccess, setTeamAccess] = useState(null)
+  const canWhatsapp = Boolean(teamAccess?.permissions?.includes('whatsapp'))
   // Desktop sidebar collapsed to an icon rail (remembered per browser).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'collapsed' } catch { return false }
@@ -1841,11 +1848,23 @@ function App() {
   }, [drawerOpen])
 
   useEffect(() => {
+    if (!session?.user?.id) { setTeamAccess(null); return }
+    let cancelled = false
+    apiFetch('/team/me')
+      .then((data) => { if (!cancelled) setTeamAccess(data) })
+      // Server without Team & access (or unreachable): today's menu. The
+      // server still checks every request.
+      .catch(() => { if (!cancelled) setTeamAccess({ enforced: false, super_admin: false, permissions: ['whatsapp', 'documents', 'proforma', 'ask_ai', 'settings'] }) })
+    return () => { cancelled = true }
+  }, [session?.user?.id])
+
+  useEffect(() => {
     // Per-user WhatsApp status: uses the authenticated endpoint, so the
     // pill reflects THIS user's connection only — not anyone else's.
     // Guard + deps on session: stops the interval entirely on sign-out
-    // instead of polling with a dead token (BUG 2).
-    if (!session) return
+    // instead of polling with a dead token (BUG 2). Only for accounts with
+    // the WhatsApp area (Team & access).
+    if (!session || !canWhatsapp) return
 
     const loadStatus = async () => {
       if (!session) return
@@ -1863,12 +1882,13 @@ function App() {
     loadStatus()
     const interval = window.setInterval(loadStatus, 10000)
     return () => window.clearInterval(interval)
-  }, [session?.user?.id])
+  }, [session?.user?.id, canWhatsapp])
 
   useEffect(() => {
     // Dashboard polling. Deps on session: on sign-out the effect re-runs,
     // clears the old interval, and the guard below stops re-arming it.
-    if (!session) return
+    // The dashboard is WhatsApp data: only for that area.
+    if (!session || !canWhatsapp) return
 
     const loadDashboard = async () => {
       try {
@@ -1887,7 +1907,7 @@ function App() {
     loadDashboard()
     const interval = window.setInterval(loadDashboard, 10000)
     return () => window.clearInterval(interval)
-  }, [session?.user?.id])
+  }, [session?.user?.id, canWhatsapp])
 
   // Last-resort safety net (BUG 2): if the session becomes null while a
   // polling loop is still executing (async race), stop it on the next tick
@@ -2051,6 +2071,7 @@ function App() {
   }
 
   const renderView = () => {
+    if (!can(activeView)) return null
     if (activeView === 'WhatsApp Connection') return <ConnectionView />
     if (activeView === 'Campaigns') return <CampaignsView onNavigate={setActiveView} />
     if (activeView === 'Inbox') return <InboxView onNavigate={setActiveView} />
@@ -2062,9 +2083,10 @@ function App() {
     if (activeView === 'Analytics') return <AnalyticsView onNavigate={setActiveView} />
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
-    if (activeView === 'Submitted Forms') return <KycSubmissionsView />
+    if (activeView === 'Submitted Forms') return <KycSubmissionsView showKyc={teamAccess.permissions.includes('vendor_kyc')} showTechnicians={teamAccess.permissions.includes('technicians')} />
     if (activeView === 'Proforma Maker') return <ProformaView />
-    if (activeView === 'Storage') return kycStaff ? <StorageView /> : null
+    if (activeView === 'Storage') return <StorageView />
+    if (activeView === 'Team & access') return <TeamAccessView selfEmail={session?.user?.email} />
     if (activeView === 'Dashboard') return renderDashboard()
 
     return (
@@ -2085,18 +2107,19 @@ function App() {
   useEffect(() => {
     if (session && route !== '/app' && !PUBLIC_FORM_ROUTES.includes(route)) navigate('/app')  }, [session?.user?.id, route])
 
-  // KYC reviewers (private.kyc_staff) get the "Submitted forms" view. The
-  // backend enforces this on every /api/kyc route; this only hides the item.
-  const [kycStaff, setKycStaff] = useState(false)
+  // Which pages this account may open (Team & access, GET /api/team/me).
+  // The server checks every request; this only shapes the menu.
+  const can = (view) => canOpenView(teamAccess, view)
+  const navGroups = NAV_GROUPS
+    .map((group) => ({ ...group, items: group.items.filter(can) }))
+    .filter((group) => group.items.length)
+  // Opened on a page this account may not use (e.g. Dashboard without
+  // WhatsApp): go to the first page it may use.
   useEffect(() => {
-    if (!session?.user?.id) { setKycStaff(false); return }
-    let cancelled = false
-    apiFetch('/kyc/access')
-      .then((data) => { if (!cancelled) setKycStaff(data?.staff === true) })
-      .catch(() => { if (!cancelled) setKycStaff(false) })
-    return () => { cancelled = true }
-  }, [session?.user?.id])
-  const navGroups = NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => (item !== 'Submitted Forms' && item !== 'Storage') || kycStaff) }))
+    if (!teamAccess || can(activeView)) return
+    const first = NAV_GROUPS.flatMap((group) => group.items).find(can)
+    if (first) setActiveView(first)
+  }, [teamAccess, activeView])
 
   // Storage status for everyone signed in (dashboard card + warning banner).
   const storage = useStorageStatus(Boolean(session?.user?.id))
@@ -2115,7 +2138,8 @@ function App() {
   // is why the share exists; the switcher can go back to the user's own data.
   useEffect(() => {
     const authUserId = session?.user?.id
-    if (!authUserId) return
+    // With Team & access on, everyone works on the company workspace.
+    if (!authUserId || !teamAccess || teamAccess.enforced) return
     let cancelled = false
     apiFetch('/workspaces')
       .then((data) => {
@@ -2129,7 +2153,7 @@ function App() {
       })
       .catch((error) => { if (!cancelled) console.warn('[workspaces] could not load shared workspaces:', error?.message) })
     return () => { cancelled = true }
-  }, [session?.user?.id])
+  }, [session?.user?.id, teamAccess?.enforced])
 
   // Switching workspace (or a revoked share) reloads so every view, poll
   // and socket starts cleanly against the newly selected data.
@@ -2189,6 +2213,36 @@ function App() {
   }
 
   const userEmail = session?.user?.email || ''
+
+  if (!teamAccess) {
+    return (
+      <div className="app-splash" role="status" aria-live="polite">
+        <BrandLogo height={46} />
+        <span className="app-splash-spinner" aria-hidden="true" />
+        <p>Checking your access…</p>
+      </div>
+    )
+  }
+  // Team & access on, and nothing given to this account yet.
+  if (teamAccess.enforced && !teamAccess.super_admin && !teamAccess.permissions.length) {
+    return (
+      <div className="kyc-page tech-page">
+        <main className="kyc-main tech-main staff-login-main" id="main-content">
+          <section className="panel staff-login" aria-labelledby="no-access-title">
+            <span className="kyc-success-icon" aria-hidden="true"><Icon name="lock" size={32} /></span>
+            <h1 id="no-access-title">Waiting for access</h1>
+            <p>You are signed in as <strong>{userEmail}</strong>, but no part of the app has been opened for you yet.</p>
+            <p className="muted-copy">Ask a super admin to give this email access in <strong>Team &amp; access</strong>. Then reload this page.</p>
+            <div className="button-row">
+              <button type="button" className="primary-btn" onClick={() => window.location.reload()}><Icon name="refresh" size={16} /> Reload</button>
+              <button type="button" className="ghost-btn" onClick={handleSignOut}><Icon name="logout" size={16} /> Sign out</button>
+            </div>
+          </section>
+        </main>
+      </div>
+    )
+  }
+
   const pageTitle = activeView === 'Dashboard' ? 'Dashboard' : navLabel(activeView)
   const pageEyebrow = activeView === 'Dashboard' ? greeting : navGroupOf(activeView)
 
@@ -2199,7 +2253,7 @@ function App() {
           <Icon name="menu" />
         </button>
         <span className="mobile-brand"><BrandLogo variant="mark" height={26} decorative /><span className="mobile-brand-title">Sudarshan Pipes AI</span></span>
-        <ConnectionChip status={chipStatus} onClick={() => selectView('WhatsApp Connection')} />
+        {canWhatsapp && <ConnectionChip status={chipStatus} onClick={() => selectView('WhatsApp Connection')} />}
         <ThemeToggle />
       </header>
       <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />
@@ -2243,8 +2297,10 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          {workspaceSwitcher}
-          <ConnectionChip status={chipStatus} block onClick={() => selectView('WhatsApp Connection')} />
+          {teamAccess.enforced ? (
+            teamAccess.company_email && <p className="team-company-chip" title="Everyone on the team works on this account's data">Company workspace<strong>{teamAccess.company_email}</strong></p>
+          ) : workspaceSwitcher}
+          {canWhatsapp && <ConnectionChip status={chipStatus} block onClick={() => selectView('WhatsApp Connection')} />}
           <div className="user-chip" title={userEmail}>
             <span className="user-avatar" aria-hidden="true">{(userEmail || 'U').charAt(0)}</span>
             <span className="user-chip-text"><strong>Signed in</strong><span className="user-chip-email">{userEmail || 'Logged in'}</span></span>
@@ -2269,11 +2325,11 @@ function App() {
 
         <main className="main-panel" id="main-content">
           <div className="page">
-            {activeSharedWorkspace && <div className="notice info shared-workspace-notice" role="status">
+            {activeSharedWorkspace && !teamAccess.enforced && <div className="notice info shared-workspace-notice" role="status">
               You are working in <strong>{activeSharedWorkspace.email || 'a shared'}</strong>'s workspace (shared with you). Records you add or change here belong to that workspace. Settings and the WhatsApp connection can only be changed by its owner.
             </div>}
 
-            {boqKept && (
+            {boqKept && can('Document Intelligence') && (
               <div className="kept-view" hidden={activeView !== 'Document Intelligence'}>
                 <DocumentIntelView active={activeView === 'Document Intelligence'} onActivity={setBoqActivity} />
               </div>

@@ -12,7 +12,9 @@
 // =============================================================
 const crypto = require('crypto');
 const express = require('express');
-const { isKycStaff, requireKycStaff } = require('../kyc/kycService');
+const { hasModule, requireModule } = require('../security/teamAccess');
+// Storage administrators: the Storage area (Team & access; before that, the KYC staff list).
+const isStorageAdmin = (req) => hasModule(req, 'storage').catch(() => false);
 const monitor = require('../storage/storageMonitor');
 const files = require('../storage/storageFiles');
 const archives = require('../storage/storageArchive');
@@ -47,18 +49,18 @@ router.get('/status', async (req, res) => {
     try {
         const [status, isAdmin] = await Promise.all([
             monitor.publicStatus(),
-            isKycStaff(req.user?.authId).catch(() => false),
+            isStorageAdmin(req),
         ]);
         res.json({ ...status, isAdmin });
     } catch (error) {
-        if (error.code === 'STORAGE_MIGRATION_PENDING') return res.json({ setupRequired: true, isAdmin: await isKycStaff(req.user?.authId).catch(() => false) });
+        if (error.code === 'STORAGE_MIGRATION_PENDING') return res.json({ setupRequired: true, isAdmin: await isStorageAdmin(req) });
         fail(res, error, 'Could not load the storage status.');
     }
 });
 
 router.get('/notifications', async (req, res) => {
     try {
-        const isAdmin = await isKycStaff(req.user?.authId).catch(() => false);
+        const isAdmin = await isStorageAdmin(req);
         res.json({ notifications: await monitor.listNotifications({ limit: Number(req.query.limit) || 20, includeEmail: isAdmin }) });
     } catch (error) {
         fail(res, error, 'Could not load storage notifications.');
@@ -66,7 +68,7 @@ router.get('/notifications', async (req, res) => {
 });
 
 // ── Administrators ──────────────────────────────────────────────────
-router.use(requireKycStaff);
+router.use(requireModule('storage'));
 
 function settingsForClient(settings) {
     const gb = (bytes) => (bytes == null ? null : Math.round((bytes / GB) * 1000) / 1000);

@@ -2,14 +2,15 @@
 // Vendor KYC review (staff) — /api/kyc/*
 //
 // Mounted behind requireAuth. GET /access answers whether the signed-in
-// user is a KYC reviewer (the sidebar uses it); every other route also
-// requires private.kyc_staff membership (requireKycStaff).
+// user is a KYC reviewer; every other route requires the Vendor KYC area
+// (security/teamAccess.js: Team & access, or the KYC staff list before it).
 // =============================================================
 const express = require('express');
 const service = require('../kyc/kycService');
 const exporter = require('../kyc/kycExport');
 const { validateReview } = require('../kyc/kycSchema');
 
+const { hasModule, requireModule } = require('../security/teamAccess');
 const router = express.Router();
 
 function fail(res, error, fallback) {
@@ -23,7 +24,7 @@ function fileSafe(text) {
 
 router.get('/access', async (req, res) => {
     try {
-        res.json({ staff: await service.isKycStaff(req.user?.authId) });
+        res.json({ staff: await hasModule(req, 'vendor_kyc') === true });
     } catch (error) {
         // Not set up yet (migration pending) → simply not a reviewer.
         if (error.code !== 'KYC_MIGRATION_PENDING') console.error('[kyc] access check failed:', error.message);
@@ -31,7 +32,8 @@ router.get('/access', async (req, res) => {
     }
 });
 
-router.use(service.requireKycStaff);
+// Vendor KYC area (Team & access; before that, the KYC staff list).
+router.use(requireModule('vendor_kyc'));
 
 router.get('/', async (req, res) => {
     try {

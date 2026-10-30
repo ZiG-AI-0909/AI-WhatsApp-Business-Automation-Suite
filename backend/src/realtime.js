@@ -12,6 +12,7 @@ const { supabase } = require('./database/supabaseClient');
 
 const { isAllowedOrigin } = require('./utils/origins');
 const { resolveDataOwner, DataAccessError } = require('./security/dataOwner');
+const { loadAccess, dataOwnerFor } = require('./security/teamAccess');
 
 const USER_ROOM_PREFIX = 'user:';
 
@@ -51,9 +52,17 @@ function attachRealtimeAuth(io) {
             // Never trust a client-sent userId — derive it from the JWT.
             // A shared workspace (auth.dataOwner) is joined only when the
             // database confirms the owner shared their data with this user.
+            // With Team & access on, only accounts allowed into WhatsApp get
+            // live events, and they get the company workspace's.
             let roomUserId = claims.sub;
             try {
-                roomUserId = await resolveDataOwner(claims.sub, socket.handshake.auth?.dataOwner || null);
+                const access = await loadAccess(claims.sub, claims.email);
+                if (access.enforced) {
+                    if (!access.permissions.includes('whatsapp')) return next(new Error('No access to WhatsApp'));
+                    roomUserId = dataOwnerFor(access, claims.sub);
+                } else {
+                    roomUserId = await resolveDataOwner(claims.sub, socket.handshake.auth?.dataOwner || null);
+                }
             } catch (accessError) {
                 return next(new Error(accessError instanceof DataAccessError ? accessError.message : 'Authentication failed'));
             }

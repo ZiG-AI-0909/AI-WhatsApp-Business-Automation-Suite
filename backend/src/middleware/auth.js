@@ -2,6 +2,7 @@
 // do not add a dotenv.config() here.
 const { createClient } = require('@supabase/supabase-js');
 const { resolveDataOwner, DataAccessError, DATA_OWNER_HEADER } = require('../security/dataOwner');
+const { loadAccess, dataOwnerFor } = require('../security/teamAccess');
 
 // ─── Supabase server-side client ──────────────────────────────────────────────
 // Uses the SECRET key — never exposed to the browser.
@@ -87,15 +88,31 @@ async function requireAuth(req, res, next) {
         // acts on — the signed-in user, or an owner who shared their data
         // with them (verified in the database, never trusted from the
         // header). req.user.authId is always the signed-in user.
-        let dataOwnerId = claims.sub;
+        //
+        // Team & access (security/teamAccess.js), once enabled, replaces
+        // that choice: everyone with access works on the company workspace
+        // and the X-Data-Owner header is ignored. req.access says which
+        // areas the account may open (routes check it with requireModule).
+        let access;
         try {
-            const requestedOwner = (typeof req.get === 'function' ? req.get(DATA_OWNER_HEADER) : req.headers?.[DATA_OWNER_HEADER]) || null;
-            dataOwnerId = await resolveDataOwner(claims.sub, requestedOwner ? String(requestedOwner).trim() : null);
+            access = await loadAccess(claims.sub, claims.email);
         } catch (accessError) {
-            if (accessError instanceof DataAccessError) {
-                return res.status(accessError.statusCode).json({ error: accessError.message, code: accessError.code });
+            console.error('[auth] team access check failed:', accessError.message);
+            return res.status(503).json({ error: 'Could not check your access. Please try again.', code: 'ACCESS_CHECK_FAILED' });
+        }
+        let dataOwnerId = claims.sub;
+        if (access.enforced) {
+            dataOwnerId = dataOwnerFor(access, claims.sub);
+        } else {
+            try {
+                const requestedOwner = (typeof req.get === 'function' ? req.get(DATA_OWNER_HEADER) : req.headers?.[DATA_OWNER_HEADER]) || null;
+                dataOwnerId = await resolveDataOwner(claims.sub, requestedOwner ? String(requestedOwner).trim() : null);
+            } catch (accessError) {
+                if (accessError instanceof DataAccessError) {
+                    return res.status(accessError.statusCode).json({ error: accessError.message, code: accessError.code });
+                }
+                throw accessError;
             }
-            throw accessError;
         }
         // Attach a clean user object — never trust IDs supplied in request bodies.
         // Claims carry the same identity fields the /user endpoint returned.
@@ -106,6 +123,7 @@ async function requireAuth(req, res, next) {
             role:   claims.role,
             sharedAccess: dataOwnerId !== claims.sub,
         };
+        req.access = access;
         next();
     } catch (err) {
         console.error('[auth] Token validation error:', err.message);
