@@ -268,7 +268,7 @@ async function main() {
             assert.equal(byCode['SE-014'].credited, 2);
             assert.equal(byCode['SE-014'].duplicates, 1);
             assert.equal(byCode['SE-020'].credited, 1);
-            assert.deepEqual(report.data.totals, { all: rows().length, self: 1, staff: 4, credited: 3 });
+            assert.deepEqual(report.data.totals, { all: rows().length, self: 1, referral: 0, staff: 4, credited: 3 });
             assert.equal(byCode['SE-014'].target.target, 3);
             assert.equal(byCode['SE-014'].target.credited, 2);
             assert.equal(byCode['SE-014'].target.met, false);
@@ -292,7 +292,7 @@ async function main() {
             const anithaSeptember = september.data.staff.find((row) => row.staff_code === 'SE-014');
             assert.equal(anithaSeptember.submitted, 1);
             assert.equal(anithaSeptember.credited, 1);
-            assert.deepEqual(september.data.totals, { all: 1, self: 0, staff: 1, credited: 1 });
+            assert.deepEqual(september.data.totals, { all: 1, self: 0, referral: 0, staff: 1, credited: 1 });
             assert.equal(september.data.range.from, '2026-08-31T18:30:00.000Z');
         });
 

@@ -138,6 +138,7 @@ export function validateStaffLogin({ staff_code: code, staff_pin: pin }) {
 
 export const REGISTRATION_SOURCE_META = {
   self: { label: 'Self-registered', tone: 'neutral' },
+  referral: { label: 'Referred by staff link', tone: 'success' },
   staff: { label: 'Staff-registered', tone: 'cold' },
 }
 export const TARGET_PERIOD_LABELS = { day: 'per day', week: 'per week', month: 'per month' }

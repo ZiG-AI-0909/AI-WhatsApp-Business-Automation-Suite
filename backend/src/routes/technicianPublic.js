@@ -8,7 +8,13 @@
 // Staff mode (?staff=1 + registration_source=staff): a field staff member
 // registers a partner. The staff member is identified on the server — a
 // linked, signed-in app account or Staff ID + PIN — never from a name the
-// browser sends. Without registration_source=staff the registration is
+// browser sends. A staff member signed in at /staff-login sends their
+// session token (staff_session) instead of the PIN.
+//
+// Personal link (?ref=<Staff ID>, sent as ref_code): the partner fills the
+// form in themselves; an active staff member behind the code makes it a
+// 'referral' credited to them. An unknown or inactive code is ignored (the
+// form is still saved, as 'self'). Without either, the registration is
 // 'self' and any staff fields are ignored.
 // =============================================================
 const express = require('express');
@@ -18,6 +24,17 @@ const { DOCUMENT_MAX_BYTES } = require('../kyc/kycSchema');
 const { DOCUMENTS, validateRegistration } = require('../technician/technicianSchema');
 const { createRegistration } = require('../technician/technicianService');
 const staffService = require('../technician/technicianStaff');
+const staffPortal = require('../technician/staffPortal');
+
+/** Staff id from a /staff-login session token in the body, or undefined. */
+async function sessionStaffId(token) {
+    if (!token) return undefined;
+    try {
+        return (await staffPortal.staffFromToken(String(token)))?.id;
+    } catch {
+        return undefined; // staff login not configured: fall back to Staff ID + PIN
+    }
+}
 
 const router = express.Router();
 
@@ -54,8 +71,9 @@ router.post('/staff/verify', technicianStaffVerifyLimiter, express.json({ limit:
         const body = req.body || {};
         const authUserId = await staffService.authUserFromRequest(req);
         if (!body.staff_code && !body.staff_pin) {
-            if (!authUserId) return res.json({ staff: null });
-            const linked = await staffService.resolveStaff({ authUserId });
+            const fromSession = await sessionStaffId(body.staff_session);
+            if (!authUserId && !fromSession) return res.json({ staff: null });
+            const linked = await staffService.resolveStaff({ authUserId, sessionStaffId: fromSession });
             if (linked.staff) return res.json({ staff: publicStaff(linked.staff) });
             if (linked.errors?.staff_code === 'staff_inactive') return res.status(400).json({ error: 'staff_inactive', fields: linked.errors });
             return res.json({ staff: null });
@@ -68,6 +86,15 @@ router.post('/staff/verify', technicianStaffVerifyLimiter, express.json({ limit:
     }
 });
 
+/** "Referred by: <name>" for a personal link; { staff: null } when the code is not usable. */
+router.get('/ref/:code', technicianStaffVerifyLimiter, async (req, res) => {
+    try {
+        const staff = await staffService.findReferrer(req.params.code);
+        return res.json({ staff: staff ? { staff_code: staff.staff_code, full_name: staff.full_name } : null });
+    } catch {
+        return res.json({ staff: null }); // never block the form over a link
+    }
+});
 
 router.post('/', submitLimiter, (req, res) => {
     parseUploads(req, res, async (uploadError) => {
@@ -88,9 +115,17 @@ router.post('/', submitLimiter, (req, res) => {
             let attribution = null;
             if (staffMode) {
                 const authUserId = await staffService.authUserFromRequest(req);
-                const check = await staffService.resolveStaff({ code: req.body.staff_code, pin: req.body.staff_pin, authUserId });
+                const check = await staffService.resolveStaff({
+                    code: req.body.staff_code,
+                    pin: req.body.staff_pin,
+                    authUserId,
+                    sessionStaffId: await sessionStaffId(req.body.staff_session),
+                });
                 if (check.errors) Object.assign(errors, check.errors);
                 else attribution = staffService.attributionFor(check.staff);
+            } else if (req.body?.ref_code) {
+                const referrer = await staffService.findReferrer(req.body.ref_code).catch(() => null);
+                if (referrer) attribution = staffService.attributionFor(referrer, 'referral');
             }
             if (Object.keys(errors).length) {
                 return res.status(400).json({ error: 'Please correct the highlighted fields and submit again.', fields: errors });
@@ -102,7 +137,7 @@ router.post('/', submitLimiter, (req, res) => {
                 clientId: req.body?.client_submission_id,
                 attribution,
             });
-            console.log(`[technician] registration ${result.reference} ${result.duplicate ? 'repeated (already saved)' : 'received'}${attribution ? ` (staff ${attribution.staff_code})` : ''}`);
+            console.log(`[technician] registration ${result.reference} ${result.duplicate ? 'repeated (already saved)' : 'received'}${attribution ? ` (${attribution.registration_source} ${attribution.staff_code})` : ''}`);
             return res.status(result.duplicate ? 200 : 201).json({ ok: true, ...result });
         } catch (error) {
             return res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Your form could not be submitted. Please try again.' });

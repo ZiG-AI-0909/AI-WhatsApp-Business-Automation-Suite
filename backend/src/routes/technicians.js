@@ -40,7 +40,7 @@ router.get('/export/excel', async (req, res) => {
         const { rows } = await service.exportRegistrations(filters);
         const label = [
             filters.status && `status=${filters.status}`,
-            filters.source && `registered by=${filters.source === 'staff' ? 'staff' : 'self'}`,
+            filters.source && `registered by=${filters.source}`,
             filters.staff && `staff=${req.query.staff_label || filters.staff}`,
             req.query.from && `from=${req.query.from}`,
             req.query.to && `to=${req.query.to}`,

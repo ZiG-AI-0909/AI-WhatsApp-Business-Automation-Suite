@@ -16,7 +16,7 @@ const PREFIX = 'technicians';
 const LIST_LIMIT = 1000;
 const EXPORT_LIMIT = 5000;
 const LIST_COLUMNS = 'id, submitted_at, status, full_name, shop_name, mobile, place, district, state, shop_maps_url, registration_source, staff_code, staff_name';
-const SOURCES = ['self', 'staff'];
+const SOURCES = ['self', 'referral', 'staff'];
 const MIGRATION_MESSAGE = 'Technician partner registration needs a database update: run supabase-technician-registration-migration.sql, then supabase-technician-staff-migration.sql, in the Supabase SQL Editor.';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -45,17 +45,22 @@ async function removeObjects(paths) {
     }
 }
 
-/** What the form shows after saving; registered_by only for Staff mode. */
+/**
+ * What the form shows after saving: registered_by for Staff mode,
+ * referred_by for a personal link.
+ */
 function savedResult(row, attribution) {
     const result = { id: row.id, submitted_at: row.submitted_at, reference: referenceFor(row.id) };
-    if (attribution) result.registered_by = { staff_code: attribution.staff_code, full_name: attribution.staff_name };
+    if (attribution?.staff_code) {
+        result[attribution.registration_source === 'referral' ? 'referred_by' : 'registered_by'] = { staff_code: attribution.staff_code, full_name: attribution.staff_name };
+    }
     return result;
 }
 
 async function findExisting(id) {
     const { data, error } = await supabase.from(TABLE).select('*').eq('id', id).maybeSingle();
     if (error) throw dbError(error, 'Your form could not be saved. Please try again in a few minutes.');
-    return data ? { ...savedResult(data, data.registration_source === 'staff' ? data : null), duplicate: true } : null;
+    return data ? { ...savedResult(data, data), duplicate: true } : null;
 }
 
 /**
@@ -63,7 +68,7 @@ async function findExisting(id) {
  * `clientId` is a UUID the form makes once per fill-in: a retry after a
  * dropped connection (the first request may have saved) returns the
  * existing registration instead of creating a second one.
- * `attribution` (Staff mode only) comes from technicianStaff.attributionFor;
+ * `attribution` (Staff mode or a personal link) comes from technicianStaff.attributionFor;
  * a self-registration leaves those columns to their database default
  * ('self', no staff).
  */

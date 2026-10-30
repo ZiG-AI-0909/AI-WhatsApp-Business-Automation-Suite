@@ -13,7 +13,7 @@ const { referenceFor } = require('./technicianService');
 const STATUS_LABELS = { pending: 'Pending', shortlisted: 'Shortlisted', approved: 'Approved', rejected: 'Rejected' };
 const SOURCE_LABELS = { device: 'Shared from phone', link: 'Pasted Google Maps link' };
 // Rows from before Staff mode have no registration_source: they were self-registered.
-const REGISTRATION_SOURCE_LABELS = { self: 'Self-registered', staff: 'Staff-registered' };
+const REGISTRATION_SOURCE_LABELS = { self: 'Self-registered', referral: 'Referred by staff link', staff: 'Staff-registered' };
 
 const IST_DATE_TIME = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,

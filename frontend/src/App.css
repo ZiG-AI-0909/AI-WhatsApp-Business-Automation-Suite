@@ -1048,6 +1048,41 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .tech-mode-btn:focus-visible { outline: none; box-shadow: var(--accent-glow); }
 .tech-staff { border-color: var(--accent-border); }
 .tech-staff-credit { display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; font-weight: 600; }
+.tech-referrer { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-weight: 600; }
+
+/* Staff & Member Login + staff dashboard (StaffLoginPage, StaffDashboardPage) — mobile first */
+.staff-login-main { max-width: 440px; }
+.staff-login { display: flex; flex-direction: column; gap: var(--space-4); }
+.staff-login h1 { margin: 0; font-size: clamp(1.35rem, 5vw, var(--text-2xl)); }
+.staff-login .kyc-success-icon { align-self: center; }
+.staff-who { display: flex; flex: 1; flex-direction: column; min-width: 0; line-height: 1.3; }
+.staff-who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.staff-who small { color: var(--text-secondary); font-family: var(--font-mono); font-size: var(--text-xs); }
+.staff-main { display: flex; flex-direction: column; gap: var(--space-5); }
+.staff-main h2 { margin: 0 0 var(--space-2); font-size: var(--text-lg); }
+.staff-link { display: flex; flex-direction: column; gap: var(--space-3); }
+.staff-link p { margin: 0; }
+.staff-link-body { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-4); }
+.staff-link-actions { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.staff-link-url { width: 100%; min-height: 48px; font-family: var(--font-mono); font-size: var(--text-sm); }
+.staff-link-actions .button-row > * { flex: 1 1 140px; justify-content: center; }
+/* A QR code must stay dark-on-white in both themes to scan. */
+.staff-qr { align-self: center; width: 168px; height: 168px; padding: 8px; border-radius: var(--radius-md); background: #fff; }
+.staff-fill-btn { width: 100%; justify-content: center; }
+.staff-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.staff-target { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
+.staff-target-head { display: flex; justify-content: space-between; gap: var(--space-2); }
+.staff-target .tech-target-bar { height: 10px; }
+.staff-registrations { display: flex; flex-direction: column; gap: var(--space-3); }
+.staff-pages { justify-content: center; align-items: center; }
+.staff-pin-reminder { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.staff-pin { display: flex; flex-direction: column; gap: var(--space-3); }
+.staff-footer-actions { display: flex; justify-content: center; margin: 0; }
+@media (min-width: 720px) {
+  .staff-link-body { flex-direction: row; align-items: center; }
+  .staff-link-actions { flex: 1; }
+  .staff-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 @media (max-width: 420px) { .tech-mode-options { grid-template-columns: 1fr; } }
 /* Employee self-registration (EmployeeRegistrationPage) + employee list (TechnicianStaffView) */
 .emp-success { align-items: stretch; text-align: left; }

@@ -5,15 +5,15 @@
 // (see supabase-technician-staff-migration.sql); KYC reviewers manage that
 // roster and see who registered whom.
 //
-//   * resolveStaff(): who is registering, from a linked, signed-in app
-//     account or a Staff ID + PIN. Errors are CODES for the public form
+//   * resolveStaff(): who is registering, from a /staff-login session
+//     (staffPortal.js), a linked, signed-in app account or a Staff ID + PIN. Errors are CODES for the public form
 //     (technician/i18n.js): staff_required, staff_pin_required,
 //     staff_invalid, staff_locked, staff_inactive.
 //   * performance(): counts derived from the registration rows, never
 //     stored, so a failed submission, a retry or an edit cannot change them.
-//     A staff registration is CREDITED when it is the first registration of
-//     that mobile number that was not rejected; self-registrations are never
-//     credited to anyone.
+//     A Staff-mode ('staff') or personal-link ('referral') registration is
+//     CREDITED when it is the first registration of that mobile number that
+//     was not rejected; unreferred self-registrations are never credited.
 
 const crypto = require('crypto');
 const { supabase, isAvailable } = require('../database/supabaseClient');
@@ -29,6 +29,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STAFF_CODE = /^[A-Z0-9][A-Z0-9-]{1,19}$/;
 const PIN = /^\d{4,8}$/;
 const TARGET_PERIODS = ['day', 'week', 'month'];
+// Sources credited to a staff member: their personal link, or Staff mode.
+const ATTRIBUTED = ['referral', 'staff'];
 const MAX_PIN_FAILURES = Number(process.env.TECHNICIAN_STAFF_PIN_MAX_FAILURES || 5);
 const PIN_LOCK_MS = Number(process.env.TECHNICIAN_STAFF_PIN_LOCK_MS || 15 * 60 * 1000);
 const PAGE = 1000;
@@ -90,8 +92,14 @@ const identity = (row, via) => ({ id: row.id, staff_code: row.staff_code, full_n
  * Staff member for a Staff-mode registration.
  * @returns {{ staff?: object, errors?: object }} errors: { staff_code | staff_pin: code }
  */
-async function resolveStaff({ code, pin, authUserId, now = Date.now() } = {}) {
+async function resolveStaff({ code, pin, authUserId, sessionStaffId, now = Date.now() } = {}) {
     requireDb();
+    // Signed in at /staff-login (staffPortal.js has already checked the token).
+    if (sessionStaffId) {
+        const { data, error } = await supabase.from(TABLE).select('id, staff_code, full_name, active').eq('id', sessionStaffId).maybeSingle();
+        if (error) throw dbError(error, 'Could not check the staff member.');
+        if (data) return data.active ? { staff: identity(data, 'session') } : { errors: { staff_code: 'staff_inactive' } };
+    }
     if (authUserId) {
         const { data, error } = await supabase.from(TABLE).select('id, staff_code, full_name, active').eq('auth_user_id', authUserId).maybeSingle();
         if (error) throw dbError(error, 'Could not check the staff member.');
@@ -133,9 +141,25 @@ async function resolveStaff({ code, pin, authUserId, now = Date.now() } = {}) {
     return { staff: identity(row, 'pin') };
 }
 
-/** Columns written on a Staff-mode registration (set once; the database locks them). */
-function attributionFor(staff) {
-    return { registration_source: 'staff', staff_id: staff.id, staff_code: staff.staff_code, staff_name: staff.full_name };
+/**
+ * Columns written on a Staff-mode ('staff') or personal-link ('referral')
+ * registration (set once; the database locks them).
+ */
+function attributionFor(staff, source = 'staff') {
+    return { registration_source: source, staff_id: staff.id, staff_code: staff.staff_code, staff_name: staff.full_name };
+}
+
+/**
+ * The active staff member behind a ?ref= code, or null (unknown, inactive or
+ * malformed). A bad ref never blocks a registration; it just isn't credited.
+ */
+async function findReferrer(code) {
+    const staffCode = normalizeStaffCode(code);
+    if (!STAFF_CODE.test(staffCode)) return null;
+    requireDb();
+    const { data, error } = await supabase.from(TABLE).select('id, staff_code, full_name, active').eq('staff_code', staffCode).maybeSingle();
+    if (error) throw dbError(error, 'Could not check the referral link.');
+    return data?.active ? { id: data.id, staff_code: data.staff_code, full_name: data.full_name } : null;
 }
 
 // ── Roster (KYC reviewers) ─────────────────────────────────────────────
@@ -337,7 +361,7 @@ function creditedIds(rows) {
         if (row.status === 'rejected' || first.has(row.mobile)) continue;
         first.set(row.mobile, row);
     }
-    return new Set([...first.values()].filter((row) => row.registration_source === 'staff' && row.staff_id).map((row) => row.id));
+    return new Set([...first.values()].filter((row) => ATTRIBUTED.includes(row.registration_source) && row.staff_id).map((row) => row.id));
 }
 
 function readRange(query = {}) {
@@ -355,17 +379,21 @@ async function performance(range = {}, { now = new Date() } = {}) {
     const credited = creditedIds(rows);
     const inRange = (row, from, to) => (!from || row.submitted_at >= from) && (!to || row.submitted_at < to);
 
-    const blank = () => ({ submitted: 0, credited: 0, duplicates: 0, approved: 0, rejected: 0 });
+    // submitted = every registration credited to that staff member's name
+    // (Staff mode + personal link), split into staff_mode and referrals.
+    const blank = () => ({ submitted: 0, staff_mode: 0, referrals: 0, credited: 0, duplicates: 0, approved: 0, rejected: 0 });
     const byStaff = new Map(roster.map((staff) => [staff.id, blank()]));
-    const totals = { all: 0, self: 0, staff: 0, credited: 0 };
+    const totals = { all: 0, self: 0, referral: 0, staff: 0, credited: 0 };
     for (const row of rows) {
         if (!inRange(row, range.from, range.to)) continue;
         totals.all++;
-        if (row.registration_source !== 'staff') { totals.self++; continue; }
-        totals.staff++;
+        if (!ATTRIBUTED.includes(row.registration_source)) { totals.self++; continue; }
+        totals[row.registration_source]++;
         const counts = byStaff.get(row.staff_id);
         if (!counts) continue;
         counts.submitted++;
+        if (row.registration_source === 'staff') counts.staff_mode++;
+        else counts.referrals++;
         if (row.status === 'approved') counts.approved++;
         if (row.status === 'rejected') counts.rejected++;
         else if (credited.has(row.id)) { counts.credited++; totals.credited++; }
@@ -401,6 +429,9 @@ module.exports = {
     authUserFromRequest,
     resolveStaff,
     attributionFor,
+    findReferrer,
+    ATTRIBUTED,
+    allRegistrations,
     validateStaff,
     listStaff,
     createStaff,

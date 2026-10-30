@@ -15,6 +15,8 @@ import ProformaView from './proforma/ProformaView.jsx'
 import VendorKycPage from './VendorKycPage.jsx'
 import TechnicianRegistrationPage from './TechnicianRegistrationPage.jsx'
 import EmployeeRegistrationPage from './EmployeeRegistrationPage.jsx'
+import StaffLoginPage from './StaffLoginPage.jsx'
+import StaffDashboardPage from './StaffDashboardPage.jsx'
 import CopilotPanel from './CopilotPanel.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 
@@ -67,7 +69,9 @@ const NAV_META = {
   Settings: { icon: 'sliders' },
 }
 // Public forms, open to everyone signed in or not (see readRoute in App).
-const PUBLIC_FORM_ROUTES = ['/vendor-kyc', '/technician-registration', '/employee-registration']
+// The staff pages have their own Staff ID + PIN sign-in (staff/staffSession.js),
+// separate from this app's login.
+const PUBLIC_FORM_ROUTES = ['/vendor-kyc', '/technician-registration', '/employee-registration', '/staff-login', '/staff/dashboard']
 const navLabel = (view) => NAV_META[view]?.label || view
 const navGroupOf = (view) => NAV_GROUPS.find((group) => group.items.includes(view))?.title || ''
 const CURRENT_YEAR = new Date().getFullYear()
@@ -2155,6 +2159,8 @@ function App() {
   if (route === '/vendor-kyc') return <VendorKycPage />
   if (route === '/technician-registration') return <TechnicianRegistrationPage />
   if (route === '/employee-registration') return <EmployeeRegistrationPage />
+  if (route === '/staff-login') return <StaffLoginPage />
+  if (route === '/staff/dashboard') return <StaffDashboardPage />
 
   if (authChecking) {
     return (

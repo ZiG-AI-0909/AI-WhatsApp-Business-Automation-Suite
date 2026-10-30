@@ -129,4 +129,14 @@ const _employeeRegister = rateLimit({
     ...json429('Too many registrations from this network. Please try again in an hour.'),
 });
 
-module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter, technicianStaffSubmitLimiter, technicianStaffVerifyLimiter, employeeRegisterLimiter };
+// Staff & Member Login (and PIN change). Wrong PINs also lock the Staff ID
+// itself (technician/technicianStaff.js); this caps guessing per network.
+function staffLoginLimiter(req, res, next) { return _staffLogin(req, res, next); }
+const _staffLogin = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.STAFF_LOGIN_LIMIT_PER_15MIN || 20),
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip)}`,
+    ...json429('Too many sign-in attempts from this network. Please try again in 15 minutes.'),
+});
+
+module.exports = { webhookLimiter, sendLimiter, aiExtractLimiter, aiQueryLimiter, mutationLimiter, kycSubmitLimiter, technicianSubmitLimiter, technicianStaffSubmitLimiter, technicianStaffVerifyLimiter, employeeRegisterLimiter, staffLoginLimiter };

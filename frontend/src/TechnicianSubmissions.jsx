@@ -41,22 +41,25 @@ function StatusBadge({ status }) {
   return <Badge tone={meta.tone} dot>{meta.label}</Badge>
 }
 
-/** "Self-registered", or the staff member who registered the partner. */
+/** "Self-registered", or the staff member credited (Staff mode or their personal link). */
 function RegisteredBy({ row }) {
-  if (row.registration_source !== 'staff') return <span className="muted-copy">{REGISTRATION_SOURCE_META.self.label}</span>
+  if (!['staff', 'referral'].includes(row.registration_source)) return <span className="muted-copy">{REGISTRATION_SOURCE_META.self.label}</span>
   return (
     <>
       {row.staff_name}
-      <small className="kyc-row-sub">{row.staff_code} · staff</small>
+      <small className="kyc-row-sub">{row.staff_code} · {row.registration_source === 'referral' ? 'via link' : 'staff'}</small>
     </>
   )
 }
 
-/** Query params for the "Registered by" filter: '' | 'self' | 'staff' | a staff member's id. */
+/**
+ * Query params for the "Registered by" filter: '' | 'self' | 'referral' |
+ * 'staff' | a staff member's id (both their link and Staff-mode registrations).
+ */
 function registeredByParams(value) {
   if (!value) return {}
-  if (value === 'self' || value === 'staff') return { source: value }
-  return { source: 'staff', staff: value }
+  if (['self', 'referral', 'staff'].includes(value)) return { source: value }
+  return { staff: value }
 }
 
 // Target progress for the current day / week / month (from /staff/performance).
@@ -78,7 +81,8 @@ function TargetCell({ target }) {
 /**
  * The employee picked in "Registered by": who they are and how many partner
  * forms they filled in (all time), counted by /api/technicians/staff/performance:
- *   * Submitted   — Staff-mode registrations by that employee.
+ *   * Submitted   — registrations credited to that employee: their personal
+ *                   link (Via link) or Staff mode.
  *   * Counted     — credited toward the target: the first registration of
  *                   that mobile number that was not rejected.
  *   * Not counted — the partner was already registered (by anyone).
@@ -96,6 +100,8 @@ function EmployeeSummary({ member, stats }) {
           <dl className="emp-summary-stats">
             {[
               ['Submitted', stats.submitted],
+              ['Via link', stats.referrals ?? 0],
+              ['Staff mode', stats.staff_mode ?? stats.submitted],
               ['Counted', stats.credited],
               ['Not counted', stats.duplicates],
               ['Rejected', stats.rejected],
@@ -225,6 +231,7 @@ export function TechnicianList({ onOpen, onOpenStaff, registeredBy = '', setRegi
           <select value={registeredBy} onChange={(event) => setRegisteredBy(event.target.value)}>
             <option value="">Anyone</option>
             <option value="self">{REGISTRATION_SOURCE_META.self.label}</option>
+            <option value="referral">{REGISTRATION_SOURCE_META.referral.label} (any staff)</option>
             <option value="staff">{REGISTRATION_SOURCE_META.staff.label} (any staff)</option>
             {roster.length > 0 && (
               <optgroup label="Employee">
@@ -417,7 +424,9 @@ export function TechnicianDetail({ id, onBack }) {
             <StatusBadge status={registration.status} />
             {registration.registration_source === 'staff'
               ? <Badge tone={REGISTRATION_SOURCE_META.staff.tone}>Registered by staff: {registration.staff_name} ({registration.staff_code})</Badge>
-              : <Badge tone={REGISTRATION_SOURCE_META.self.tone}>{REGISTRATION_SOURCE_META.self.label}</Badge>}
+              : registration.registration_source === 'referral'
+                ? <Badge tone={REGISTRATION_SOURCE_META.referral.tone}>Referred by: {registration.staff_name} ({registration.staff_code})</Badge>
+                : <Badge tone={REGISTRATION_SOURCE_META.self.tone}>{REGISTRATION_SOURCE_META.self.label}</Badge>}
             {registration.reviewed_at && <span className="muted-copy">Last reviewed {formatDate(registration.reviewed_at, { withTime: true })}</span>}
           </div>
         </div>

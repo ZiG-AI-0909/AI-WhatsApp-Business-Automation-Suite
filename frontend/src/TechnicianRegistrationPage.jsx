@@ -4,6 +4,7 @@ import ThemeToggle from './components/ThemeToggle.jsx'
 import Icon from './components/Icon.jsx'
 import { API_URL } from './api.js'
 import { supabase } from './supabaseClient.js'
+import { readStaffSession } from './staff/staffSession.js'
 import { formatBytes, todayInIndia } from './kyc/kycForm.js'
 import {
   DISTRICTS, DOCUMENT_ACCEPT, FIELD_ORDER, INITIAL_VALUES, REQUIRED, STATES,
@@ -74,6 +75,11 @@ const NO_LOCATION = { status: 'idle', lat: null, lng: null, accuracy: null }
 const NO_STAFF_INPUT = { staff_code: '', staff_pin: '' }
 const STAFF_FIELDS = ['staff_code', 'staff_pin']
 
+/** A query parameter of the page URL (?ref=, ?mode=). */
+function readParam(name) {
+  try { return new URLSearchParams(window.location.search).get(name) || '' } catch { return '' }
+}
+
 /** Access token of a signed-in app user on this browser, or null. */
 async function appAccessToken() {
   if (!supabase) return null
@@ -124,7 +130,9 @@ export default function TechnicianRegistrationPage() {
   const [submitting, setSubmitting] = useState(false)
   const [notice, setNotice] = useState(null)
   const [result, setResult] = useState(null)
-  const [mode, setMode] = useState('self')
+  // ?mode=staff opens Staff mode ("Fill form for a mechanic" on the staff dashboard).
+  const [mode, setMode] = useState(() => (readParam('mode') === 'staff' ? 'staff' : 'self'))
+  const [referrer, setReferrer] = useState(null) // { staff_code, full_name } of an active ?ref= staff member
   const [staffInput, setStaffInput] = useState(NO_STAFF_INPUT)
   const [staff, setStaff] = useState(null) // { staff_code, full_name, via: 'pin' | 'account' } once checked
   const [staffChecking, setStaffChecking] = useState('') // '' | 'account' | 'pin'
@@ -200,14 +208,16 @@ export default function TechnicianRegistrationPage() {
     body: JSON.stringify(body),
   })
 
-  // Signed in to the app with an account linked to a Staff ID → no PIN needed.
+  // Signed in at Staff & Member Login, or to the app with an account linked
+  // to a Staff ID → no PIN needed.
   const checkAccount = async () => {
     const run = staffRunRef.current
-    const token = await appAccessToken()
-    if (!token || run !== staffRunRef.current) return
+    const staffSession = readStaffSession()?.token
+    const token = staffSession ? null : await appAccessToken()
+    if ((!staffSession && !token) || run !== staffRunRef.current) return
     setStaffChecking('account')
     try {
-      const response = await verifyRequest({}, token)
+      const response = await verifyRequest(staffSession ? { staff_session: staffSession } : {}, token)
       const data = await response.json().catch(() => ({}))
       if (run !== staffRunRef.current) return
       if (data.staff) setStaff(data.staff)
@@ -218,6 +228,19 @@ export default function TechnicianRegistrationPage() {
       if (run === staffRunRef.current) setStaffChecking('')
     }
   }
+
+  // On load: who referred this partner (?ref=), and the staff member behind
+  // ?mode=staff. An unknown or inactive ref shows nothing; the form still works.
+  useEffect(() => {
+    const ref = readParam('ref').trim().slice(0, 40)
+    if (ref) {
+      fetch(`${API_URL}/public/technician/ref/${encodeURIComponent(ref)}`)
+        .then((response) => response.json())
+        .then((data) => { if (data?.staff) setReferrer(data.staff) })
+        .catch(() => {})
+    }
+    if (mode === 'staff') checkAccount()
+  }, []) // once, on load
 
   const changeMode = (next) => {
     if (next === mode) return
@@ -338,13 +361,18 @@ export default function TechnicianRegistrationPage() {
     const headers = {}
     if (mode === 'staff') {
       form.append('registration_source', 'staff')
-      if (staff?.via === 'account') {
+      if (staff?.via === 'session') {
+        form.append('staff_session', readStaffSession()?.token || '')
+      } else if (staff?.via === 'account') {
         const token = await appAccessToken()
         if (token) headers.Authorization = `Bearer ${token}`
       } else {
         form.append('staff_code', normalizeStaffCode(staff?.staff_code || staffInput.staff_code))
         form.append('staff_pin', staffInput.staff_pin.trim())
       }
+    } else if (referrer) {
+      // Personal link: the server checks the code again and credits that staff member.
+      form.append('ref_code', referrer.staff_code)
     }
     const controller = new AbortController()
     const timer = window.setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS)
@@ -443,6 +471,9 @@ export default function TechnicianRegistrationPage() {
             <p>{t('successRef')}</p>
             <p className="kyc-reference">{result.reference}</p>
             <p className="muted-copy">{t('successBody', { mobile: `+91 ${values.mobile.replace(/\D/g, '').slice(-10)}` })}</p>
+            {result.referred_by && (
+              <p className="tech-staff-credit"><Icon name="user" size={16} /> {t('referredBy', { name: result.referred_by.full_name })}</p>
+            )}
             {result.registered_by && (
               <p className="tech-staff-credit"><Icon name="user" size={16} /> {t('successStaff', { name: result.registered_by.full_name, code: result.registered_by.staff_code })}</p>
             )}
@@ -462,6 +493,11 @@ export default function TechnicianRegistrationPage() {
 
             <ModeSwitch mode={mode} onChange={changeMode} t={t} />
 
+            {/* Personal link of a staff member (?ref=), shown only when they are active */}
+            {mode === 'self' && referrer && (
+              <p className="notice info tech-referrer" role="status"><Icon name="user" size={16} /> {t('referredBy', { name: referrer.full_name })}</p>
+            )}
+
             {/* Staff mode only: who is registering this partner */}
             {mode === 'staff' && (
               <section className="panel kyc-section tech-staff" aria-labelledby="tech-section-staff">
@@ -475,7 +511,7 @@ export default function TechnicianRegistrationPage() {
                 {staff ? (
                   <div className="tech-location-card" role="status">
                     <p className="tech-location-ok"><Icon name="check-circle" size={18} /> {t('staffVerified', { name: staff.full_name, code: staff.staff_code })}</p>
-                    <small className="field-help">{t(staff.via === 'account' ? 'staffViaAccount' : 'staffViaPin')}</small>
+                    <small className="field-help">{t({ account: 'staffViaAccount', session: 'staffViaSession' }[staff.via] || 'staffViaPin')}</small>
                     <div><button type="button" className="ghost-btn tech-big-btn" onClick={changeStaff}>{t('changeStaff')}</button></div>
                   </div>
                 ) : staffChecking === 'account' ? (

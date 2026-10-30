@@ -113,6 +113,8 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/public/kyc', require('./routes/kycPublic'));
 app.use('/api/public/technician', require('./routes/technicianPublic'));
 app.use('/api/public/employee-registration', require('./routes/employeePublic'));
+// Staff & Member Login + staff dashboard: own Staff ID + PIN sessions, not Supabase Auth.
+app.use('/api/staff-portal', require('./routes/staffPortal'));
 // Storage: external cron trigger (no session; shared secret).
 // Other /api/storage routes fall through to the mount below.
 app.use('/api/storage', require('./routes/storage').publicRouter);
