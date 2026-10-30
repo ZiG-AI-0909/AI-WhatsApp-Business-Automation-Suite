@@ -225,8 +225,16 @@ function ChangePin({ onDone, onCancel }) {
   const [busy, setBusy] = useState(false)
   const set = (key) => (event) => setValues({ ...values, [key]: event.target.value.replace(/\D/g, '') })
 
+  // Opened from the header or the bottom of the page: bring it into view, old PIN first.
+  useEffect(() => {
+    const input = document.getElementById('staff-current_pin')
+    input?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    input?.focus({ preventScroll: true })
+  }, [])
+
   const save = async (event) => {
     event.preventDefault()
+    if (!values.current_pin) { setErrors({ current_pin: 'Enter your old PIN first.' }); return }
     if (values.new_pin !== values.confirm) { setErrors({ confirm: 'The two new PINs are different.' }); return }
     setBusy(true)
     setErrors({})
@@ -252,8 +260,9 @@ function ChangePin({ onDone, onCancel }) {
   return (
     <form className="panel staff-pin" onSubmit={save} aria-labelledby="staff-pin-title">
       <h2 id="staff-pin-title">Change PIN</h2>
+      <p className="muted-copy">Enter your old PIN, then choose a new one. You will use the new PIN from your next sign-in; other phones signed in as you are signed out.</p>
       <div className="kyc-grid">
-        {field('current_pin', 'Current PIN', 'current-password')}
+        {field('current_pin', 'Old PIN', 'current-password')}
         {field('new_pin', 'New PIN (4–8 digits)', 'new-password')}
         {field('confirm', 'New PIN again', 'new-password')}
       </div>
@@ -285,6 +294,15 @@ export default function StaffDashboardPage() {
 
   if (!staff) return <div className="kyc-page tech-page"><p className="panel muted-copy" role="status">Loading…</p></div>
 
+  const openChangePin = () => {
+    setNotice('')
+    setChangingPin(true)
+    // Already open (e.g. from the header while scrolled down): go back to it.
+    const input = document.getElementById('staff-current_pin')
+    input?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    input?.focus({ preventScroll: true })
+  }
+
   const pinDone = (next) => {
     setStaff(next)
     setChangingPin(false)
@@ -301,7 +319,12 @@ export default function StaffDashboardPage() {
             <small>{staff.staff_code}</small>
           </span>
           <ThemeToggle />
-          <button type="button" className="ghost-btn" onClick={goToLogin}><Icon name="logout" size={16} /> Logout</button>
+          <button type="button" className="ghost-btn staff-header-btn" onClick={openChangePin} aria-label="Change PIN" aria-expanded={changingPin}>
+            <Icon name="lock" size={16} /> <span className="staff-btn-text">Change PIN</span>
+          </button>
+          <button type="button" className="ghost-btn staff-header-btn" onClick={goToLogin} aria-label="Logout">
+            <Icon name="logout" size={16} /> <span className="staff-btn-text">Logout</span>
+          </button>
         </div>
       </header>
 
@@ -310,7 +333,7 @@ export default function StaffDashboardPage() {
           <div className="notice info staff-pin-reminder" role="status">
             <span>You are using your first PIN. You can keep using it, or change it to one only you know.</span>
             <span className="button-row">
-              <button type="button" className="secondary-btn" onClick={() => setChangingPin(true)}>Change PIN</button>
+              <button type="button" className="secondary-btn" onClick={openChangePin}>Change PIN</button>
               <button type="button" className="ghost-btn" onClick={() => setReminderHidden(true)}>Later</button>
             </span>
           </div>
@@ -324,7 +347,7 @@ export default function StaffDashboardPage() {
 
         {!changingPin && (
           <p className="staff-footer-actions">
-            <button type="button" className="ghost-btn" onClick={() => { setChangingPin(true); setNotice('') }}><Icon name="lock" size={15} /> Change PIN</button>
+            <button type="button" className="ghost-btn" onClick={openChangePin}><Icon name="lock" size={15} /> Change PIN</button>
           </p>
         )}
       </main>

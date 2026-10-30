@@ -67,7 +67,8 @@ export function validateEmployeeField(key, values) {
       return STATE_CODES[value] ? '' : 'Choose a state from the list.'
     case 'email': {
       const email = value.trim()
-      return !email || (email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) ? '' : 'Enter a valid email address, or leave it empty.'
+      if (!email) return 'Enter your email address.'
+      return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? '' : 'Enter a valid email address.'
     }
     default:
       return ''

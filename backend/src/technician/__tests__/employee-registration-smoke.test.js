@@ -116,11 +116,12 @@ async function main() {
 
     await check('validation: required fields, bad mobile / state / email', async () => {
         const empty = employees.validateEmployee({});
-        assert.deepEqual(Object.keys(empty.errors).sort(), ['full_name', 'mobile', 'state']);
+        assert.deepEqual(Object.keys(empty.errors).sort(), ['email', 'full_name', 'mobile', 'state'], 'email is required');
         const bad = employees.validateEmployee({ full_name: 'Ravi', mobile: '12345', state: 'Delhi', email: 'nope' });
         assert.deepEqual(Object.keys(bad.errors).sort(), ['email', 'mobile', 'state']);
-        assert.ok(employees.validateEmployee({ full_name: 'Ravi', mobile: '5876543210', state: 'Goa' }).errors.mobile, 'Indian mobiles start 6–9');
-        assert.deepEqual(employees.validateEmployee({ full_name: '  Ravi   Kumar ', mobile: '9876543210', state: 'Goa' }).errors, {});
+        assert.ok(employees.validateEmployee({ full_name: 'Ravi', mobile: '5876543210', state: 'Goa', email: 'r@x.in' }).errors.mobile, 'Indian mobiles start 6–9');
+        assert.equal(employees.validateEmployee({ full_name: 'Ravi', mobile: '9876543210', state: 'Goa' }).errors.email, 'Enter your email address.');
+        assert.deepEqual(employees.validateEmployee({ full_name: '  Ravi   Kumar ', mobile: '9876543210', state: 'Goa', email: 'ravi@example.com' }).errors, {});
     });
 
     await check('frontend mirrors the backend: states, codes, validation, filter', async () => {
@@ -149,7 +150,8 @@ async function main() {
         const response = await fetch(`${base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
         return { status: response.status, headers: response.headers, data: await response.json().catch(() => null) };
     };
-    const register = (body) => call('POST', '/public/employee-registration', { body });
+    // Email is required; each test employee gets one unless the test sets it.
+    const register = (body) => call('POST', '/public/employee-registration', { body: { email: `emp${String(body.mobile).replace(/\D/g, '').slice(-4)}@example.com`, ...body } });
     const logged = [];
     const originalLog = console.log;
     console.log = (...args) => { logged.push(args.join(' ')); };

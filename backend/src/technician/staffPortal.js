@@ -45,11 +45,37 @@ function requireDb() {
     if (!isAvailable() || !supabase) throw new KycError('The database is not configured.', 503, 'KYC_UNAVAILABLE');
 }
 
+// ── Server configuration ───────────────────────────────────────────────
+
+const MIN_SECRET_LENGTH = 32;
+const NOT_CONFIGURED = 'Staff login is not configured on the server.';
+
+/**
+ * Names (never values) of the env vars staff login still needs. Read on
+ * every call, so a value added on the host takes effect after its restart.
+ */
+function missingConfig() {
+    const missing = [];
+    if ((process.env.STAFF_SESSION_SECRET || '').length < MIN_SECRET_LENGTH) missing.push('STAFF_SESSION_SECRET');
+    if (!process.env.SUPABASE_URL) missing.push('SUPABASE_URL');
+    if (!process.env.SUPABASE_SECRET_KEY) missing.push('SUPABASE_SECRET_KEY');
+    return missing;
+}
+
+// Once, when the server loads this module (names only, never values).
+{
+    const missing = missingConfig();
+    if (missing.length) {
+        console.warn(`[staff-portal] WARNING: Staff & Member Login is disabled until these env vars are set: ${missing.join(', ')}`
+            + ` (STAFF_SESSION_SECRET needs ${MIN_SECRET_LENGTH}+ characters). Every /api/staff-portal/login will answer 503.`);
+    }
+}
+
 // ── Session tokens ─────────────────────────────────────────────────────
 
 function secret() {
     const value = process.env.STAFF_SESSION_SECRET || '';
-    if (value.length < 32) throw new KycError('Staff login is not set up yet. Please contact the office.', 503, 'STAFF_LOGIN_UNAVAILABLE');
+    if (value.length < MIN_SECRET_LENGTH) throw new KycError(NOT_CONFIGURED, 503, 'STAFF_LOGIN_NOT_CONFIGURED');
     return value;
 }
 
@@ -57,16 +83,25 @@ const base64url = (value) => Buffer.from(value).toString('base64url');
 const sign = (data) => crypto.createHmac('sha256', secret()).update(data).digest();
 const pinFingerprint = (pinHash) => crypto.createHash('sha256').update(String(pinHash || '')).digest('base64url').slice(0, 22);
 
-function issueSession(staff, now = Date.now()) {
+/**
+ * Signed token for one staff member. `audience` keeps purposes apart: a
+ * session ('staff-portal') can never be used as a PIN-reset token or the
+ * other way round. `sv` ties it to the current PIN hash.
+ */
+function signStaffToken(staff, { audience, seconds, extra = {} }, now = Date.now()) {
     const iat = Math.floor(now / 1000);
     const head = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-    const body = base64url(JSON.stringify({ sub: staff.id, aud: AUDIENCE, sv: pinFingerprint(staff.pin_hash), iat, exp: iat + SESSION_SECONDS }));
+    const body = base64url(JSON.stringify({ ...extra, sub: staff.id, aud: audience, sv: pinFingerprint(staff.pin_hash), iat, exp: iat + seconds }));
     const signature = base64url(sign(`${head}.${body}`));
-    return { token: `${head}.${body}.${signature}`, expires_at: new Date((iat + SESSION_SECONDS) * 1000).toISOString() };
+    return { token: `${head}.${body}.${signature}`, expires_at: new Date((iat + seconds) * 1000).toISOString() };
 }
 
-/** Verified token claims, or null (bad signature, expired, wrong audience). */
-function readSession(token, now = Date.now()) {
+function issueSession(staff, now = Date.now()) {
+    return signStaffToken(staff, { audience: AUDIENCE, seconds: SESSION_SECONDS }, now);
+}
+
+/** Verified claims of a token for `audience`, or null (bad signature, expired, other audience). */
+function readStaffToken(token, audience, now = Date.now()) {
     const parts = String(token || '').split('.');
     if (parts.length !== 3) return null;
     const expected = sign(`${parts[0]}.${parts[1]}`);
@@ -74,9 +109,11 @@ function readSession(token, now = Date.now()) {
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
     let claims;
     try { claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')); } catch { return null; }
-    if (claims?.aud !== AUDIENCE || !UUID.test(String(claims.sub || '')) || !(claims.exp > now / 1000)) return null;
+    if (claims?.aud !== audience || !UUID.test(String(claims.sub || '')) || !(claims.exp > now / 1000)) return null;
     return claims;
 }
+
+const readSession = (token, now = Date.now()) => readStaffToken(token, AUDIENCE, now);
 
 /** The active staff row behind a session token, or null. */
 async function staffFromToken(token) {
@@ -148,17 +185,18 @@ async function login({ staff_code: code, pin }) {
 async function changePin(staff, { current_pin: currentPin, new_pin: newPin }) {
     const next = String(newPin ?? '').trim();
     const errors = {};
-    if (!/^\d{4,8}$/.test(next)) errors.new_pin = 'The new PIN must be 4–8 digits.';
+    const rule = staffService.newPinProblem(next);
+    if (rule) errors.new_pin = rule;
     else if (staffService.pinMatches(next, staff.pin_hash)) errors.new_pin = 'Choose a PIN different from the current one.';
     const check = await staffService.resolveStaff({ code: staff.staff_code, pin: currentPin });
     if (check.errors) {
         errors.current_pin = check.errors.staff_pin === 'staff_locked'
             ? 'Too many wrong PINs. Try again in 15 minutes.'
-            : 'The current PIN is wrong.';
+            : 'The old PIN is wrong.';
     }
     if (Object.keys(errors).length) return { errors };
     const { error } = await supabase.from(STAFF_TABLE)
-        .update({ pin_hash: staffService.hashPin(next), pin_must_change: false, pin_failed_count: 0, pin_locked_until: null })
+        .update(staffService.newPinFields(next, { mustChange: false }))
         .eq('id', staff.id);
     if (error) throw dbError(error, 'Could not change your PIN.');
     const updated = await loadStaff(staff.id);
@@ -249,8 +287,30 @@ async function personalLink(staff, origin) {
     return { url, qr_svg };
 }
 
+/**
+ * Deploy check for GET /api/staff-portal/health: env var NAMES that are
+ * missing, whether the roster table has the columns login reads, and
+ * whether the roster table has what login reads. No values.
+ */
+async function health() {
+    const missing = missingConfig();
+    let database = 'not_configured';
+    if (isAvailable() && supabase) {
+        const { error } = await supabase.from(STAFF_TABLE).select(STAFF_COLUMNS).limit(1);
+        database = !error ? 'ok' : (isMissingSchema(error) || error.code === '42703') ? 'migration_pending' : 'error';
+        if (error && database === 'error') console.error(`[staff-portal] health: ${error.code || ''} ${error.message || ''}`);
+    }
+    return {
+        configured: !missing.length && database === 'ok',
+        missing,
+        database,
+    };
+}
+
 module.exports = {
     SESSION_SECONDS,
+    missingConfig,
+    health,
     issueSession,
     readSession,
     staffFromToken,

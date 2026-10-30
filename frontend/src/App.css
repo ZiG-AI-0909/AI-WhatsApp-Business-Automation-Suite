@@ -1078,6 +1078,9 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .staff-pin-reminder { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .staff-pin { display: flex; flex-direction: column; gap: var(--space-3); }
 .staff-footer-actions { display: flex; justify-content: center; margin: 0; }
+.staff-header-btn { flex-shrink: 0; gap: 6px; }
+/* Small phones: header buttons keep their icon (and aria-label), lose the text. */
+@media (max-width: 480px) { .staff-btn-text { display: none; } .staff-header-btn { padding-inline: var(--space-2); } }
 @media (min-width: 720px) {
   .staff-link-body { flex-direction: row; align-items: center; }
   .staff-link-actions { flex: 1; }

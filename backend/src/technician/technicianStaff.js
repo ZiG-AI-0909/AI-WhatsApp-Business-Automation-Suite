@@ -68,6 +68,36 @@ function pinMatches(pin, stored) {
     return crypto.timingSafeEqual(actual, expected);
 }
 
+/**
+ * Why a PIN a staff member picks themselves is refused, or '' when it is
+ * fine: 4–8 digits (the login rule), not one digit repeated (0000), not a
+ * run (1234, 4321, 123456), not a repeated pair (1212).
+ */
+function newPinProblem(pin) {
+    const text = String(pin ?? '');
+    if (!PIN.test(text)) return 'The PIN must be 4–8 digits.';
+    const steps = [...text].slice(1).map((digit, index) => Number(digit) - Number(text[index]));
+    const weak = /^(\d)\1+$/.test(text)
+        || steps.every((step) => step === 1) || steps.every((step) => step === -1)
+        || /^(\d\d)\1+$/.test(text);
+    return weak ? 'This PIN is too easy to guess (like 0000, 1234 or 1212). Choose another.' : '';
+}
+
+/**
+ * Columns for any PIN change. A PIN set by an admin is temporary
+ * (mustChange: the dashboard reminds the staff member to change it); a PIN
+ * the staff member chose is not. Clears the lock-out; sessions end because
+ * their token holds a fingerprint of the old hash (staffPortal.js).
+ */
+function newPinFields(pin, { mustChange }) {
+    return {
+        pin_hash: hashPin(pin),
+        pin_must_change: Boolean(mustChange),
+        pin_failed_count: 0,
+        pin_locked_until: null,
+    };
+}
+
 const normalizeStaffCode = (value) => String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
 
 // ── Who is registering (public form) ───────────────────────────────────
@@ -426,6 +456,8 @@ module.exports = {
     normalizeStaffCode,
     hashPin,
     pinMatches,
+    newPinProblem,
+    newPinFields,
     authUserFromRequest,
     resolveStaff,
     attributionFor,

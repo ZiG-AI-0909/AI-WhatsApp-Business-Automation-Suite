@@ -35,7 +35,7 @@ const LABELS = {
   state: 'State of Operation',
   email: 'Email Address',
 }
-const REQUIRED = ['full_name', 'mobile', 'state']
+const REQUIRED = ['full_name', 'mobile', 'state', 'email']
 
 function CopyButton({ text, label, onCopied }) {
   const [copied, setCopied] = useState(false)

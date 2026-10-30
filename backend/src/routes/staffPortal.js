@@ -26,6 +26,15 @@ function fail(res, error, fallback) {
 // Sessions and personal data: never cached.
 router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
+// Deploy check: { configured, missing: [env var names], database }. No secrets.
+router.get('/health', staffLoginLimiter, async (req, res) => {
+    try {
+        res.json(await portal.health());
+    } catch (error) {
+        fail(res, error, 'Could not check the staff login setup.');
+    }
+});
+
 router.post('/login', staffLoginLimiter, express.json({ limit: '4kb' }), async (req, res) => {
     try {
         const result = await portal.login(req.body || {});

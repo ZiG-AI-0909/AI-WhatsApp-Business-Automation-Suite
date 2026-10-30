@@ -1,8 +1,8 @@
 'use strict';
 
 // Employee self-registration (public link /employee-registration). A
-// prospective employee enters name, mobile, state of operation and an
-// optional email; public.register_employee() (see
+// prospective employee enters name, mobile, state of operation and email
+// (required); public.register_employee() (see
 // supabase-employee-registration-migration.sql) allocates the Employee ID
 // SEPL-{STATE}{NNN} from a per-state counter and inserts the roster row in
 // one transaction, so concurrent registrations never share an ID.
@@ -89,7 +89,8 @@ function validateEmployee(body = {}) {
     else if (!values.state_code) errors.state = 'Choose a state from the list.';
 
     values.email = String(body.email ?? '').trim().toLowerCase();
-    if (values.email && (values.email.length > 254 || !EMAIL.test(values.email))) errors.email = 'Enter a valid email address, or leave it empty.';
+    if (!values.email) errors.email = 'Enter your email address.';
+    else if (values.email.length > 254 || !EMAIL.test(values.email)) errors.email = 'Enter a valid email address.';
     return { values, errors };
 }
 

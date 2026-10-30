@@ -172,13 +172,23 @@ async function main() {
             store.technician_staff.find((row) => row.id === B).pin_locked_until = null; // as if 15 minutes passed
         });
 
-        await check('login without STAFF_SESSION_SECRET → 503, PIN counters untouched', async () => {
+        await check('missing / short STAFF_SESSION_SECRET → 503 "not configured on the server", counters untouched; health names it', async () => {
             const saved = process.env.STAFF_SESSION_SECRET;
-            delete process.env.STAFF_SESSION_SECRET;
-            const result = await login('SEPL-TN002', '0000');
+            for (const value of [undefined, 'too-short']) {
+                if (value === undefined) delete process.env.STAFF_SESSION_SECRET;
+                else process.env.STAFF_SESSION_SECRET = value;
+                const result = await login('SEPL-TN002', '0000');
+                assert.equal(result.status, 503);
+                assert.deepEqual(result.data, { error: 'Staff login is not configured on the server.', code: 'STAFF_LOGIN_NOT_CONFIGURED' });
+                const health = await call('GET', '/staff-portal/health');
+                assert.equal(health.status, 200);
+                assert.deepEqual(health.data, { configured: false, missing: ['STAFF_SESSION_SECRET'], database: 'ok' });
+            }
             process.env.STAFF_SESSION_SECRET = saved;
-            assert.equal(result.status, 503);
             assert.equal(store.technician_staff.find((row) => row.id === B).pin_failed_count, 0);
+            const ok = await call('GET', '/staff-portal/health');
+            assert.deepEqual(ok.data, { configured: true, missing: [], database: 'ok' });
+            assert.ok(!JSON.stringify(ok.data).includes(saved), 'no secret in the health answer');
         });
 
         await check('dashboard routes need a session (401); the admin routes do not accept it', async () => {
