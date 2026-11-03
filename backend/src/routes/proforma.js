@@ -223,6 +223,12 @@ router.post('/upload/extract', aiExtractLimiter, async (req, res) => {
         if (!error.statusCode && /structured invoice data/.test(error.message)) {
             return sendError(res, httpError(502, error.message, { retryable: true }), '');
         }
+        // The provider's own verdict (no credits, unknown model, rejected
+        // parameter) is what fixes it: show it, not a bare 500. aiService
+        // has already shortened it to "AI provider error (HTTP n): …".
+        if (!error.statusCode && error.aiKind === 'provider' && error.providerStatus) {
+            return sendError(res, httpError(502, error.message, { retryable: error.providerStatus === 429 || error.providerStatus >= 500 }), '');
+        }
         sendError(res, error, 'Could not extract the invoice fields.');
     }
 });
