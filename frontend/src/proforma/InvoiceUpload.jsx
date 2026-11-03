@@ -68,15 +68,15 @@ export default function InvoiceUpload({ onFilled, onBeforeFill, disabled }) {
       <div className="button-row">
         <input ref={input} type="file" accept={ACCEPT} hidden onChange={choose} />
         <button type="button" className="secondary-btn" disabled={disabled || busy} onClick={() => input.current?.click()}>
-          {stage === 'reading' ? 'Reading the file…' : stage === 'extracting' ? 'Extracting fields…' : 'Upload JPG, PNG or PDF'}
+          {stage === 'reading' ? 'Reading the file…' : stage === 'extracting' ? 'Filling in the form…' : 'Upload JPG, PNG or PDF'}
         </button>
-        {busy && <span className="file-note" role="status">{stage === 'reading' ? `Step 1 of 2: reading ${fileName}` : 'Step 2 of 2: finding the invoice fields'} (can take up to a minute)</span>}
+        {busy && <span className="file-note" role="status">{stage === 'reading' ? `Step 1 of 2: reading ${fileName}` : 'Step 2 of 2: filling in the form'} (can take up to a minute)</span>}
       </div>
       {error && (
         <div className="notice error pf-upload-error" role="alert">
           <span>{error.text}</span>
           <div className="button-row">
-            {error.retry && text && <button type="button" className="secondary-btn" onClick={() => extract(text)}>Try extraction again</button>}
+            {error.retry && text && <button type="button" className="secondary-btn" onClick={() => extract(text)}>Try again</button>}
             <button type="button" className="ghost-btn" onClick={() => { setError(null); setText(null) }}>Fill in by hand instead</button>
           </div>
         </div>

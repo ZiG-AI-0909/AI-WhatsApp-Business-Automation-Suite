@@ -181,7 +181,7 @@ router.post('/upload/ocr', aiExtractLimiter, singleFile, async (req, res) => {
             return sendError(res, httpError(504, 'Reading the file took too long. Try again, or upload a smaller or clearer image.', { retryable: true }), '');
         }
         if (!error.statusCode && /NVIDIA_API_KEY/.test(error.message)) {
-            return sendError(res, httpError(503, 'Reading uploaded invoices is not configured on the server (NVIDIA OCR key missing).'), '');
+            return sendError(res, httpError(503, 'Auto-fill from a file is not set up yet. Please tell your admin, or fill in the form by hand.'), '');
         }
         sendError(res, error, 'Could not read the uploaded file.');
     }
@@ -212,24 +212,29 @@ router.post('/upload/extract', aiExtractLimiter, async (req, res) => {
         const { profile } = await service.getProfile(userId);
         const result = extractor.mapExtraction(extractor.parseJsonObject(content), defaults.blankInvoice(profile, istToday()));
         if (!extractor.isUsableExtraction(result)) {
-            throw httpError(422, 'This does not look like a proforma invoice: none of the expected fields (invoice number, parties, ports, product rows) were found. Check the file, or fill in the form by hand.', { code: 'NOT_A_PROFORMA' });
+            throw httpError(422, 'This does not look like a proforma invoice. Check that you picked the right file, or fill in the form by hand.', { code: 'NOT_A_PROFORMA' });
         }
         res.json({ invoice: result.invoice, flags: result.flags, warnings: result.warnings, document_totals: result.document_totals, ...preview(result.invoice) });
     } catch (error) {
         if (!error.statusCode && (error.aiKind === 'timeout' || /timeout|deadline|ECONNABORTED/i.test(`${error.code} ${error.message}`))) {
-            return sendError(res, httpError(504, 'Reading the invoice fields took too long. Try again: the file does not need to be read again.', { retryable: true }), '');
+            return sendError(res, httpError(504, 'This is taking longer than usual. Please press Try again.', { retryable: true }), '');
         }
-        if (!error.statusCode && /not configured/i.test(error.message)) return sendError(res, httpError(503, error.message), '');
+        // Proforma users are not technical: plain words on screen; the real
+        // reason (provider, HTTP status, missing key) goes to the log only.
+        if (!error.statusCode) console.error(`[proforma] extract failed for ${userId}:`, error.message);
+        if (!error.statusCode && /not configured/i.test(error.message)) {
+            return sendError(res, httpError(503, 'Auto-fill is not set up yet. Please tell your admin, or fill in the form by hand.'), '');
+        }
         if (!error.statusCode && /structured invoice data/.test(error.message)) {
-            return sendError(res, httpError(502, error.message, { retryable: true }), '');
+            return sendError(res, httpError(502, 'Could not read the invoice details this time. Please press Try again.', { retryable: true }), '');
         }
-        // The provider's own verdict (no credits, unknown model, rejected
-        // parameter) is what fixes it: show it, not a bare 500. aiService
-        // has already shortened it to "AI provider error (HTTP n): …".
         if (!error.statusCode && error.aiKind === 'provider' && error.providerStatus) {
-            return sendError(res, httpError(502, error.message, { retryable: error.providerStatus === 429 || error.providerStatus >= 500 }), '');
+            const busy = error.providerStatus === 429 || error.providerStatus >= 500;
+            return sendError(res, httpError(502, busy
+                ? 'Auto-fill is busy right now. Please wait a minute and press Try again.'
+                : 'Auto-fill is not working right now. Please tell your admin, or fill in the form by hand.', { retryable: busy }), '');
         }
-        sendError(res, error, 'Could not extract the invoice fields.');
+        sendError(res, error, 'Could not read the invoice details. Please try again, or fill in the form by hand.');
     }
 });
 

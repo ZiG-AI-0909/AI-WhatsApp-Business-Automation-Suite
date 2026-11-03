@@ -255,7 +255,26 @@ async function run() {
     const timedOut = await api('POST', '/upload/extract', { body: { text: OCR_TEXT } });
     assert.equal(timedOut.statusCode, 504);
     assert.equal(timedOut.body.retryable, true);
-    assert.match(timedOut.body.error, /does not need to be read again/);
+    assert.match(timedOut.body.error, /press Try again/);
+
+    // Provider refusals: plain words for non-technical users, never the
+    // provider's text, HTTP codes or model names (those go to the log).
+    const technical = /HTTP|\b\d{3}\b|provider|model|api[_ ]?key|openrouter|nvidia|credits/i;
+    aiReply = () => { throw Object.assign(new Error('AI provider error (HTTP 402): Insufficient credits on openrouter'), { aiKind: 'provider', providerStatus: 402 }); };
+    const refused = await api('POST', '/upload/extract', { body: { text: OCR_TEXT } });
+    assert.equal(refused.statusCode, 502);
+    assert.equal(refused.body.retryable, false);
+    assert.match(refused.body.error, /tell your admin/);
+    assert.doesNotMatch(refused.body.error, technical);
+    aiReply = () => { throw Object.assign(new Error('AI provider error (HTTP 429): rate limited'), { aiKind: 'provider', providerStatus: 429 }); };
+    const busy = await api('POST', '/upload/extract', { body: { text: OCR_TEXT } });
+    assert.equal(busy.body.retryable, true);
+    assert.match(busy.body.error, /busy/);
+    assert.doesNotMatch(busy.body.error, technical);
+    aiReply = () => { throw new Error('AI is not configured. Set AI_API_KEY on the server or in Settings.'); };
+    const unset = await api('POST', '/upload/extract', { body: { text: OCR_TEXT } });
+    assert.equal(unset.statusCode, 503);
+    assert.doesNotMatch(unset.body.error, technical);
 
     // Not a proforma invoice.
     aiReply = () => JSON.stringify({ is_proforma_invoice: false, items: [] });
