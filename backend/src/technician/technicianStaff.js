@@ -119,6 +119,36 @@ async function authUserFromRequest(req) {
 const identity = (row, via) => ({ id: row.id, staff_code: row.staff_code, full_name: row.full_name, via });
 
 /**
+ * Count one wrong PIN; true when this attempt locks the Staff ID (or it is
+ * already locked). The update only applies while pin_failed_count still
+ * holds the value read, so parallel wrong PINs are each counted instead of
+ * all writing the same number (which let a burst of guesses skip the
+ * lock-out). pin_locked_until is only written when locking, so a stale read
+ * never clears a lock set meanwhile.
+ */
+async function recordWrongPin(row, now) {
+    let current = row;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        if (current.pin_locked_until && Date.parse(current.pin_locked_until) > now) return true;
+        const seen = current.pin_failed_count || 0;
+        const lock = seen + 1 >= MAX_PIN_FAILURES;
+        const changes = lock
+            ? { pin_failed_count: 0, pin_locked_until: new Date(now + PIN_LOCK_MS).toISOString() }
+            : { pin_failed_count: seen + 1 };
+        let request = supabase.from(TABLE).update(changes).eq('id', row.id);
+        request = current.pin_failed_count == null ? request.is('pin_failed_count', null) : request.eq('pin_failed_count', seen);
+        const { data, error } = await request.select('id');
+        if (error) throw dbError(error, 'Could not check the staff member.');
+        if (data?.length) return lock;
+        const reread = await supabase.from(TABLE).select('pin_failed_count, pin_locked_until').eq('id', row.id).maybeSingle();
+        if (reread.error) throw dbError(reread.error, 'Could not check the staff member.');
+        if (!reread.data) return false;
+        current = reread.data;
+    }
+    return false;
+}
+
+/**
  * Staff member for a Staff-mode registration.
  * @returns {{ staff?: object, errors?: object }} errors: { staff_code | staff_pin: code }
  */
@@ -156,11 +186,7 @@ async function resolveStaff({ code, pin, authUserId, sessionStaffId, now = Date.
     }
     if (row.pin_locked_until && Date.parse(row.pin_locked_until) > now) return { errors: { staff_pin: 'staff_locked' } };
     if (!pinMatches(pinText, row.pin_hash)) {
-        const failures = (row.pin_failed_count || 0) + 1;
-        const lock = failures >= MAX_PIN_FAILURES;
-        await supabase.from(TABLE)
-            .update({ pin_failed_count: lock ? 0 : failures, pin_locked_until: lock ? new Date(now + PIN_LOCK_MS).toISOString() : row.pin_locked_until })
-            .eq('id', row.id);
+        const lock = await recordWrongPin(row, now);
         return { errors: { staff_pin: lock ? 'staff_locked' : 'staff_invalid' } };
     }
     if (row.pin_failed_count || row.pin_locked_until) {

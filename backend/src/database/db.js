@@ -200,8 +200,10 @@ function postgrestValue(v) {
     if (typeof v === 'boolean') return String(v);
     if (typeof v === 'number') return String(v);
     const s = String(v);
-    // Quote values containing PostgREST delimiters.
-    if (/[,"()\s]/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
+    // Quote values containing PostgREST delimiters. Backslashes are escaped
+    // first: an unescaped `\"` would end the quoted value early and let the
+    // rest of the text add filters to the .or() group.
+    if (/[,"()\s\\]/.test(s)) return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
     return s;
 }
 

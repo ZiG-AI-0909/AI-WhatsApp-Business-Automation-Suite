@@ -355,10 +355,14 @@ async function processFile(file, userId) {
 router.post('/process-one', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Upload a JPG, PNG, or WEBP image.' });
   if (!respondIfInvalidUpload(req, res)) return;
-  const result = await processFile(req.file, req.user.id);
-  await markDuplicates(req.user.id);
-  const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
-  res.json({ result, stats: { count } });
+  try {
+    const result = await processFile(req.file, req.user.id);
+    await markDuplicates(req.user.id);
+    const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
+    res.json({ result, stats: { count } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 router.post('/process-batch', upload.array('images', 20), async (req, res) => {
@@ -367,10 +371,14 @@ router.post('/process-batch', upload.array('images', 20), async (req, res) => {
     const check = validateUploadBuffer(file.buffer, file.originalname);
     if (!check.ok) return res.status(400).json({ error: check.error });
   }
-  const results = await Promise.all(req.files.map(file => processFile(file, req.user.id)));
-  await markDuplicates(req.user.id);
-  const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
-  res.json({ results, stats: { count } });
+  try {
+    const results = await Promise.all(req.files.map(file => processFile(file, req.user.id)));
+    await markDuplicates(req.user.id);
+    const count = await db.count('image_leads', 'user_id = ?', [req.user.id]);
+    res.json({ results, stats: { count } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 router.put('/leads/:id', async (req, res) => {

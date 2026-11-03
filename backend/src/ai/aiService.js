@@ -83,12 +83,19 @@ class AIService {
      *   - deepseek/qwen/glm/nemotron style: chat_template_kwargs.thinking
      *   - gpt-oss style: TOP-LEVEL OpenAI reasoning_effort (low|medium|high;
      *     there is no true "off" — 'none' maps to the minimum)
+     *   - OpenRouter (any model): its own top-level `reasoning` object;
+     *     it drops chat_template_kwargs, so the NVIDIA-style switch above
+     *     would silently leave a reasoning model thinking.
      * AI_SUPPORTS_THINKING_KWARGS=true forces the template-kwarg path,
      * =false disables suppression entirely (gateways that reject the kwarg).
      */
-    _applyReasoningSuppression(payload, model, effort) {
+    _applyReasoningSuppression(payload, model, effort, baseURL = '') {
         const flag = String(process.env.AI_SUPPORTS_THINKING_KWARGS || '').trim().toLowerCase();
         if (flag === 'false') return;
+        if (/(^|\.)openrouter\.ai$/i.test(this._hostOf(baseURL))) {
+            payload.reasoning = effort === 'none' ? { enabled: false } : { effort: effort || 'high' };
+            return;
+        }
         const m = String(model || '').toLowerCase();
         if (flag === 'true' || /deepseek|qwen|glm|nemotron/.test(m)) {
             // COHERENT pairs only: 'none' sends thinking:false and NO
@@ -153,7 +160,7 @@ class AIService {
         // explicit effort value turns thinking ON at that effort; chat
         // paths stay 'high' as before.
         if (options.reasoningEffort) {
-            this._applyReasoningSuppression(payload, model, options.reasoningEffort);
+            this._applyReasoningSuppression(payload, model, options.reasoningEffort, baseURL);
         }
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {

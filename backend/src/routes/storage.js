@@ -36,10 +36,17 @@ const publicRouter = express.Router();
 publicRouter.post('/cron', async (req, res) => {
     const secret = process.env.STORAGE_CRON_SECRET || '';
     const given = String(req.get('x-cron-secret') || '');
-    if (secret.length < 16 || given.length !== secret.length || !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(secret))) {
+    // Compare fixed-length digests: equal character counts can still differ
+    // in bytes (non-ASCII header), which makes timingSafeEqual throw.
+    const digest = (value) => crypto.createHash('sha256').update(value).digest();
+    if (secret.length < 16 || !crypto.timingSafeEqual(digest(given), digest(secret))) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
-    res.json(await jobs.tick());
+    try {
+        res.json(await jobs.tick());
+    } catch (error) {
+        fail(res, error, 'Could not run the storage jobs.');
+    }
 });
 
 // ── Signed-in users ─────────────────────────────────────────────────

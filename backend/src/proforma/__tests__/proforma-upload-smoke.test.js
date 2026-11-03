@@ -239,7 +239,8 @@ async function run() {
     assert.equal(extract.statusCode, 200);
     const aiCall = calls.ai[0];
     assert.ok(Math.abs(aiCall.options.deadlineMs - aiCall.at - 90000) < 1000, 'extraction gets its own full budget, untouched by OCR time');
-    assert.equal(aiCall.options.timeoutMs, 90000);
+    assert.equal(aiCall.options.timeoutMs, 55000, 'one stalled attempt cannot use the whole budget: the retry keeps time');
+    assert.ok(aiCall.options.retries >= 1);
     assert.ok(aiCall.messages[0].content.includes('Alfatth_26-27/PI-04'), 'the OCR text is in the prompt');
     assert.equal(extract.body.invoice.items.length, 6);
     assert.equal(extract.body.totals.grand_total, 116621);

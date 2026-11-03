@@ -1,5 +1,5 @@
 ﻿// =============================================================
-// WhatsApp Business API webhook â€” public route (Meta calls it).
+// WhatsApp Business API webhook — public route (Meta calls it).
 //
 // SECURITY: every POST is verified with the app secret of the user who owns
 // the phone_number_id. The environment app secret is used only as fallback.
@@ -111,7 +111,7 @@ router.get('/', async (req, res) => {
                 const { decryptSettingIfSecret } = require('../utils/encryption');
                 storedTokens = rows
                     .map((row) => {
-                        // Stored tokens are secret-bearing â†’ decrypt (legacy
+                        // Stored tokens are secret-bearing → decrypt (legacy
                         // plaintext passes through unchanged).
                         const value = decryptSettingIfSecret(row?.key ?? '', typeof row?.value === 'string' ? row.value : '');
                         const parsed = parseJsonField(value, null);
@@ -142,7 +142,7 @@ router.get('/', async (req, res) => {
     }
 });
 
-// Incoming WhatsApp events (POST) â€” signature-verified.
+// Incoming WhatsApp events (POST) — signature-verified.
 router.post('/', async (req, res) => {
     try {
         const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(JSON.stringify(req.body ?? {}));
@@ -166,11 +166,11 @@ router.post('/', async (req, res) => {
             || process.env.META_APP_SECRET
             || '';
         if (!appSecret) {
-            console.error('[webhook] no app secret configured for owning user â€” rejecting POST');
+            console.error('[webhook] no app secret configured for owning user — rejecting POST');
             return res.sendStatus(403);
         }
         if (!verifyMetaSignature(rawBody, signature, appSecret)) {
-            console.warn('[webhook] invalid or missing X-Hub-Signature-256 â€” payload rejected');
+            console.warn('[webhook] invalid or missing X-Hub-Signature-256 — payload rejected');
             return res.sendStatus(401);
         }
         if (!userId) return res.sendStatus(200);

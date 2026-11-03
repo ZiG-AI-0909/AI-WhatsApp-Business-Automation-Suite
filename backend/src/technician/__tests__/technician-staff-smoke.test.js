@@ -210,6 +210,17 @@ async function main() {
             assert.equal((await call('POST', '/public/technician/staff/verify', { body: { staff_code: 'SE-014', staff_pin: '5555' } })).status, 200);
         });
 
+        await check('parallel wrong PINs are each counted: a burst cannot skip the lock-out', async () => {
+            const { resolveStaff } = require('../technicianStaff');
+            // Every call reads the row before any of them writes (the old
+            // read-then-write left the count at 1 and never locked).
+            const results = await Promise.all(Array.from({ length: 8 }, () => resolveStaff({ code: 'SE-014', pin: '1111' })));
+            assert.ok(results.some((result) => result.errors?.staff_pin === 'staff_locked'), JSON.stringify(results));
+            assert.equal((await resolveStaff({ code: 'SE-014', pin: '5555' })).errors?.staff_pin, 'staff_locked', 'right PIN refused while locked');
+            const reset = await call('PUT', `/technicians/staff/${anitha.id}`, { token: 'token-reviewer', body: { pin: '5555' } });
+            assert.equal(reset.status, 200, JSON.stringify(reset.data));
+        });
+
         await check('self mode: source left to the default (self), staff fields ignored even if sent', async () => {
             const result = await submit({ ...PARTNER, mobile: '9000000001', staff_code: 'SE-014', staff_pin: '5555', staff_id: anitha.id, staff_name: 'Anitha Kumar' });
             assert.equal(result.status, 201, JSON.stringify(result.data));
