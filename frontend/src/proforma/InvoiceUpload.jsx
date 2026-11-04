@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { friendlyErrorMessage, isTechnicalError } from '../utils/errorMessages.js'
 import { extractInvoiceFields, readInvoiceFile } from './proformaApi.js'
 
@@ -14,7 +14,7 @@ function message(error, context) {
 // proforma invoice fills the form. Reading the file and extracting the
 // fields are two calls, so a failed extraction is retried from the text
 // already read. Nothing is saved or exported here.
-export default function InvoiceUpload({ onFilled, onBeforeFill, disabled }) {
+export default function InvoiceUpload({ onFilled, onBeforeFill, onBusyChange, disabled }) {
   const input = useRef(null)
   const [stage, setStage] = useState('idle') // idle | reading | extracting
   const [text, setText] = useState(null)
@@ -59,6 +59,8 @@ export default function InvoiceUpload({ onFilled, onBeforeFill, disabled }) {
   }
 
   const busy = stage !== 'idle'
+  // The result replaces the form, so its other actions wait for the upload.
+  useEffect(() => { onBusyChange(busy) }, [busy, onBusyChange])
   return (
     <div className="pf-upload">
       <div>

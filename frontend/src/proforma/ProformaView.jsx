@@ -255,7 +255,7 @@ export default function ProformaView() {
   }
   const loadSample = () => {
     if (!confirmDiscard()) return
-    replaceInvoice(config.sample, { savedJson: '', message: 'Loaded the reference invoice (Alfatth_26-27/PI-03R5) as sample data.' })
+    replaceInvoice(config.sample, { savedJson: '', message: 'Loaded the sample invoice (Alfatth_26-27/PI-04).' })
   }
   const resetForm = () => {
     if (!window.confirm('Reset the form to a blank invoice with your saved company details? Everything typed in this invoice will be cleared.')) return
@@ -272,7 +272,7 @@ export default function ProformaView() {
     setDocumentTotals(result.document_totals || null)
     const count = Object.keys(result.flags || {}).length
     setNotice({ type: count ? 'info' : 'success', text: `Filled the form from ${fileName}. ${count ? `${count} field(s) need checking: they are highlighted below.` : 'Check every section before exporting.'}` })
-    setTab('invoice')
+    setTab((current) => (current === 'preview' ? current : 'invoice'))
   }
 
   const openInvoice = async (id) => {
@@ -454,7 +454,7 @@ export default function ProformaView() {
           </div>
         </div>
 
-        {!savedId && <InvoiceUpload onFilled={fillFromUpload} onBeforeFill={confirmDiscard} disabled={busy} />}
+        {!savedId && <InvoiceUpload onFilled={fillFromUpload} onBeforeFill={confirmDiscard} onBusyChange={setBusy} disabled={busy} />}
 
         {(Object.keys(flags).length > 0 || warnings.length > 0) && (
           <div className="pf-review" role="region" aria-label="Fields to check from the uploaded invoice">

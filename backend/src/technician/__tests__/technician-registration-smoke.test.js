@@ -334,6 +334,27 @@ async function main() {
             assert.equal(row.reviewed_by, STAFF);
             assert.equal((await call('PUT', `/technicians/${id}/review`, { token: 'token-user', body: { status: 'approved' } })).status, 403);
         });
+
+        await check('delete: reviewers only; removes the row and its Aadhaar file; archived file left alone', async () => {
+            const aadhaar = `technicians/${id}/aadhaar.png`;
+            assert.ok(objects.has(aadhaar), 'the Aadhaar is stored before the delete');
+            assert.equal((await call('DELETE', `/technicians/${id}`, { token: 'token-user' })).status, 403);
+            assert.equal((await call('DELETE', '/technicians/not-a-uuid', { token: 'token-staff' })).status, 404);
+            assert.ok(store.technician_partner_registrations.some((r) => r.id === id), 'refused deletes changed nothing');
+            const deleted = await call('DELETE', `/technicians/${id}`, { token: 'token-staff' });
+            assert.equal(deleted.status, 200, JSON.stringify(deleted.data));
+            assert.equal(deleted.data.deleted.id, id);
+            assert.ok(!store.technician_partner_registrations.some((r) => r.id === id), 'row removed');
+            assert.ok(!objects.has(aadhaar), 'Aadhaar removed from storage');
+            assert.equal((await call('DELETE', `/technicians/${id}`, { token: 'token-staff' })).status, 404, 'second delete: already gone');
+
+            const archivedId = 'cc33cc33-3333-4333-8333-333333333333';
+            const archivedPath = `technicians/${archivedId}/aadhaar.png`;
+            objects.set(archivedPath, { buffer: Buffer.alloc(1), contentType: 'image/png' });
+            store.technician_partner_registrations.push({ id: archivedId, full_name: 'Archived Partner', documents: { aadhaar: { path: archivedPath, archived: { at: '2026-10-22' } } } });
+            assert.equal((await call('DELETE', `/technicians/${archivedId}`, { token: 'token-staff' })).status, 200);
+            assert.ok(objects.has(archivedPath), 'an archived document is not touched');
+        });
     } finally {
         server.close();
     }

@@ -1228,6 +1228,7 @@ p.scan-note { flex-direction: row; align-items: flex-start; }
 .kyc-review-pair { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: var(--space-2); }
 .kyc-review-wide { grid-column: span 2; }
 .kyc-review-form .notice { margin-bottom: var(--space-3); }
+.kyc-review-form .kyc-delete-btn { margin-left: auto; }
 
 @media (max-width: 760px) {
   .kyc-facts { grid-template-columns: minmax(0, 1fr); }

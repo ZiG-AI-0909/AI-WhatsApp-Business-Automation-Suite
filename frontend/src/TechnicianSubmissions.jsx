@@ -400,6 +400,19 @@ export function TechnicianDetail({ id, onBack }) {
     }
   }
 
+  const remove = async () => {
+    if (!window.confirm(`Delete the registration of ${registration.full_name} (${registration.reference})? The form and its Aadhaar file are removed permanently. This cannot be undone.`)) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      await apiFetch(`/technicians/${id}`, { method: 'DELETE' })
+      onBack()
+    } catch (err) {
+      setNotice({ type: 'error', text: errorText(err, 'Delete registration') })
+      setBusy(false)
+    }
+  }
+
   if (loadError) {
     return (
       <div className="view-workspace">
@@ -502,6 +515,7 @@ export function TechnicianDetail({ id, onBack }) {
           <div className="button-row">
             <button type="submit" className="primary-btn" disabled={busy || !dirty}>{busy ? 'Saving…' : 'Save review'}</button>
             {dirty && <span>Unsaved changes.</span>}
+            <button type="button" className="danger-btn kyc-delete-btn" disabled={busy} onClick={remove}><Icon name="trash" size={15} /> Delete registration</button>
           </div>
         </DetailSection>
       </form>

@@ -148,4 +148,13 @@ router.put('/:id/review', async (req, res) => {
     }
 });
 
+router.delete('/:id', async (req, res) => {
+    try {
+        const registration = await service.deleteRegistration(req.params.id, actor(req));
+        res.json({ deleted: { id: registration.id, reference: service.referenceFor(registration.id) } });
+    } catch (error) {
+        fail(res, error, 'Could not delete the registration.');
+    }
+});
+
 module.exports = router;

@@ -1651,6 +1651,10 @@ function App() {
   const [boqKept, setBoqKept] = useState(false)
   const [boqActivity, setBoqActivity] = useState(null)
   if (activeView === 'Document Intelligence' && !boqKept) setBoqKept(true)
+  // Same for Proforma Maker: an upload takes up to a minute and must still
+  // fill the form if the user opens another page meanwhile.
+  const [proformaKept, setProformaKept] = useState(false)
+  if (activeView === 'Proforma Maker' && !proformaKept) setProformaKept(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [backendStatus, setBackendStatus] = useState('Checking...')
   const [isConnected, setIsConnected] = useState(false)
@@ -2084,7 +2088,7 @@ function App() {
     if (activeView === 'Settings') return <SettingsView userEmail={session?.user?.email} />
     if (activeView === 'Image Extractor') return <ImageExtractorView />
     if (activeView === 'Submitted Forms') return <KycSubmissionsView showKyc={teamAccess.permissions.includes('vendor_kyc')} showTechnicians={teamAccess.permissions.includes('technicians')} />
-    if (activeView === 'Proforma Maker') return <ProformaView />
+    if (activeView === 'Proforma Maker') return null // kept mounted below
     if (activeView === 'Storage') return <StorageView />
     if (activeView === 'Team & access') return <TeamAccessView selfEmail={session?.user?.email} />
     if (activeView === 'Dashboard') return renderDashboard()
@@ -2332,6 +2336,11 @@ function App() {
             {boqKept && can('Document Intelligence') && (
               <div className="kept-view" hidden={activeView !== 'Document Intelligence'}>
                 <DocumentIntelView active={activeView === 'Document Intelligence'} onActivity={setBoqActivity} />
+              </div>
+            )}
+            {proformaKept && can('Proforma Maker') && (
+              <div className="kept-view" hidden={activeView !== 'Proforma Maker'}>
+                <ProformaView />
               </div>
             )}
             {activeView !== 'Dashboard' && activeView !== 'Storage' && <StorageBanner status={storage.status} onOpenStorage={openStorage} everywhere />}

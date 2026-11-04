@@ -203,6 +203,20 @@ async function updateReview(id, values, reviewerId) {
     return data;
 }
 
+/** Permanent: the row, then its stored Aadhaar (archived files already left storage). */
+async function deleteRegistration(id, actor = {}) {
+    const registration = await getRegistration(id);
+    const { data, error } = await supabase.from(TABLE).delete().eq('id', id).select('id');
+    if (error) throw dbError(error, 'Could not delete the registration.');
+    if (!data?.length) throw new KycError('Registration not found.', 404, 'TECH_NOT_FOUND');
+    await removeObjects(DOCUMENTS.map((document) => registration.documents?.[document.key])
+        .filter((file) => file?.path && !file.archived)
+        .map((file) => file.path));
+    console.log(`[technician] ${referenceFor(id)} deleted by ${actor.email || 'unknown'}`);
+    require('../storage/storageJobs').checkSoon(); // refresh storage usage
+    return registration;
+}
+
 module.exports = {
     TABLE,
     referenceFor,
@@ -213,4 +227,5 @@ module.exports = {
     getRegistration,
     documentLinks,
     updateReview,
+    deleteRegistration,
 };
