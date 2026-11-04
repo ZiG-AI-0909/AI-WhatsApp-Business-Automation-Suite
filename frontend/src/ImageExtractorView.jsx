@@ -6,6 +6,7 @@ import EmptyState from './components/EmptyState.jsx'
 import ProductIdentifyView from './ProductIdentifyView.jsx'
 // Shared auth/request helpers (also used by the Identify Product mode).
 import { request, friendlyErrorMessage, API, authHeaders } from './imageExtractorApi.js'
+import { safeHref } from './utils/safeHref.js'
 
 const listValue = (value) => Array.isArray(value) ? value.join(', ') : value || '-'
 const MAX_FILES = 100
@@ -299,7 +300,7 @@ export default function ImageExtractorView() {
                       <td data-label="Business"><strong>{lead.business_name || '(no business name visible)'}</strong><small>{lead.source_image}</small></td>
                       <td data-label="Phone">{listValue(lead.phone_numbers)}</td>
                       <td data-label="Email">{listValue(lead.emails)}</td>
-                      <td data-label="Website">{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
+                      <td data-label="Website">{safeHref(lead.website) ? <a href={safeHref(lead.website)} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
                       <td data-label="Address">{lead.address || '-'}</td>
                       <td data-label="All visible text"><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
                       <td data-label="Confidence">{Math.round((lead.confidence || 0) * 100)}%</td>
@@ -339,7 +340,7 @@ export default function ImageExtractorView() {
                   <td data-label="Business"><strong>{lead.business_name || '-'}</strong><small>{lead.source_image}</small></td>
                   <td data-label="Phone">{listValue(lead.phone_numbers)}</td>
                   <td data-label="Email">{listValue(lead.emails)}</td>
-                  <td data-label="Website">{lead.website ? <a href={lead.website} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
+                  <td data-label="Website">{safeHref(lead.website) ? <a href={safeHref(lead.website)} target="_blank" rel="noreferrer">Visit</a> : '-'}</td>
                   <td data-label="Address">{lead.address || '-'}</td>
                   <td data-label="All visible text"><small style={{ whiteSpace: 'pre-wrap', maxWidth: '260px' }}>{lead.raw_text || '-'}</small></td>
                   <td data-label="Confidence">{Math.round((lead.confidence || 0) * 100)}%</td>
