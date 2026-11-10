@@ -76,6 +76,91 @@ class AIService {
     }
 
     /**
+     * POST a chat completion with stream:true and collect the answer.
+     * Two clocks: totalMs caps the whole attempt, idleMs caps the silence
+     * between chunks. A slow model that keeps sending (answer or reasoning
+     * tokens, keep-alive comments) runs to totalMs; a stalled request is
+     * cut after idleMs so the retry still has time. Resolves to an
+     * axios-shaped response and throws axios-shaped errors, so _complete's
+     * classification and logging work unchanged.
+     */
+    async _postStreaming(url, payload, headers, { totalMs, idleMs, signal }) {
+        const controller = new AbortController();
+        const onOuterAbort = () => controller.abort();
+        signal?.addEventListener?.('abort', onOuterAbort, { once: true });
+        let timedOut = '';
+        let idleTimer = null;
+        const expire = (message) => { timedOut = timedOut || message; controller.abort(); };
+        const totalTimer = setTimeout(() => expire(`timeout of ${totalMs}ms exceeded`), totalMs);
+        const armIdle = () => {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => expire(`no data from the AI for ${Math.round(idleMs / 1000)}s`), idleMs);
+        };
+        const timeoutError = () => Object.assign(new Error(timedOut), { code: 'ECONNABORTED' });
+        const readAll = async (stream) => {
+            let text = '';
+            for await (const chunk of stream) text += chunk;
+            try { return JSON.parse(text); } catch { return text; }
+        };
+        try {
+            armIdle();
+            let response;
+            try {
+                response = await axios.post(url, { ...payload, stream: true }, { headers, responseType: 'stream', signal: controller.signal });
+            } catch (error) {
+                if (timedOut) throw timeoutError();
+                // The error body is a stream too; read it so the provider's
+                // verdict reaches the log like a non-streaming call's.
+                if (typeof error?.response?.data?.on === 'function') {
+                    error.response.data = await readAll(error.response.data);
+                }
+                throw error;
+            }
+            let content = '';
+            let id = '';
+            await new Promise((resolve, reject) => {
+                const stream = response.data;
+                let buffer = '';
+                let finished = false;
+                const fail = (error) => { if (!finished) { finished = true; stream.destroy(); reject(error); } };
+                controller.signal.addEventListener('abort', () => fail(timedOut ? timeoutError() : new Error('AI request was cancelled.')), { once: true });
+                stream.setEncoding('utf8');
+                stream.on('data', (chunk) => {
+                    armIdle();
+                    buffer += chunk;
+                    let newline;
+                    while ((newline = buffer.indexOf('\n')) >= 0) {
+                        const line = buffer.slice(0, newline).trim();
+                        buffer = buffer.slice(newline + 1);
+                        if (!line.startsWith('data:')) continue;
+                        const data = line.slice(5).trim();
+                        if (!data || data === '[DONE]') continue;
+                        let event;
+                        try { event = JSON.parse(data); } catch { continue; }
+                        if (event.error) {
+                            // Mid-stream provider failure: classified as a
+                            // retryable provider error (HTTP 502).
+                            fail(Object.assign(new Error(event.error.message || 'AI provider failed mid-answer.'), { response: { status: 502, data: event, headers: {} } }));
+                            return;
+                        }
+                        id = id || event.id || '';
+                        const delta = event.choices?.[0]?.delta?.content;
+                        if (typeof delta === 'string') content += delta;
+                    }
+                });
+                stream.on('end', () => { if (!finished) { finished = true; resolve(); } });
+                stream.on('error', (error) => fail(timedOut ? timeoutError() : error));
+                stream.on('close', () => fail(timedOut ? timeoutError() : Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })));
+            });
+            return { status: response.status, headers: response.headers || {}, data: { id, choices: [{ message: { content } }] } };
+        } finally {
+            clearTimeout(totalTimer);
+            clearTimeout(idleTimer);
+            signal?.removeEventListener?.('abort', onOuterAbort);
+        }
+    }
+
+    /**
      * Thinking-suppression capability routing. 'none' must reach any model
      * family that can honour it — not one hardcoded model id.
      *
@@ -171,18 +256,21 @@ class AIService {
                 attemptTimeout = Math.min(attemptTimeout, Math.max(100, deadlineMs - attemptStart));
             }
             try {
-                const response = await axios.post(
-                    `${baseURL}/chat/completions`,
-                    payload,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${apiKey}`,
-                            'Content-Type': 'application/json',
-                        },
-                        timeout: attemptTimeout,
+                const headers = {
+                    Authorization: `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json',
+                };
+                const response = options.stream
+                    ? await this._postStreaming(`${baseURL}/chat/completions`, payload, headers, {
+                        totalMs: attemptTimeout,
+                        idleMs: Math.min(attemptTimeout, Number(options.idleTimeoutMs) || 30000),
                         signal: options.signal,
-                    }
-                );
+                    })
+                    : await axios.post(
+                        `${baseURL}/chat/completions`,
+                        payload,
+                        { headers, timeout: attemptTimeout, signal: options.signal }
+                    );
                 const content = response.data?.choices?.[0]?.message?.content;
                 if (typeof content !== 'string') {
                     const shapeError = new Error('AI provider returned an unexpected response shape (no message content).');

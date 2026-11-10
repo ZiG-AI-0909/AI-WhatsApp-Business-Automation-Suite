@@ -239,7 +239,8 @@ async function run() {
     assert.equal(extract.statusCode, 200);
     const aiCall = calls.ai[0];
     assert.ok(Math.abs(aiCall.options.deadlineMs - aiCall.at - 90000) < 1000, 'extraction gets its own full budget, untouched by OCR time');
-    assert.equal(aiCall.options.timeoutMs, 55000, 'one stalled attempt cannot use the whole budget: the retry keeps time');
+    assert.equal(aiCall.options.stream, true, 'the answer streams: a slow model that keeps sending is not cut off');
+    assert.equal(aiCall.options.idleTimeoutMs, 30000, 'a silent (stalled) attempt is cut early so the retry keeps time');
     assert.ok(aiCall.options.retries >= 1);
     assert.ok(aiCall.messages[0].content.includes('Alfatth_26-27/PI-04'), 'the OCR text is in the prompt');
     assert.equal(extract.body.invoice.items.length, 6);

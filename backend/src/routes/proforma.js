@@ -28,10 +28,11 @@ const router = express.Router();
 // be retried from the same OCR text without paying for OCR again.
 const OCR_BUDGET_MS = Number(process.env.PROFORMA_OCR_BUDGET_MS || 100000);
 const EXTRACT_BUDGET_MS = Number(process.env.PROFORMA_EXTRACT_BUDGET_MS || 100000);
-// One stalled provider request must not eat the whole budget: each attempt
-// is capped so the retry still gets a real share of it (a healthy
-// extraction finishes well inside this).
-const EXTRACT_ATTEMPT_MS = Math.min(EXTRACT_BUDGET_MS, Number(process.env.PROFORMA_EXTRACT_ATTEMPT_MS || 55000));
+// Extraction streams the answer. A slow model that keeps sending may use
+// the whole budget (a fixed per-attempt cap cut slow-but-working answers
+// off and the retry, starting from zero with less time, failed too); a
+// request that goes silent this long is a stall and is retried at once.
+const EXTRACT_IDLE_MS = Math.min(EXTRACT_BUDGET_MS, Number(process.env.PROFORMA_EXTRACT_IDLE_MS || 30000));
 const MAX_PDF_PAGES = Number(process.env.PROFORMA_MAX_PDF_PAGES || 5);
 const MAX_TEXT_CHARS = 60000;
 const upload = multer({
@@ -202,7 +203,9 @@ router.post('/upload/extract', aiExtractLimiter, async (req, res) => {
             model,
             temperature: 0.1,
             maxTokens: 6000,
-            timeoutMs: EXTRACT_ATTEMPT_MS,
+            stream: true,
+            timeoutMs: EXTRACT_BUDGET_MS,
+            idleTimeoutMs: EXTRACT_IDLE_MS,
             deadlineMs,
             minAttemptMs: 15000,
             retries: 1,
