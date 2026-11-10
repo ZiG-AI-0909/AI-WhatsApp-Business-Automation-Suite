@@ -204,23 +204,28 @@ class AIService {
                 const providerStatus = info.status || error?.response?.status || null;
                 const requestId = error?.response?.headers?.['x-request-id'] || error?.response?.headers?.['x-bb-request-id'] || error?.response?.data?.id || '';
 
-                if (logLabel) {
-                    const outcome = info.kind === 'timeout' ? 'TIMEOUT' : info.kind === 'network' ? 'NETWORK' : info.transient ? 'PROVIDER-RETRYABLE' : 'PROVIDER';
-                    console.error(`[ai] ${logLabel} attempt ${attempt}/${maxAttempts} FAILED in ${elapsed}ms — ${outcome}${providerStatus ? ` HTTP ${providerStatus}` : ''} (model ${model}, host ${this._hostOf(baseURL)}${requestId ? `, req-id ${requestId}` : ''}): ${error.message}`);
-                }
-                // Provider error bodies go to the log, truncated — they carry
-                // the real verdict (quota, model name, template problems).
-                const providerBody = error?.response?.data != null ? JSON.stringify(error.response.data).slice(0, 500) : '';
-                if (logLabel && providerBody) {
-                    console.error(`[ai] ${logLabel} provider response body: ${providerBody}`);
-                }
-
                 const isLast = attempt === maxAttempts;
                 const remaining = deadlineMs ? deadlineMs - Date.now() : Infinity;
                 // No retry when: attempts exhausted, the failure is
                 // permanent (400/401/403/unparseable), or the remaining
                 // budget cannot fund a usable attempt (per-call floor).
-                if (isLast || !info.transient || remaining < minAttemptMs) {
+                const giveUp = isLast || !info.transient || remaining < minAttemptMs;
+
+                if (logLabel) {
+                    // A failure that will be retried is a warning, not an
+                    // error — the call may still succeed on the next attempt.
+                    const outcome = info.kind === 'timeout' ? 'TIMEOUT' : info.kind === 'network' ? 'NETWORK' : info.transient ? 'PROVIDER-RETRYABLE' : 'PROVIDER';
+                    const line = `[ai] ${logLabel} attempt ${attempt}/${maxAttempts} ${giveUp ? 'FAILED' : 'did not finish'} in ${elapsed}ms — ${outcome}${providerStatus ? ` HTTP ${providerStatus}` : ''} (model ${model}, host ${this._hostOf(baseURL)}${requestId ? `, req-id ${requestId}` : ''}): ${error.message}${giveUp ? '' : ' — retrying'}`;
+                    (giveUp ? console.error : console.warn)(line);
+                }
+                // Provider error bodies go to the log, truncated — they carry
+                // the real verdict (quota, model name, template problems).
+                const providerBody = error?.response?.data != null ? JSON.stringify(error.response.data).slice(0, 500) : '';
+                if (logLabel && providerBody) {
+                    (giveUp ? console.error : console.warn)(`[ai] ${logLabel} provider response body: ${providerBody}`);
+                }
+
+                if (giveUp) {
                     if (info.kind === 'provider' && providerStatus) {
                         // Surface the provider's own verdict, not axios's
                         // generic "Request failed with status code N".
