@@ -41,10 +41,11 @@ router.get('/me', async (req, res) => {
         // the KYC areas follow the KYC staff list).
         const permissions = [];
         for (const module of access.MODULES) if (await access.hasModule(req, module).catch(() => false)) permissions.push(module);
-        const member = me.enforced && (me.superAdmin || permissions.length);
+        const member = me.enforced && !me.customer && (me.superAdmin || permissions.length);
         res.json({
             enforced: Boolean(me.enforced),
             super_admin: Boolean(me.superAdmin),
+            customer: Boolean(me.customer),
             permissions,
             email: req.user?.email || '',
             company_email: member ? await companyEmail(me.companyOwnerId) : null,

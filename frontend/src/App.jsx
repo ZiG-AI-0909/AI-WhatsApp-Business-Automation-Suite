@@ -2276,6 +2276,23 @@ function App() {
     )
   }
   // Team & access on, and nothing given to this account yet.
+  // Customers outside the company: only the subscription page until paid.
+  // After paying they get their own workspace (the page reloads with access).
+  if (teamAccess.customer && !teamAccess.permissions.length) {
+    return (
+      <div className="kyc-page tech-page">
+        <main className="kyc-main tech-main staff-login-main" id="main-content">
+          {billing
+            ? <PayScreen billing={billing} onPaid={() => window.setTimeout(() => window.location.reload(), 1500)} />
+            : <p className="muted-copy">Loading your subscription…</p>}
+          <div className="button-row" style={{ justifyContent: 'center', marginTop: 16 }}>
+            <span className="muted-copy">Signed in as <strong>{userEmail}</strong></span>
+            <button type="button" className="ghost-btn" onClick={handleSignOut}><Icon name="logout" size={16} /> Sign out</button>
+          </div>
+        </main>
+      </div>
+    )
+  }
   if (teamAccess.enforced && !teamAccess.super_admin && !teamAccess.permissions.length) {
     return (
       <div className="kyc-page tech-page">

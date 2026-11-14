@@ -127,7 +127,7 @@ async function main() {
 
         await check('on: no row = no access anywhere; own (empty) data', async () => {
             const me = await call('GET', '/team/me', 'nobody');
-            assert.deepEqual(me.data, { enforced: true, super_admin: false, permissions: [], email: EMAIL.nobody, company_email: null });
+            assert.deepEqual(me.data, { enforced: true, super_admin: false, customer: false, permissions: [], email: EMAIL.nobody, company_email: null });
             for (const path of ['/contacts', '/proforma', '/quotations', '/technicians', '/kyc/access', '/campaigns']) {
                 const result = await call('GET', path, 'nobody');
                 if (path === '/kyc/access') { assert.deepEqual(result.data, { staff: false }); continue; }
@@ -186,7 +186,7 @@ async function main() {
             assert.deepEqual((await call('GET', '/kyc/access', 'tech')).data, { staff: false }, 'technicians ≠ vendor KYC');
             assert.equal((await call('GET', '/kyc/submissions', 'tech')).status, 403);
             assert.equal((await call('PUT', '/settings', 'wa', { body: {} })).status, 403, 'changing settings needs the Settings area');
-            assert.deepEqual((await call('GET', '/team/me', 'wa')).data, { enforced: true, super_admin: false, permissions: ['whatsapp'], email: EMAIL.wa, company_email: 'boss@sudarshan.in' });
+            assert.deepEqual((await call('GET', '/team/me', 'wa')).data, { enforced: true, super_admin: false, customer: false, permissions: ['whatsapp'], email: EMAIL.wa, company_email: 'boss@sudarshan.in' });
         });
 
         await check('changes apply at once; removing access → back to nothing', async () => {

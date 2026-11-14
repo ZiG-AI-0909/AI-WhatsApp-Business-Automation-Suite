@@ -123,6 +123,40 @@ async function main() {
     await billing.setAccount(PAYER, { required: false, amount: 999 });
     assert.equal((await guard(PAYER)).blocked, false);
 
+    // ── Customers outside the company ──
+    const OUTSIDER = '44444444-4444-4444-4444-444444444444';
+    const STAFF = '55555555-5555-5555-5555-555555555555';
+    billing.clearCache();
+    // No default price yet: an unpriced outsider is not a customer (old behaviour).
+    assert.deepEqual(await billing.customerStatus(OUTSIDER, { isMember: false }), { customer: false, blocked: false });
+    await billing.setDefaultAmount(499, 'boss@example.com');
+    // Outsider (no team area) → customer, blocked until paid, at the default price.
+    assert.deepEqual(await billing.customerStatus(OUTSIDER, { isMember: false }), { customer: true, blocked: true });
+    assert.equal((await billing.getStatus(OUTSIDER, { customer: true })).amount, 499);
+    // Company staff (has a team area, not ticked) → free.
+    assert.deepEqual(await billing.customerStatus(STAFF, { isMember: true }), { customer: false, blocked: false });
+    // Ticked staff becomes a customer even with a team area.
+    await billing.setAccount(PAYER, { required: true, amount: 100 });
+    assert.equal((await billing.customerStatus(PAYER, { isMember: true })).customer, true);
+    // Outsider pays the default price: order creates their row, then they are unblocked.
+    const o4 = await billing.createOrder(OUTSIDER, 'outsider@example.com', { customer: true });
+    assert.equal(o4.amount, 49900);
+    await billing.verifyPayment(OUTSIDER, { razorpay_order_id: o4.orderId, razorpay_payment_id: 'pay_4', razorpay_signature: sign(o4.orderId, 'pay_4') });
+    assert.deepEqual(await billing.customerStatus(OUTSIDER, { isMember: false }), { customer: true, blocked: false });
+    const paidUntil = new Date((await billing.getStatus(OUTSIDER, { customer: true })).paidUntil);
+    assert.equal(paidUntil.toISOString(), addMonths(new Date(tables.billing_payments.find(p => p.razorpay_order_id === o4.orderId).period_start)).toISOString(), 'paid until the same date next month');
+    // Guard trusts the access decision for customers.
+    const blockedReq = await new Promise(resolve => {
+        const res = { status(c) { this.c = c; return this; }, json(b) { resolve(this.c); } };
+        requireActiveSubscription({ user: { authId: OUTSIDER }, access: { customer: true, paid: false } }, res, () => resolve('next'));
+    });
+    assert.equal(blockedReq, 402);
+
+    // Customers always work on their own data, never the company's.
+    const { dataOwnerFor } = require('../../security/teamAccess');
+    assert.equal(dataOwnerFor({ enforced: true, customer: true, companyOwnerId: BOSS, permissions: ['whatsapp'] }, OUTSIDER), OUTSIDER);
+    assert.equal(dataOwnerFor({ enforced: true, customer: false, companyOwnerId: BOSS, permissions: ['whatsapp'] }, STAFF), BOSS);
+
     console.log('billing-smoke: all checks passed');
 }
 

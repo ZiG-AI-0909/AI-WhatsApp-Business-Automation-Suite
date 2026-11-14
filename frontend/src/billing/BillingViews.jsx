@@ -81,8 +81,8 @@ export function PayScreen({ billing, onPaid, businessName }) {
   }
   return <section className="panel empty-state-panel" aria-labelledby="pay-title">
     <Icon name="lock" size={32} />
-    <h2 id="pay-title">Subscription due</h2>
-    <p className="muted-copy">The automation (WhatsApp, campaigns, email campaigns) is paused for your account until this month's subscription is paid. Your contacts and campaigns are safe.</p>
+    <h2 id="pay-title">{billing.customer && !billing.paidUntil ? 'Subscribe to start' : 'Subscription due'}</h2>
+    <p className="muted-copy">{billing.customer && !billing.paidUntil ? 'Subscribe to use the WhatsApp and email automation. You get your own private workspace — connect your own WhatsApp and email account after paying.' : 'The automation (WhatsApp, campaigns, email campaigns) is paused for your account until this month’s subscription is paid. Your contacts and campaigns are safe.'}</p>
     <p><strong style={{ fontSize: '1.6rem' }}>{rupees(billing.amount)}</strong> <span className="muted-copy">/ month</span></p>
     {billing.paidUntil && <p className="muted-copy">Your last subscription ended on {day(billing.paidUntil)}.</p>}
     {notice.text && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
@@ -90,6 +90,28 @@ export function PayScreen({ billing, onPaid, businessName }) {
       ? <button type="button" className="primary-btn" onClick={pay} disabled={busy}>{busy ? 'Opening payment…' : `Pay ${rupees(billing.amount)} with UPI / card`}</button>
       : <p className="muted-copy">Online payment is not switched on yet. Please contact your administrator to pay.</p>}
     <small className="muted-copy">Payments are handled securely by Razorpay. Each payment adds one month.</small>
+  </section>
+}
+
+function DefaultPrice({ initial, onSaved }) {
+  const [value, setValue] = useState(initial ? String(initial) : '')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState({ type: '', text: '' })
+  const save = async () => {
+    setBusy(true); setNote({ type: '', text: '' })
+    try {
+      await apiFetch('/billing/default-price', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: Number(value) || 0 }) })
+      setNote({ type: 'success', text: Number(value) > 0 ? `New sign-ups now pay ${rupees(value)} a month before they can use the automation.` : 'New sign-ups are no longer charged automatically.' })
+      onSaved?.()
+    } catch (error) { setNote({ type: 'error', text: friendlyErrorMessage(error, { context: 'Saving the default price' }) }) } finally { setBusy(false) }
+  }
+  return <section className="panel">
+    <div className="panel-header"><div><h2>Price for new customers</h2><p className="muted-copy">Anyone who signs up and is not company staff pays this every month. Set 0 to turn it off. You can still give a person their own price in the list below.</p></div></div>
+    <div className="button-row">
+      <label className="form-label">Monthly price (₹)<input type="number" min="0" step="1" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 999" style={{ maxWidth: 160 }} /></label>
+      <button type="button" className="primary-btn" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save price'}</button>
+    </div>
+    {note.text && <div className={`notice ${note.type}`} role="status">{note.text}</div>}
   </section>
 }
 
@@ -144,8 +166,9 @@ export function SubscriptionsView() {
     <div>
       <p className="eyebrow">Setup</p>
       <h2>Subscriptions</h2>
-      <p className="muted-copy">Tick the accounts that must pay a monthly subscription and set their price. Until they pay, their WhatsApp, campaign and email automation is paused. Everyone else stays free.</p>
+      <p className="muted-copy">Customers outside the company pay a monthly subscription. Until they pay they only see the subscription page; after paying they work in their own workspace and never see company data. Company staff (given areas in Team &amp; access and not ticked here) use the app free.</p>
     </div>
+    <DefaultPrice initial={data.defaultAmount} onSaved={load} />
     {!data.canPayOnline && <div className="notice warning">Online payment is off: add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to the server settings. You can still use "Mark paid" for cash or bank payments.</div>}
     {notice.text && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
     <section className="panel">

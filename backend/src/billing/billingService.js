@@ -18,8 +18,11 @@ const { superAdminEmails } = require('../security/teamAccess');
 
 const ACCOUNTS = 'billing_accounts';
 const PAYMENTS = 'billing_payments';
+const SETTINGS = 'billing_settings';
 const CACHE_MS = 60 * 1000;
 const statusCache = new Map(); // authId -> { at, status }
+const customerCache = new Map(); // authId -> { at, isMember, result }
+let defaultCache = null; // { at, amountPaise }
 
 class BillingError extends Error {
     constructor(message, statusCode = 400, code = 'BILLING_ERROR') {
@@ -97,7 +100,69 @@ class BillingService {
     }
 
     clearCache(authId) {
-        if (authId) statusCache.delete(authId); else statusCache.clear();
+        if (authId) { statusCache.delete(authId); customerCache.delete(authId); } else { statusCache.clear(); customerCache.clear(); }
+        const { clearTeamCache } = require('../security/teamAccess');
+        clearTeamCache();
+    }
+
+    /** Default monthly price (paise) for customers with no price of their own. */
+    async getDefaultAmountPaise() {
+        if (defaultCache && Date.now() - defaultCache.at < CACHE_MS) return defaultCache.amountPaise;
+        let amountPaise = 0;
+        try {
+            const [row] = await db.select(SETTINGS, 'default_amount_paise', 'id = ?', [1], '', 1, 0);
+            amountPaise = Number(row?.default_amount_paise) || 0;
+        } catch (error) {
+            // Table not created yet → no default price.
+            if (!/billing_settings|42P01|PGRST205/i.test(`${error?.code} ${error?.message}`)) throw error;
+        }
+        defaultCache = { at: Date.now(), amountPaise };
+        return amountPaise;
+    }
+
+    async setDefaultAmount(amount, actorEmail) {
+        const value = Number(amount);
+        if (!(value >= 0) || value > 1000000) throw new BillingError('Enter a valid monthly price.');
+        const paise = Math.round(value * 100);
+        try {
+            const existing = await db.select(SETTINGS, 'id', 'id = ?', [1], '', 1, 0);
+            const data = { default_amount_paise: paise, updated_at: new Date(), updated_by_email: actorEmail || null };
+            if (existing.length) await db.update(SETTINGS, data, 'id = ?', [1]);
+            else await db.insert(SETTINGS, { id: 1, ...data });
+        } catch (error) {
+            if (/billing_settings|42P01|PGRST205/i.test(`${error?.code} ${error?.message}`)) {
+                throw new BillingError('Run supabase-billing-customers-migration.sql in Supabase first.', 503, 'BILLING_MIGRATION_PENDING');
+            }
+            throw error;
+        }
+        defaultCache = null;
+        this.clearCache();
+        return { defaultAmount: paise / 100 };
+    }
+
+    /**
+     * Is this account a paying customer (outside the company), and has it paid?
+     * Customer = ticked "Must pay", or not a company team member at all while a
+     * default price is set. Company staff (team members, not ticked) are free.
+     */
+    async customerStatus(authId, { isMember = false } = {}) {
+        const cached = customerCache.get(authId);
+        if (cached && cached.isMember === isMember && Date.now() - cached.at < CACHE_MS) return cached.result;
+        let result = { customer: false, blocked: false };
+        try {
+            const row = await this._account(authId);
+            const ticked = Boolean(row?.required) && Number(row?.amount_paise) > 0;
+            const defaulted = !ticked && !isMember && !row && (await this.getDefaultAmountPaise()) > 0;
+            if (ticked || defaulted) {
+                const status = await this.getStatus(authId, { customer: true });
+                result = { customer: true, blocked: status.blocked };
+            }
+        } catch (error) {
+            // Billing not installed: nobody is a customer (previous behaviour).
+            if (error.code !== 'BILLING_MIGRATION_PENDING') console.error('[billing] customer check failed:', error.message);
+        }
+        customerCache.set(authId, { at: Date.now(), isMember, result });
+        return result;
     }
 
     async _account(authId) {
@@ -108,8 +173,13 @@ class BillingService {
     }
 
     /** What the signed-in account sees about its own subscription. */
-    async getStatus(authId, { now = new Date() } = {}) {
-        const row = await this._account(authId);
+    async getStatus(authId, { now = new Date(), customer = false } = {}) {
+        let row = await this._account(authId);
+        // A customer nobody has priced yet pays the default monthly price.
+        if (customer && !row?.required) {
+            const def = await this.getDefaultAmountPaise();
+            if (def > 0) row = { ...(row || {}), required: true, amount_paise: def };
+        }
         const required = Boolean(row?.required) && Number(row?.amount_paise) > 0;
         const paidUntil = row?.paid_until ? new Date(row.paid_until) : null;
         const active = !required || (paidUntil && paidUntil > now);
@@ -157,7 +227,7 @@ class BillingService {
                 paid: Boolean(paidUntil && paidUntil > now),
             };
         });
-        return { accounts, canPayOnline: Boolean(keys().keyId && keys().keySecret) };
+        return { accounts, defaultAmount: (await this.getDefaultAmountPaise()) / 100, canPayOnline: Boolean(keys().keyId && keys().keySecret) };
     }
 
     async setAccount(userId, { required, amount }, actorEmail) {
@@ -210,10 +280,19 @@ class BillingService {
 
     // ─── paying ───────────────────────────────────────────────
 
-    async createOrder(authId, email) {
+    async createOrder(authId, email, { customer = false } = {}) {
         const { keyId, keySecret } = keys();
         if (!keyId || !keySecret) throw new BillingError('Online payment is not set up yet. Please contact the administrator to pay.', 503, 'BILLING_NOT_CONFIGURED');
-        const account = await this._account(authId);
+        let account = await this._account(authId);
+        if (customer && !account?.required) {
+            const def = await this.getDefaultAmountPaise();
+            if (def > 0) {
+                const data = { email: email || null, required: true, amount_paise: def, updated_at: new Date() };
+                if (account) await db.update(ACCOUNTS, data, 'user_id = ?', [authId]);
+                else await db.insert(ACCOUNTS, { user_id: authId, ...data });
+                account = await this._account(authId);
+            }
+        }
         if (!account?.required || !(Number(account.amount_paise) > 0)) throw new BillingError('Your account does not need a subscription.');
 
         let order;
@@ -301,7 +380,7 @@ function requireActiveSubscription(req, res, next) {
     if (isSuperAdmin(req)) return next();
     const authId = req.user?.authId;
     if (!authId) return next();
-    service.isBlocked(authId)
+    (req.access?.customer ? Promise.resolve(!req.access.paid) : service.isBlocked(authId))
         .then(blocked => {
             if (!blocked) return next();
             res.status(402).json({ error: 'Your monthly subscription is due. Please pay to continue using the automation.', code: 'PAYMENT_REQUIRED' });

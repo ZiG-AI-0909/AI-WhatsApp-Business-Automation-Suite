@@ -21,6 +21,9 @@ const { supabase, isAvailable } = require('../database/supabaseClient');
 
 const MODULES = ['whatsapp', 'documents', 'proforma', 'ask_ai', 'vendor_kyc', 'technicians', 'storage', 'settings'];
 const KYC_STAFF_MODULES = new Set(['vendor_kyc', 'technicians', 'storage']);
+// What a paid customer may open: the automation, in their own workspace,
+// plus Settings so they can connect their own email / WhatsApp / AI keys.
+const CUSTOMER_MODULES = ['whatsapp', 'settings'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Changes made on the screen apply at once (the cache is cleared); this
 // only bounds how long another server instance may use an older answer.
@@ -98,8 +101,18 @@ async function loadAccess(authUserId, email) {
     const envSuperAdmin = superAdminEmails().includes(String(email || '').toLowerCase());
     const row = UUID.test(String(authUserId || '')) ? await memberRow(authUserId) : null;
     const superAdmin = envSuperAdmin || Boolean(row?.is_super_admin);
+    if (!superAdmin) {
+        // Paying customers (outside the company) never see company data: they
+        // work in their own workspace, and only once their subscription is paid.
+        const billing = require('../billing/billingService');
+        const customer = await billing.customerStatus(authUserId, { isMember: Boolean(row?.permissions?.length) });
+        if (customer.customer) {
+            return { enforced: true, superAdmin: false, envSuperAdmin: false, customer: true, paid: !customer.blocked,
+                permissions: customer.blocked ? [] : [...CUSTOMER_MODULES], companyOwnerId: settings.companyOwnerId };
+        }
+    }
     const permissions = superAdmin ? [...MODULES] : MODULES.filter((module) => (row?.permissions || []).includes(module));
-    return { enforced: true, superAdmin, envSuperAdmin, permissions, companyOwnerId: settings.companyOwnerId };
+    return { enforced: true, superAdmin, envSuperAdmin, customer: false, permissions, companyOwnerId: settings.companyOwnerId };
 }
 
 /**
@@ -107,6 +120,7 @@ async function loadAccess(authUserId, email) {
  * workspace for anyone with access; their own (empty) data otherwise.
  */
 function dataOwnerFor(access, authUserId) {
+    if (access?.customer) return authUserId; // customers: always their own data
     if (!access?.enforced || !access.companyOwnerId) return authUserId;
     return access.superAdmin || access.permissions.length ? access.companyOwnerId : authUserId;
 }
@@ -158,6 +172,7 @@ function requireSuperAdmin(req, res, next) {
 
 module.exports = {
     MODULES,
+    CUSTOMER_MODULES,
     AREA_LABELS,
     superAdminEmails,
     clearTeamCache,
