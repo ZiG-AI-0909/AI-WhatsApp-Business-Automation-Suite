@@ -129,6 +129,19 @@ publicRouter.get('/unsubscribe/:token', (req, res) => {
     res.type('html').send(page('Unsubscribe', 'Press the button to stop receiving these emails.'
         + `<form method="post" action="${token}" style="margin-top:20px"><button type="submit" style="background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer">Unsubscribe me</button></form>`));
 });
+// Campaign pictures (signed link, so only images actually sent are reachable).
+publicRouter.get('/image/:campaignId/:index/:sig', async (req, res) => {
+    try {
+        const image = await emailCampaignService.getImage(req.params.campaignId, req.params.index, req.params.sig);
+        if (!image) return res.status(404).end();
+        res.set('Cache-Control', 'public, max-age=31536000, immutable');
+        res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.type(image.contentType).send(image.buffer);
+    } catch (error) {
+        console.error('[email-image]', error.message);
+        res.status(500).end();
+    }
+});
 // The button above, and one-click unsubscribe from mail apps (RFC 8058).
 publicRouter.post('/unsubscribe/:token', handleUnsubscribe);
 

@@ -6,7 +6,7 @@ import Icon from './components/Icon.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bulk email campaigns — the email twin of WhatsApp Campaigns. Sends for free
-// through the user's own Gmail / Outlook / Zoho account (Settings → Email).
+// through Brevo's free plan (or the user's own mail server on paid hosting).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_BODY = `Hello {{name}},
@@ -61,7 +61,7 @@ export default function EmailCampaignsView({ onNavigate }) {
   const [subject, setSubject] = useState('Special offer for {{name}}')
   const [body, setBody] = useState(DEFAULT_BODY)
   const [delaySeconds, setDelaySeconds] = useState('5')
-  const [dailyLimit, setDailyLimit] = useState('400')
+  const [dailyLimit, setDailyLimit] = useState('300')
   const [previews, setPreviews] = useState([])
   const [previewIndex, setPreviewIndex] = useState(0)
   const [images, setImages] = useState([])
@@ -237,15 +237,15 @@ export default function EmailCampaignsView({ onNavigate }) {
     <div>
       <p className="eyebrow">Email</p>
       <h2>Bulk email campaigns</h2>
-      <p className="muted-copy">Send a personalised email to your whole customer list — free, from your own Gmail or business email account.</p>
+      <p className="muted-copy">Send a personalised email to your whole customer list — free, through your Brevo account.</p>
     </div>
 
     {sender && !sender.ready && <div className="notice warning">
-      <strong>Connect your email account first.</strong> In Settings → Email, enter your Gmail address and a Gmail App Password. It is free and takes two minutes.{' '}
+      <strong>Connect your email account first.</strong> Press Settings at the top of this page and add your free Brevo API key and sender email. It takes a few minutes.{' '}
       <button type="button" onClick={() => onNavigate?.('Settings')}>Open Settings</button>
     </div>}
     {sender?.ready && <div className="notice info">
-      Sending from <strong>{sender.smtp?.user}</strong>. Free Gmail accounts can send about 500 emails a day; larger lists continue automatically the next day.
+      Sending from <strong>{sender.smtp?.user}</strong>. The free Brevo plan sends 300 emails a day; larger lists continue automatically the next day.
     </div>}
     {notice.text && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
 
@@ -303,7 +303,7 @@ export default function EmailCampaignsView({ onNavigate }) {
           <legend><span className="step-index" aria-hidden="true">3</span>Sending speed</legend>
           <div className="settings-grid">
             <label className="form-label">Seconds between emails<input type="number" min="2" max="120" value={delaySeconds} onChange={(e) => setDelaySeconds(e.target.value)} /><small>A short gap looks natural and keeps your account safe.</small></label>
-            <label className="form-label">Most emails per 24 hours<input type="number" min="1" max="10000" value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} /><small>Gmail: keep under 500. Google Workspace: under 2000.</small></label>
+            <label className="form-label">Most emails per 24 hours<input type="number" min="1" max="10000" value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} /><small>Free Brevo plan: 300 a day.</small></label>
           </div>
           {estimate && <p className="muted-copy">{recipientCount > Number(dailyLimit) ? `First ${dailyLimit} emails take ${estimate}; the rest continue automatically after 24 hours.` : `Sending all ${recipientCount} emails takes ${estimate}.`}</p>}
         </fieldset>

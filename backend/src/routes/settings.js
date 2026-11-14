@@ -36,6 +36,8 @@ const fieldKeys = {
     SMTP_USER: 'smtpUser',
     SMTP_PASS: 'smtpPass',
     SMTP_FROM_NAME: 'smtpFromName',
+    // Free HTTPS email API — works where SMTP ports are blocked (Render free).
+    BREVO_API_KEY: 'brevoApiKey',
     // Default country code for phone normalization on new contacts
     // (Excel uploads without a per-upload override, manual contact creation).
     DEFAULT_COUNTRY_CODE: 'defaultCountryCode',

@@ -190,6 +190,10 @@ function tokenSecret() {
     return process.env.EMAIL_UNSUBSCRIBE_SECRET || process.env.ENCRYPTION_KEY || 'email-unsubscribe-dev-secret';
 }
 
+function imageSignature(campaignId, index) {
+    return crypto.createHmac('sha256', tokenSecret()).update(`img:${campaignId}:${index}`).digest('base64url').slice(0, 24);
+}
+
 function unsubscribeToken(userId, email) {
     const payload = Buffer.from(`${userId}\n${email}`).toString('base64url');
     const sig = crypto.createHmac('sha256', tokenSecret()).update(payload).digest('base64url').slice(0, 32);
@@ -529,6 +533,18 @@ class EmailCampaignService {
         return { success: true };
     }
 
+    /** A campaign picture for the public, signed image link. */
+    async getImage(campaignId, index, signature) {
+        const i = Number(index);
+        const id = Number(campaignId);
+        if (!Number.isInteger(i) || !Number.isInteger(id)) return null;
+        const expected = imageSignature(id, i);
+        if (String(signature).length !== expected.length || !crypto.timingSafeEqual(Buffer.from(String(signature)), Buffer.from(expected))) return null;
+        const [campaign] = await db.select(CAMPAIGNS, 'settings', 'id = ?', [id], '', 1, 0);
+        const img = campaign?.settings?.images?.[i];
+        return img ? { contentType: img.contentType, buffer: Buffer.from(img.data, 'base64') } : null;
+    }
+
     async unsubscribe(token) {
         const parsed = readUnsubscribeToken(token);
         if (!parsed) return false;
@@ -639,11 +655,17 @@ class EmailCampaignService {
             await db.update(RECIPIENTS, { status: 'sending', attempts: (recipient.attempts || 0) + 1 }, 'id = ?', [recipient.id]);
             const unsubscribeUrl = baseUrl ? `${baseUrl}/api/public/email/unsubscribe/${unsubscribeToken(userId, recipient.email)}` : null;
             const images = Array.isArray(campaign.settings?.images) ? campaign.settings.images : [];
-            const html = wrapHtml(recipient.rendered_body + imagesHtml(images, (_img, i) => `cid:img${i}@campaign`), unsubscribeUrl);
+            // With a public server address, pictures load from a signed link
+            // (works with every provider, keeps emails small). Otherwise they
+            // travel inside the email as inline attachments.
+            const useLinks = Boolean(baseUrl) && images.length > 0;
+            const html = wrapHtml(recipient.rendered_body + imagesHtml(images, (_img, i) => (useLinks
+                ? `${baseUrl}/api/public/email/image/${id}/${i}/${imageSignature(id, i)}`
+                : `cid:img${i}@campaign`)), unsubscribeUrl);
             const headers = unsubscribeUrl ? { 'List-Unsubscribe': `<${unsubscribeUrl}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : undefined;
 
             try {
-                const result = await emailSender.send(userId, { to: recipient.email, subject: recipient.rendered_subject, html, text: htmlToText(html), headers, attachments: inlineAttachments(images) });
+                const result = await emailSender.send(userId, { to: recipient.email, subject: recipient.rendered_subject, html, text: htmlToText(html), headers, attachments: useLinks ? [] : inlineAttachments(images) });
                 await db.update(RECIPIENTS, { status: 'sent', sent_at: new Date(), message_id: result.messageId, error: null }, 'id = ?', [recipient.id]);
                 consecutiveFailures = 0;
             } catch (error) {
@@ -672,5 +694,5 @@ class EmailCampaignService {
 
 module.exports = new EmailCampaignService();
 Object.assign(module.exports, {
-    _internals: { renderEmail, htmlToText, buildRecipients, parsePasted, unsubscribeToken, readUnsubscribeToken, normalizeSettings, isValidEmail, runners },
+    _internals: { renderEmail, htmlToText, buildRecipients, parsePasted, unsubscribeToken, readUnsubscribeToken, imageSignature, normalizeSettings, isValidEmail, runners },
 });

@@ -208,6 +208,48 @@ async function main() {
     await service.sendTest(USER, 'me@x.com', { subject: 's', body: 'b', images });
     assert.equal(sent.at(-1).attachments.length, 1);
 
+    // 9c. Brevo (HTTPS) route: chosen once its key is saved; pictures become signed links.
+    tables.app_settings.push({ user_id: USER, key: 'BREVO_API_KEY', value: require('../../utils/encryption').encryptSettingIfSecret('BREVO_API_KEY', 'xkeysib-test') });
+    const brevoCalls = [];
+    emailSender._brevoRequest = async (method, path, apiKey, data) => {
+        brevoCalls.push({ method, path, apiKey, data });
+        if (data?.to?.[0]?.email === 'unverified@x.com') throw Object.assign(new Error('400'), { response: { status: 400, data: { code: 'invalid_parameter', message: 'Sender is not valid. Please validate your sender' } } });
+        return { messageId: `<b${brevoCalls.length}@brevo>` };
+    };
+    const cfg = await emailSender.getConfig(USER);
+    assert.equal(cfg.provider, 'brevo'); assert.equal(cfg.ready, true);
+    await emailSender.verify(USER);
+    assert.equal(brevoCalls.at(-1).path, '/account');
+    const smtpBefore = sent.length;
+    const brevoCampaign = await service.create(USER, { name: 'Brevo', subject: 'Hi {{name}}', body: 'Offer', recipients: [{ email: 'b@x.com', name: 'Bina' }], images });
+    tables.email_campaigns.find(c => c.id === brevoCampaign.id).settings.delaySeconds = 2;
+    await service.start(brevoCampaign.id, USER, { publicBaseUrl: 'https://api.example.com' });
+    await waitFor(async () => (await service.get(brevoCampaign.id, USER)).status === 'completed');
+    assert.equal(sent.length, smtpBefore, 'nothing went over SMTP');
+    const call = brevoCalls.at(-1);
+    assert.equal(call.path, '/smtp/email'); assert.equal(call.apiKey, 'xkeysib-test');
+    assert.deepEqual(call.data.sender, { email: 'shop@gmail.com', name: 'Sudarshan Pipes' });
+    assert.equal(call.data.to[0].email, 'b@x.com'); assert.equal(call.data.subject, 'Hi Bina');
+    assert.equal(call.data.attachment, undefined, 'pictures go by link, not attachment');
+    const link = call.data.htmlContent.match(/https:\/\/api\.example\.com\/api\/public\/email\/image\/(\d+)\/0\/([\w-]+)/);
+    assert.ok(link, 'picture link in email');
+    const served = await service.getImage(link[1], 0, link[2]);
+    assert.equal(served.contentType, 'image/png');
+    assert.equal(served.buffer.toString('base64'), png);
+    assert.equal(await service.getImage(link[1], 0, 'forged-signature-xxxxxxx'), null);
+    assert.ok(call.data.headers['List-Unsubscribe']);
+    // Test email via Brevo: cid pictures become plain attachments.
+    await service.sendTest(USER, 'me@x.com', { subject: 's', body: 'b', images });
+    assert.equal(brevoCalls.at(-1).data.attachment.length, 1);
+    assert.ok(!brevoCalls.at(-1).data.htmlContent.includes('cid:'));
+    // Unverified sender pauses with a plain explanation.
+    const bad = await service.create(USER, { name: 'Bad', subject: 's', body: 'b', recipients: [{ email: 'unverified@x.com' }] });
+    tables.email_campaigns.find(c => c.id === bad.id).settings.delaySeconds = 2;
+    await service.start(bad.id, USER);
+    await waitFor(async () => (await service.get(bad.id, USER)).status === 'paused');
+    assert.match((await service.get(bad.id, USER)).last_error, /not verified in Brevo/);
+    tables.app_settings = tables.app_settings.filter(r => r.key !== 'BREVO_API_KEY');
+
     // 10. Ownership + stop + delete.
     assert.equal(await service.get(third.id, OTHER), null);
     await assert.rejects(service.delete(third.id, OTHER), /not found/);

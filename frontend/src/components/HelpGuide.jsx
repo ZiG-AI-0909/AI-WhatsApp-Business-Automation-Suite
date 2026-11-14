@@ -29,12 +29,13 @@ const SECTIONS = [
     title: '3. Send a bulk email',
     view: 'Email Campaigns',
     steps: [
-      { text: 'One time: turn on 2-Step Verification for your Google account.', link: 'https://myaccount.google.com/signinoptions/twosv', label: 'Turn on 2-Step Verification' },
-      { text: 'Create a Gmail App Password.', link: 'https://myaccount.google.com/apppasswords', label: 'Create App Password' },
-      'In Settings → Email, enter your Gmail address and the App Password, save, and press "Test email account".',
+      { text: 'One time: create a free Brevo account (300 emails a day).', link: 'https://onboarding.brevo.com/account/register', label: 'Create Brevo account' },
+      { text: 'Add your sender email in Brevo and click the link Brevo emails you.', link: 'https://app.brevo.com/senders/list', label: 'Brevo senders' },
+      { text: 'Create a Brevo API key.', link: 'https://app.brevo.com/settings/keys/api', label: 'Brevo API keys' },
+      'In Email campaigns, press Settings, paste the API key and your sender email, then press "Save & send test email".',
       'Open "Email campaigns". Upload an Excel/CSV file with an "Email" column, or paste addresses.',
       'Write the subject and message, add pictures if you like, check the preview, and press "Send a test to me".',
-      'Press "Start sending". Free Gmail sends about 500 a day — bigger lists continue by themselves the next day.',
+      'Press "Start sending". The free Brevo plan sends 300 a day — bigger lists continue by themselves the next day.',
     ],
   },
   {

@@ -27,6 +27,7 @@ const SECRET_SETTING_KEYS = new Set([
     'AI_API_KEY',
     'RESEND_API_KEY',
     'SMTP_PASS',
+    'BREVO_API_KEY',
     'WABA_ACCESS_TOKEN',
     'APP_SECRET',
     'WEBHOOK_VERIFY_TOKEN',

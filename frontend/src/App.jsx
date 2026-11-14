@@ -35,6 +35,7 @@ import ThemeToggle from './components/ThemeToggle.jsx'
 import ThemeChoice from './components/ThemeChoice.jsx'
 import Modal from './components/Modal.jsx'
 import HelpGuide from './components/HelpGuide.jsx'
+import PageSettings, { PAGE_SETTINGS } from './components/PageSettings.jsx'
 import SkeletonPanel from './components/Skeleton.jsx'
 import { COUNTRIES } from './countries.js'
 
@@ -1568,7 +1569,7 @@ const smtpFormFrom = (settings) => ({
 
 function SettingsView({ userEmail }) {
   const [settings, setSettings] = useState(null)
-  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91', smtpUser: '', smtpPass: '', smtpFromName: '', smtpHost: '', smtpPort: '' })
+  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91', smtpUser: '', smtpPass: '', smtpFromName: '', smtpHost: '', smtpPort: '', brevoApiKey: '' })
   const [showKey, setShowKey] = useState(false)
   const [showResendKey, setShowResendKey] = useState(false)
   const [showSmtpPass, setShowSmtpPass] = useState(false)
@@ -1580,17 +1581,17 @@ function SettingsView({ userEmail }) {
   const [testing, setTesting] = useState(false)
   useEffect(() => { apiFetch('/settings').then(setSettings).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
   useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, companyAddress: settings.business.address || '', companyState: settings.business.state || '', companyGstin: settings.business.gstin || '', companyPhone: settings.business.phone || '', companyEmail: settings.business.email || '', companyLogo: settings.business.logo || '', companyBankDetails: settings.business.bankDetails || '', defaultCountryCode: settings.defaultCountryCode || '91', resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '', ...smtpFormFrom(settings) })) }, [settings])
-  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, companyAddress: updated.business.address || '', companyState: updated.business.state || '', companyGstin: updated.business.gstin || '', companyPhone: updated.business.phone || '', companyEmail: updated.business.email || '', companyLogo: updated.business.logo || '', companyBankDetails: updated.business.bankDetails || '', defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '', ...smtpFormFrom(updated), smtpPass: '' })); setShowKey(false); setShowResendKey(false); setShowSmtpPass(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, companyAddress: updated.business.address || '', companyState: updated.business.state || '', companyGstin: updated.business.gstin || '', companyPhone: updated.business.phone || '', companyEmail: updated.business.email || '', companyLogo: updated.business.logo || '', companyBankDetails: updated.business.bankDetails || '', defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '', ...smtpFormFrom(updated), smtpPass: '', brevoApiKey: '' })); setShowKey(false); setShowResendKey(false); setShowSmtpPass(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
   const testSmtp = async () => {
     setSmtpTesting(true); setSmtpNotice({ type: '', text: '' })
     try {
       // Save the email fields first, so "Test" works without scrolling to Save.
-      const emailFields = Object.fromEntries(['smtpUser', 'smtpPass', 'smtpFromName', 'smtpHost', 'smtpPort']
+      const emailFields = Object.fromEntries(['brevoApiKey', 'smtpUser', 'smtpPass', 'smtpFromName', 'smtpHost', 'smtpPort']
         .map((key) => [key, String(form[key] || '').trim()]).filter(([, value]) => value))
       if (Object.keys(emailFields).length) {
         const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(emailFields) })
         setSettings(updated)
-        setForm((current) => ({ ...current, smtpPass: '' }))
+        setForm((current) => ({ ...current, smtpPass: '', brevoApiKey: '' }))
         setShowSmtpPass(false)
       }
       const result = await apiFetch('/settings/email/smtp-test', { method: 'POST' })
@@ -1618,19 +1619,22 @@ function SettingsView({ userEmail }) {
         </div>
       </section>
       <section className="panel settings-panel">
-        <div className="panel-header"><h2>Email — free sending (Gmail / Outlook / Zoho)</h2><span className={`campaign-status ${settings.emailSending?.smtp?.ready ? 'running' : 'stopped'}`}>{settings.emailSending?.smtp?.ready ? 'Connected' : 'Not set up'}</span></div>
-        <p className="muted-copy">Bulk email campaigns send from your own mailbox at no cost (free Gmail ≈ 500 emails a day). For Gmail:</p>
+        <div className="panel-header"><h2>Email — free sending</h2><span className={`campaign-status ${settings.emailSending?.ready ? 'running' : 'stopped'}`}>{settings.emailSending?.ready ? (settings.emailSending?.provider === 'brevo' ? 'Connected (Brevo)' : 'Connected') : 'Not set up'}</span></div>
+        <p className="muted-copy">Bulk email is sent free through Brevo (300 emails a day). Set up once:</p>
         <ol className="muted-copy">
-          <li><a href="https://myaccount.google.com/signinoptions/twosv" target="_blank" rel="noreferrer">Turn on 2-Step Verification ↗</a></li>
-          <li><a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">Create an App Password ↗</a> and paste it below (not your normal password).</li>
+          <li><a href="https://onboarding.brevo.com/account/register" target="_blank" rel="noreferrer">Create a free Brevo account ↗</a></li>
+          <li><a href="https://app.brevo.com/senders/list" target="_blank" rel="noreferrer">Add your sender email in Brevo ↗</a> and click the confirmation link Brevo emails you.</li>
+          <li><a href="https://app.brevo.com/settings/keys/api" target="_blank" rel="noreferrer">Create an API key ↗</a> and paste it below.</li>
         </ol>
         <div className="settings-grid">
-          <label className="form-label">Your email address<input type="email" value={form.smtpUser} onChange={update('smtpUser')} placeholder="yourname@gmail.com" autoComplete="off" /></label>
-          <label className="form-label">App password<div className="input-with-action"><input type={showSmtpPass ? 'text' : 'password'} value={form.smtpPass} onChange={update('smtpPass')} placeholder={settings.emailSending?.smtp?.passwordSet ? 'Leave blank to keep current password' : 'abcd efgh ijkl mnop'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowSmtpPass(!showSmtpPass)}>{showSmtpPass ? 'Hide' : 'Show'}</button></div><small>Saved securely (encrypted).</small></label>
+          <label className="form-label">Brevo API key<div className="input-with-action"><input type={showSmtpPass ? 'text' : 'password'} value={form.brevoApiKey} onChange={update('brevoApiKey')} placeholder={settings.emailSending?.brevo?.keySet ? 'Leave blank to keep the current key' : 'xkeysib-...'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowSmtpPass(!showSmtpPass)}>{showSmtpPass ? 'Hide' : 'Show'}</button></div><small>Saved securely (encrypted).</small></label>
+          <label className="form-label">Sender email<input type="email" value={form.smtpUser} onChange={update('smtpUser')} placeholder="you@yourbusiness.com" autoComplete="off" /><small>Must be the address you verified in Brevo.</small></label>
           <label className="form-label">Sender name<input value={form.smtpFromName} onChange={update('smtpFromName')} placeholder="Your Business Name" /><small>What people see in their inbox.</small></label>
         </div>
-        <details><summary className="muted-copy">Other email providers (advanced)</summary>
+        <details><summary className="muted-copy">Send through my own mail server instead (needs a paid server plan)</summary>
+          <p className="muted-copy">Gmail / Outlook / Zoho login. This does not work on Render's free plan, which blocks mail-server connections. For Gmail: <a href="https://myaccount.google.com/signinoptions/twosv" target="_blank" rel="noreferrer">turn on 2-Step Verification ↗</a>, then <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">create an App Password ↗</a>. Leave the Brevo key empty to use this.</p>
           <div className="settings-grid">
+            <label className="form-label">App password<input type="password" value={form.smtpPass} onChange={update('smtpPass')} placeholder={settings.emailSending?.smtp?.passwordSet ? 'Leave blank to keep current password' : 'abcd efgh ijkl mnop'} autoComplete="new-password" /></label>
             <label className="form-label">Mail server<input value={form.smtpHost} onChange={update('smtpHost')} placeholder="Filled in automatically for Gmail, Outlook, Yahoo, Zoho" /></label>
             <label className="form-label">Port<input value={form.smtpPort} onChange={update('smtpPort')} placeholder="465 or 587" inputMode="numeric" /></label>
           </div>
@@ -2391,6 +2395,7 @@ function App() {
               </div>
             )}
             {activeView !== 'Dashboard' && activeView !== 'Storage' && <StorageBanner status={storage.status} onOpenStorage={openStorage} everywhere />}
+            {PAGE_SETTINGS[activeView] && can(activeView) && can('Settings') && !(billing?.blocked && PAID_VIEWS.has(activeView)) && <PageSettings key={activeView} view={activeView} />}
             {renderView()}
           </div>
           <footer className="page-footer">© {CURRENT_YEAR} Sudarshan Pipes &amp; Fittings · Online Portal</footer>

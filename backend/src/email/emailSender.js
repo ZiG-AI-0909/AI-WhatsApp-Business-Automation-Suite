@@ -8,6 +8,7 @@
 // Per-user credentials live in app_settings (SMTP_PASS is encrypted at
 // rest like every other secret). Env vars are a server-wide fallback.
 // =============================================================
+const axios = require('axios');
 const db = require('../database/db');
 const { decryptSettingIfSecret } = require('../utils/encryption');
 
@@ -18,6 +19,7 @@ const KEYS = {
     user: 'SMTP_USER',
     pass: 'SMTP_PASS',
     fromName: 'SMTP_FROM_NAME',
+    brevoKey: 'BREVO_API_KEY',
 };
 
 // Ready-made settings so a non-technical user only types email + app password.
@@ -69,13 +71,17 @@ class EmailSender {
         stored = stored || await loadStored(userId);
         const smtp = smtpConfigFrom(stored);
         const smtpReady = !!(smtp.host && smtp.user && smtp.pass);
-        // Bulk email sends through the user's own mailbox (free SMTP).
-        const provider = 'smtp';
-        const ready = smtpReady;
+        // Brevo (free, HTTPS) is used whenever its key is saved: hosts such as
+        // Render's free plan block SMTP ports, but never HTTPS.
+        const brevoKey = pick(stored, KEYS.brevoKey);
+        const brevoReady = !!(brevoKey && smtp.user);
+        const provider = brevoKey ? 'brevo' : 'smtp';
+        const ready = provider === 'brevo' ? brevoReady : smtpReady;
         return {
             provider,
             ready,
             smtp: { host: smtp.host, port: smtp.port, user: smtp.user, fromName: smtp.fromName, passwordSet: !!smtp.pass, ready: smtpReady },
+            brevo: { keySet: !!brevoKey, ready: brevoReady },
         };
     }
 
@@ -120,6 +126,9 @@ class EmailSender {
         }
 
         const smtp = smtpConfigFrom(stored);
+        if (config.provider === 'brevo') {
+            return this._sendBrevo(pick(stored, KEYS.brevoKey), smtp, { to, subject, html, text, headers, attachments });
+        }
         const from = smtp.fromName ? `"${smtp.fromName.replace(/"/g, '')}" <${smtp.user}>` : smtp.user;
         try {
             const info = await this._transportFor(userId, smtp).sendMail({ from, to, subject, html, text, headers, attachments });
@@ -129,8 +138,42 @@ class EmailSender {
         }
     }
 
+    /** Seam for tests. */
+    async _brevoRequest(method, path, apiKey, data) {
+        const response = await axios({ method, url: `https://api.brevo.com/v3${path}`, data, headers: { 'api-key': apiKey, accept: 'application/json' }, timeout: 30000 });
+        return response.data;
+    }
+
+    async _sendBrevo(apiKey, smtp, { to, subject, html, text, headers, attachments = [] }) {
+        // Brevo has no inline (cid) pictures: send any cid pictures as normal
+        // attachments and drop their <img> tags. Campaign emails use public
+        // picture links instead, so this only affects test emails.
+        const cleanHtml = String(html).replace(/<p><img src="cid:[^"]*"[^>]*><\/p>\n?/g, '');
+        const payload = {
+            sender: { email: smtp.user, ...(smtp.fromName ? { name: smtp.fromName } : {}) },
+            to: [{ email: to }],
+            subject,
+            htmlContent: cleanHtml,
+            textContent: text,
+            ...(headers ? { headers } : {}),
+            ...(attachments.length ? { attachment: attachments.map(a => ({ name: a.filename, content: Buffer.from(a.content).toString('base64') })) } : {}),
+        };
+        try {
+            const data = await this._brevoRequest('post', '/smtp/email', apiKey, payload);
+            return { messageId: data?.messageId || null };
+        } catch (error) {
+            throw classifyBrevoError(error);
+        }
+    }
+
     async verify(userId) {
         const stored = await loadStored(userId);
+        const brevoKey = pick(stored, KEYS.brevoKey);
+        if (brevoKey) {
+            try { await this._brevoRequest('get', '/account', brevoKey); } catch (error) { throw classifyBrevoError(error); }
+            if (!pick(stored, KEYS.user)) throw new Error('Add the email address you send from, then save.');
+            return;
+        }
         const smtp = smtpConfigFrom(stored);
         if (!(smtp.host && smtp.user && smtp.pass)) throw new Error('Add your email address and app password, then save, before testing.');
         try {
@@ -139,6 +182,38 @@ class EmailSender {
             throw classifySmtpError(error);
         }
     }
+}
+
+/** Turn Brevo API failures into plain-language messages. */
+function classifyBrevoError(error) {
+    const status = error?.response?.status || 0;
+    const raw = `${error?.response?.data?.message || ''} ${error?.response?.data?.code || ''} ${error?.message || ''}`;
+    let message = 'The email could not be sent. Please try again later.';
+    let fatal = false;
+    let permanent = false;
+    if (status === 401 || /key not found|unauthori[sz]ed|invalid api/i.test(raw)) {
+        message = 'Brevo did not accept your API key. Copy it again from Brevo → SMTP & API → API Keys.';
+        fatal = true;
+    } else if (/sender/i.test(raw) && /valid|verif|not.*(allowed|authori)/i.test(raw)) {
+        message = 'Your sender address is not verified in Brevo yet. In Brevo open Senders, add this email address and click the link Brevo emails you.';
+        fatal = true;
+    } else if (status === 402 || status === 429 || /credit|quota|limit|not enough/i.test(raw)) {
+        message = 'Your Brevo account has reached its sending limit for now (free plan: 300 emails a day). The campaign was paused — resume it later.';
+        fatal = true;
+    } else if (status === 403 || /not activated|suspend|blocked/i.test(raw)) {
+        message = 'Brevo has not activated sending on your account yet. Check your Brevo email or dashboard for what they need.';
+        fatal = true;
+    } else if (status === 400 && /email|recipient|to/i.test(raw)) {
+        message = 'This email address is not valid.';
+        permanent = true;
+    } else if (!status) {
+        message = 'Could not reach Brevo. Please try again in a minute.';
+        fatal = true;
+    }
+    const err = new Error(message);
+    err.fatal = fatal;
+    err.permanent = permanent;
+    return err;
 }
 
 /** Turn SMTP failures into plain-language messages (no codes on screen). */
@@ -170,5 +245,6 @@ function classifySmtpError(error) {
 module.exports = new EmailSender();
 module.exports.SMTP_PRESETS = SMTP_PRESETS;
 module.exports.classifySmtpError = classifySmtpError;
+module.exports.classifyBrevoError = classifyBrevoError;
 module.exports.smtpConfigFrom = smtpConfigFrom;
 module.exports._transports = transports;
