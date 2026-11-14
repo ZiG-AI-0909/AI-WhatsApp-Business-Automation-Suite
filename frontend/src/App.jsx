@@ -1584,6 +1584,15 @@ function SettingsView({ userEmail }) {
   const testSmtp = async () => {
     setSmtpTesting(true); setSmtpNotice({ type: '', text: '' })
     try {
+      // Save the email fields first, so "Test" works without scrolling to Save.
+      const emailFields = Object.fromEntries(['smtpUser', 'smtpPass', 'smtpFromName', 'smtpHost', 'smtpPort']
+        .map((key) => [key, String(form[key] || '').trim()]).filter(([, value]) => value))
+      if (Object.keys(emailFields).length) {
+        const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(emailFields) })
+        setSettings(updated)
+        setForm((current) => ({ ...current, smtpPass: '' }))
+        setShowSmtpPass(false)
+      }
       const result = await apiFetch('/settings/email/smtp-test', { method: 'POST' })
       setSmtpNotice({ type: 'success', text: result.message })
     } catch (error) {
@@ -1627,7 +1636,7 @@ function SettingsView({ userEmail }) {
           </div>
         </details>
         {smtpNotice.text && <div className={`notice ${smtpNotice.type} settings-test-notice`}>{smtpNotice.text}</div>}
-        <div className="button-row"><button type="button" className="secondary-btn" onClick={testSmtp} disabled={smtpTesting || busy}>{smtpTesting ? 'Sending test email...' : 'Test email account'}</button><small className="help-note">Save first, then send one test email to {userEmail || 'your account email'}.</small></div>
+        <div className="button-row"><button type="button" className="secondary-btn" onClick={testSmtp} disabled={smtpTesting || busy}>{smtpTesting ? 'Sending test email...' : 'Test email account'}</button><small className="help-note">Saves your email account and sends one test email to {userEmail || 'your account email'}.</small></div>
       </section>
       <section className="panel settings-panel">
         <div className="panel-header"><h2>Business information</h2></div>
