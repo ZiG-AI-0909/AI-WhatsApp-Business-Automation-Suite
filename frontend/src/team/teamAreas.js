@@ -3,7 +3,7 @@
 // (the server checks every request; this only shapes the menu).
 
 export const AREAS = [
-  { key: 'whatsapp', label: 'WhatsApp', note: 'Dashboard, Inbox, Campaigns, Contacts, Templates, Knowledge base, Analytics, connection status' },
+  { key: 'whatsapp', label: 'WhatsApp', note: 'Dashboard, Inbox, Campaigns, Email campaigns, Contacts, Templates, Knowledge base, Analytics, connection status' },
   { key: 'documents', label: 'Documents', note: 'BOQ & quotations, Image extractor' },
   { key: 'proforma', label: 'Proforma', note: 'Proforma invoice maker' },
   { key: 'ask_ai', label: 'Ask AI', note: 'Ask AI' },
@@ -22,6 +22,7 @@ export const VIEW_AREAS = {
   'WhatsApp Connection': ['whatsapp'],
   Inbox: ['whatsapp'],
   Campaigns: ['whatsapp'],
+  'Email Campaigns': ['whatsapp'],
   Contacts: ['whatsapp'],
   Templates: ['whatsapp'],
   'Knowledge Base': ['whatsapp'],

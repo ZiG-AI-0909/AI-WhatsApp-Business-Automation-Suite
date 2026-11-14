@@ -9,6 +9,7 @@ import StorageView from './StorageView.jsx'
 import { StorageBanner, StorageCard } from './storage/StorageAlerts.jsx'
 import useStorageStatus from './storage/useStorageStatus.js'
 import AskAiView from './AskAiView.jsx'
+import EmailCampaignsView from './EmailCampaignsView.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
 import TeamAccessView from './TeamAccessView.jsx'
@@ -45,6 +46,8 @@ const NAV_GROUPS = [
   // campaigns, contacts and templates, the knowledge base the automatic
   // WhatsApp replies draw on, and the message / campaign analytics.
   { title: 'WhatsApp', items: ['WhatsApp Connection', 'Inbox', 'Campaigns', 'Contacts', 'Templates', 'Knowledge Base', 'Analytics'] },
+  // Bulk email — sends free through the user's own Gmail / business mailbox.
+  { title: 'Email', items: ['Email Campaigns'] },
   { title: 'Documents', items: ['Document Intelligence', 'Image Extractor', 'Submitted Forms'] },
   // Its own entry for every signed-in user (no staff allowlist).
   { title: 'Export', items: ['Proforma Maker'] },
@@ -58,6 +61,7 @@ const NAV_META = {
   Analytics: { icon: 'chart' },
   Inbox: { icon: 'chat' },
   Campaigns: { icon: 'megaphone' },
+  'Email Campaigns': { icon: 'mail', label: 'Email campaigns' },
   Contacts: { icon: 'users' },
   Templates: { icon: 'file' },
   'Document Intelligence': { icon: 'clipboard', label: 'BOQ & quotations' },
@@ -1559,18 +1563,39 @@ function AnalyticsView({ onNavigate }) {
   return <div className="view-workspace"><div><p className="eyebrow">Performance overview</p><h2>Analytics</h2><p className="muted-copy">A compact view of customer activity, campaigns, and message flow.</p></div>{notice.text && <div className="notice error">{notice.text}</div>}<div className="stats-grid analytics-stats">{cards.map(([label, value, accent]) => <article className={`stat-card ${accent}`} key={label}><span>{label}</span><strong>{value || 0}</strong></article>)}</div><div className="analytics-grid"><section className="panel"><div className="panel-header"><h2>Message trend</h2><span className="file-note">Last 7 days</span></div><div className="trend-chart">{trend.length ? trend.map((item) => <div className="trend-day" key={item.date}><div className="trend-bars"><i className="inbound-bar" style={{ height: `${Math.max(4, ((item.inbound || 0) / maxValue) * 100)}%` }} /><i className="outbound-bar" style={{ height: `${Math.max(4, ((item.outbound || 0) / maxValue) * 100)}%` }} /></div><small>{item.date.slice(5)}</small><span>{item.inbound || 0} / {item.outbound || 0}</span></div>) : <EmptyState icon="📊" title="No message activity yet" description="Once conversations and campaigns start exchanging messages, daily trends will appear here." />}</div><div className="chart-legend"><span><i className="inbound-bar" /> Inbound</span><span><i className="outbound-bar" /> Outbound</span></div></section><section className="panel"><div className="panel-header"><h2>Recent messages</h2></div><ul className="list recent-message-list">{dashboard.recentMessages.map((message, index) => <li key={`${message.created_at}-${index}`}><div><strong>{message.name || message.phone}</strong><small>{message.body}</small></div><span className={`campaign-status ${message.direction === 'inbound' ? 'running' : 'completed'}`}>{message.direction}</span></li>)}</ul>{!dashboard.recentMessages.length && <EmptyState icon="✉️" title="No messages yet" description="Inbound and outbound messages will appear here once customers start chatting with you." />}</section></div><section className="panel"><div className="panel-header"><h2>Recent campaigns</h2></div><div className="campaign-table-wrap"><table><thead><tr><th>Campaign</th><th>Status</th><th>Sent</th><th>Failed</th><th>Replies</th><th>Opt-outs</th></tr></thead><tbody>{dashboard.recentCampaigns.map((campaign) => <tr key={campaign.id}><td data-label="Campaign"><strong>{campaign.name}</strong><small>{formatDate(campaign.created_at)}</small></td><td data-label="Status"><span className={`campaign-status ${String(campaign.status).toLowerCase()}`}>{campaign.status}</span></td><td data-label="Sent">{campaign.sent}</td><td data-label="Failed">{campaign.failed}</td><td data-label="Replies">{campaign.replies}</td><td data-label="Opt-outs">{campaign.opt_outs}</td></tr>)}</tbody></table>{!dashboard.recentCampaigns.length && <EmptyState icon="📣" title="No campaign activity yet" description="Create and run your first campaign — its delivery and reply stats will show up here." actions={[{ label: 'Go to Campaigns', onClick: () => (onNavigate || ((view) => { window.location.hash = `#${view}` }))('Campaigns') }] } />}</div></section></div>
 }
 
+// Prefill the SMTP part of the Settings form (the password is never sent back).
+const smtpFormFrom = (settings) => ({
+  emailProvider: settings.emailSending?.providerSetting || 'auto',
+  smtpUser: settings.emailSending?.smtp?.user || '',
+  smtpFromName: settings.emailSending?.smtp?.fromName || '',
+  smtpHost: settings.emailSending?.smtp?.host || '',
+  smtpPort: settings.emailSending?.smtp?.port ? String(settings.emailSending.smtp.port) : '',
+})
+
 function SettingsView({ userEmail }) {
   const [settings, setSettings] = useState(null)
-  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91' })
+  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91', emailProvider: '', smtpUser: '', smtpPass: '', smtpFromName: '', smtpHost: '', smtpPort: '' })
   const [showKey, setShowKey] = useState(false)
   const [showResendKey, setShowResendKey] = useState(false)
+  const [showSmtpPass, setShowSmtpPass] = useState(false)
+  const [smtpNotice, setSmtpNotice] = useState({ type: '', text: '' })
+  const [smtpTesting, setSmtpTesting] = useState(false)
   const [notice, setNotice] = useState({ type: '', text: '' })
   const [testNotice, setTestNotice] = useState({ type: '', text: '' })
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
   useEffect(() => { apiFetch('/settings').then(setSettings).catch((error) => setNotice({ type: 'error', text: friendlyErrorMessage(error) })) }, [])
-  useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, companyAddress: settings.business.address || '', companyState: settings.business.state || '', companyGstin: settings.business.gstin || '', companyPhone: settings.business.phone || '', companyEmail: settings.business.email || '', companyLogo: settings.business.logo || '', companyBankDetails: settings.business.bankDetails || '', defaultCountryCode: settings.defaultCountryCode || '91', resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '' })) }, [settings])
-  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, companyAddress: updated.business.address || '', companyState: updated.business.state || '', companyGstin: updated.business.gstin || '', companyPhone: updated.business.phone || '', companyEmail: updated.business.email || '', companyLogo: updated.business.logo || '', companyBankDetails: updated.business.bankDetails || '', defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '' })); setShowKey(false); setShowResendKey(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  useEffect(() => { if (settings) setForm((current) => ({ ...current, aiBaseURL: settings.ai.baseURL, aiModel: settings.ai.model, businessName: settings.business.name, businessTagline: settings.business.tagline, companyAddress: settings.business.address || '', companyState: settings.business.state || '', companyGstin: settings.business.gstin || '', companyPhone: settings.business.phone || '', companyEmail: settings.business.email || '', companyLogo: settings.business.logo || '', companyBankDetails: settings.business.bankDetails || '', defaultCountryCode: settings.defaultCountryCode || '91', resendFromEmail: settings.email?.fromEmail || '', resendFromName: settings.email?.fromName || '', ...smtpFormFrom(settings) })) }, [settings])
+  const save = async (event) => { event.preventDefault(); setBusy(true); const payload = Object.fromEntries(Object.entries(form).filter(([, value]) => value.trim())); try { const updated = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); setSettings(updated); setForm((current) => ({ ...current, aiApiKey: '', resendApiKey: '', aiBaseURL: updated.ai.baseURL, aiModel: updated.ai.model, businessName: updated.business.name, businessTagline: updated.business.tagline, companyAddress: updated.business.address || '', companyState: updated.business.state || '', companyGstin: updated.business.gstin || '', companyPhone: updated.business.phone || '', companyEmail: updated.business.email || '', companyLogo: updated.business.logo || '', companyBankDetails: updated.business.bankDetails || '', defaultCountryCode: updated.defaultCountryCode || current.defaultCountryCode, resendFromEmail: updated.email?.fromEmail || '', resendFromName: updated.email?.fromName || '', ...smtpFormFrom(updated), smtpPass: '' })); setShowKey(false); setShowResendKey(false); setShowSmtpPass(false); setNotice({ type: 'success', text: 'Settings saved.' }) } catch (error) { setNotice({ type: 'error', text: friendlyErrorMessage(error) }) } finally { setBusy(false) } }
+  const testSmtp = async () => {
+    setSmtpTesting(true); setSmtpNotice({ type: '', text: '' })
+    try {
+      const result = await apiFetch('/settings/email/smtp-test', { method: 'POST' })
+      setSmtpNotice({ type: 'success', text: result.message })
+    } catch (error) {
+      setSmtpNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Email test' }) })
+    } finally { setSmtpTesting(false) }
+  }
   const testResend = async () => {
     setTesting(true); setTestNotice({ type: '', text: '' })
     try {
@@ -1601,6 +1626,24 @@ function SettingsView({ userEmail }) {
           <label className="form-label">Base URL<input value={form.aiBaseURL} onChange={update('aiBaseURL')} /></label>
           <label className="form-label">Model<input value={form.aiModel} onChange={update('aiModel')} /></label>
         </div>
+      </section>
+      <section className="panel settings-panel">
+        <div className="panel-header"><h2>Email — free sending (Gmail / Outlook / Zoho)</h2><span className={`campaign-status ${settings.emailSending?.smtp?.ready ? 'running' : 'stopped'}`}>{settings.emailSending?.smtp?.ready ? 'Connected' : 'Not set up'}</span></div>
+        <p className="muted-copy">Bulk email campaigns send from your own mailbox at no cost. For Gmail: turn on 2-Step Verification, then create an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">App Password</a> and paste it below (not your normal password). Free Gmail sends about 500 emails a day.</p>
+        <div className="settings-grid">
+          <label className="form-label">Your email address<input type="email" value={form.smtpUser} onChange={update('smtpUser')} placeholder="yourname@gmail.com" autoComplete="off" /></label>
+          <label className="form-label">App password<div className="input-with-action"><input type={showSmtpPass ? 'text' : 'password'} value={form.smtpPass} onChange={update('smtpPass')} placeholder={settings.emailSending?.smtp?.passwordSet ? 'Leave blank to keep current password' : 'abcd efgh ijkl mnop'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowSmtpPass(!showSmtpPass)}>{showSmtpPass ? 'Hide' : 'Show'}</button></div><small>Saved securely (encrypted).</small></label>
+          <label className="form-label">Sender name<input value={form.smtpFromName} onChange={update('smtpFromName')} placeholder="Your Business Name" /><small>What people see in their inbox.</small></label>
+          <label className="form-label">Send campaigns using<select value={form.emailProvider} onChange={update('emailProvider')}><option value="auto">Automatic</option><option value="smtp">This email account (free)</option><option value="resend">Resend (below)</option></select></label>
+        </div>
+        <details><summary className="muted-copy">Other email providers (advanced)</summary>
+          <div className="settings-grid">
+            <label className="form-label">Mail server<input value={form.smtpHost} onChange={update('smtpHost')} placeholder="Filled in automatically for Gmail, Outlook, Yahoo, Zoho" /></label>
+            <label className="form-label">Port<input value={form.smtpPort} onChange={update('smtpPort')} placeholder="465 or 587" inputMode="numeric" /></label>
+          </div>
+        </details>
+        {smtpNotice.text && <div className={`notice ${smtpNotice.type} settings-test-notice`}>{smtpNotice.text}</div>}
+        <div className="button-row"><button type="button" className="secondary-btn" onClick={testSmtp} disabled={smtpTesting || busy}>{smtpTesting ? 'Sending test email...' : 'Test email account'}</button><small className="help-note">Save first, then send one test email to {userEmail || 'your account email'}.</small></div>
       </section>
       <section className="panel settings-panel">
         <div className="panel-header"><h2>Email (Resend)</h2><span className={`campaign-status ${settings.email?.configured ? 'running' : 'stopped'}`}>{settings.email?.configured ? 'Configured' : 'Not configured'}</span></div>
@@ -2078,6 +2121,7 @@ function App() {
     if (!can(activeView)) return null
     if (activeView === 'WhatsApp Connection') return <ConnectionView />
     if (activeView === 'Campaigns') return <CampaignsView onNavigate={setActiveView} />
+    if (activeView === 'Email Campaigns') return <EmailCampaignsView onNavigate={setActiveView} />
     if (activeView === 'Inbox') return <InboxView onNavigate={setActiveView} />
     if (activeView === 'Contacts') return <ContactsView onNavigate={setActiveView} />
     if (activeView === 'Templates') return <TemplatesView />

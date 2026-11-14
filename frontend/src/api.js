@@ -101,6 +101,9 @@ const REQUEST_TIMEOUT_MS = 30000
 const ENDPOINT_TIMEOUT_MS = {
   '/campaigns/validate-excel': 90000, // file upload, storage, and workbook validation
   '/campaigns': 120000, // create and persist all contacts for larger multi-sheet workbooks
+  '/email-campaigns/parse': 90000, // read a large Excel/CSV email list
+  '/email-campaigns': 120000, // create + store up to 10,000 recipients
+  '/settings/email/smtp-test': 60000, // log in to the mail server and send one email
   '/boq/process': 180000, // server wall budget is 150s (BOQ_TOTAL_BUDGET_MS) — covers parsing + page rendering + parallel OCR + every AI chunk + margin
   // Proforma upload: two requests, each with its own 100s server budget
   // (PROFORMA_OCR_BUDGET_MS / PROFORMA_EXTRACT_BUDGET_MS) + margin.

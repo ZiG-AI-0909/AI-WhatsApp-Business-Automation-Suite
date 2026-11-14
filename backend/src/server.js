@@ -118,6 +118,7 @@ app.use('/api/public/technician', require('./routes/technicianPublic'));
 app.use('/api/public/employee-registration', require('./routes/employeePublic'));
 // Staff & Member Login + staff dashboard: own Staff ID + PIN sessions, not Supabase Auth.
 app.use('/api/staff-portal', require('./routes/staffPortal'));
+app.use('/api/public/email', require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/emailCampaigns').publicRouter);
 // Storage: external cron trigger (no session; shared secret).
 // Other /api/storage routes fall through to the mount below.
 app.use('/api/storage', require('./routes/storage').publicRouter);
@@ -129,6 +130,8 @@ app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').
 app.use('/api/contacts', requireAuth, requireModule('whatsapp'), require('./routes/contacts'));
 app.use('/api/conversations', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').sendLimiter, require('./routes/conversations'));
 app.use('/api/campaigns', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/campaigns'));
+// Bulk email campaigns (own tables; never touches the WhatsApp queue).
+app.use('/api/email-campaigns', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/emailCampaigns'));
 app.use('/api/templates', requireAuth, requireModule('whatsapp'), require('./routes/templates'));
 app.use('/api/knowledge', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/knowledge'));
 app.use('/api/analytics', requireAuth, requireModule('whatsapp'), require('./routes/analytics'));
@@ -221,6 +224,11 @@ async function startServer() {
             attempt(); // never awaited — retries continue in the background
         };
         startResumeRetries();
+        // Bulk email: continue campaigns that were sending before the restart.
+        // Independent of WhatsApp; a missing migration is reported, not fatal.
+        require('./email/emailCampaignService').resumeInterrupted()
+            .then(r => { if (r.resumed) console.log(`[boot] ${r.resumed} email campaign(s) resumed.`); })
+            .catch(error => console.error('[boot] email campaign resume failed:', error.message));
         schedulerService.startPolling(io);
         require('./storage/storageJobs').start(io);
         server.listen(PORT, () => {

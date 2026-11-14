@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const aiService = require('../ai/aiService');
 const resendService = require('../email/resendService');
+const emailSender = require('../email/emailSender');
 const db = require('../database/db');
 const { requireDataOwnerSelf } = require('../middleware/auth');
 const { encryptSettingIfSecret, decryptSettingIfSecret } = require('../utils/encryption');
@@ -28,6 +29,13 @@ const fieldKeys = {
     RESEND_API_KEY: 'resendApiKey',
     RESEND_FROM_EMAIL: 'resendFromEmail',
     RESEND_FROM_NAME: 'resendFromName',
+    // Free bulk email over SMTP (Gmail App Password, Outlook, Zoho, Brevo…).
+    EMAIL_PROVIDER: 'emailProvider',
+    SMTP_HOST: 'smtpHost',
+    SMTP_PORT: 'smtpPort',
+    SMTP_USER: 'smtpUser',
+    SMTP_PASS: 'smtpPass',
+    SMTP_FROM_NAME: 'smtpFromName',
     // Default country code for phone normalization on new contacts
     // (Excel uploads without a per-upload override, manual contact creation).
     DEFAULT_COUNTRY_CODE: 'defaultCountryCode',
@@ -95,7 +103,7 @@ async function mergedSetting(key, userId) {
 // Shared response shape for GET / and PUT /
 async function getSettings(userId) {
     const stored = await loadSettings(userId);
-    const [email] = await Promise.all([resendService.getConfig(userId)]);
+    const [email, emailSending] = await Promise.all([resendService.getConfig(userId), emailSender.getConfig(userId)]);
     return {
         ai: {
             available: aiService.isAvailable(),
@@ -121,6 +129,8 @@ async function getSettings(userId) {
         // Email (Resend) — mirrors the `ai` section's shape: booleans for
         // secret presence, plain values for sender identity fields.
         email,
+        // Which account bulk email campaigns send from (SMTP or Resend).
+        emailSending,
     };
 }
 
@@ -176,6 +186,22 @@ router.post('/email/test', requireDataOwnerSelf, async (req, res) => {
         res.json(result);
     } catch (error) {
         console.error('[settings] email test error:', error.message);
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// POST /api/settings/email/smtp-test — log in to the saved SMTP account and
+// send one test email to the logged-in user's own address.
+router.post('/email/smtp-test', requireDataOwnerSelf, async (req, res) => {
+    try {
+        const recipient = req.user.email;
+        if (!recipient) return res.status(400).json({ error: 'Your account has no email address to send the test to.' });
+        await emailSender.verify(req.user.id);
+        const html = '<p>This is a test email from your campaign system.</p><p>If you can read this, your email account is connected and ready for bulk email campaigns.</p>';
+        await emailSender.send(req.user.id, { to: recipient, subject: 'Test email — your email account works', html, text: 'This is a test email from your campaign system. Your email account is connected.' });
+        res.json({ success: true, message: `Test email sent to ${recipient}. Check your inbox (and spam folder).` });
+    } catch (error) {
+        console.error('[settings] smtp test error:', error.message);
         res.status(400).json({ error: error.message });
     }
 });
