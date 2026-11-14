@@ -16,6 +16,8 @@ const schedulerService = require('./campaigns/schedulerService');
 const { requireAuth } = require('./middleware/auth');
 // Team & access: each route group needs its area (security/teamAccess.js).
 const { requireModule, onlyFor } = require('./security/teamAccess');
+// Ticked accounts must have a paid monthly subscription to use the automation.
+const { requireActiveSubscription: paid } = require('./billing/billingService');
 const allowSettingsRead = (req, res, next) => (req.method === 'GET' ? next() : requireModule('settings')(req, res, next));
 const { attachRealtimeAuth, isAllowedOrigin } = require('./realtime');
 const { assertEncryptionKey } = require('./utils/encryption');
@@ -118,25 +120,27 @@ app.use('/api/public/technician', require('./routes/technicianPublic'));
 app.use('/api/public/employee-registration', require('./routes/employeePublic'));
 // Staff & Member Login + staff dashboard: own Staff ID + PIN sessions, not Supabase Auth.
 app.use('/api/staff-portal', require('./routes/staffPortal'));
+app.use('/api/billing/webhook', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/billing').webhookRouter);
 app.use('/api/public/email', require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/emailCampaigns').publicRouter);
 // Storage: external cron trigger (no session; shared secret).
 // Other /api/storage routes fall through to the mount below.
 app.use('/api/storage', require('./routes/storage').publicRouter);
+app.use('/api/billing', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/billing'));
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 // Team & access: GET /me for everyone signed in; the rest super admins only.
 app.use('/api/team', requireAuth, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/team'));
-app.use('/api/whatsapp', requireAuth, requireModule('whatsapp'), require('./routes/whatsapp'));
+app.use('/api/whatsapp', requireAuth, requireModule('whatsapp'), paid, require('./routes/whatsapp'));
 app.use('/api/webhooks/whatsapp', require('./middleware/rateLimiterMiddleware').webhookLimiter, require('./routes/whatsappWebhook'));
-app.use('/api/contacts', requireAuth, requireModule('whatsapp'), require('./routes/contacts'));
-app.use('/api/conversations', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').sendLimiter, require('./routes/conversations'));
-app.use('/api/campaigns', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/campaigns'));
+app.use('/api/contacts', requireAuth, requireModule('whatsapp'), paid, require('./routes/contacts'));
+app.use('/api/conversations', requireAuth, requireModule('whatsapp'), paid, require('./middleware/rateLimiterMiddleware').sendLimiter, require('./routes/conversations'));
+app.use('/api/campaigns', requireAuth, requireModule('whatsapp'), paid, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/campaigns'));
 // Bulk email campaigns (own tables; never touches the WhatsApp queue).
-app.use('/api/email-campaigns', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/emailCampaigns'));
-app.use('/api/templates', requireAuth, requireModule('whatsapp'), require('./routes/templates'));
-app.use('/api/knowledge', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/knowledge'));
+app.use('/api/email-campaigns', requireAuth, requireModule('whatsapp'), paid, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/emailCampaigns'));
+app.use('/api/templates', requireAuth, requireModule('whatsapp'), paid, require('./routes/templates'));
+app.use('/api/knowledge', requireAuth, requireModule('whatsapp'), paid, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/knowledge'));
 app.use('/api/analytics', requireAuth, requireModule('whatsapp'), require('./routes/analytics'));
 app.use('/api/settings', requireAuth, allowSettingsRead, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/settings'));
-app.use('/api/schedules', requireAuth, requireModule('whatsapp'), require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/schedules'));
+app.use('/api/schedules', requireAuth, requireModule('whatsapp'), paid, require('./middleware/rateLimiterMiddleware').mutationLimiter, require('./routes/schedules'));
 app.use('/api/image-extractor', requireAuth, requireModule('documents'), require('./middleware/rateLimiterMiddleware').aiExtractLimiter, require('./routes/imageExtractor'));
 app.use('/api/ask-ai', requireAuth, requireModule('ask_ai'), require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/askAi'));
 // Quotations: /api/boq/:id/quotation and /api/quotations/*. Registered before
@@ -145,7 +149,7 @@ app.use('/api/ask-ai', requireAuth, requireModule('ask_ai'), require('./middlewa
 app.use('/api', requireAuth, onlyFor(/^\/(quotations(\/|$)|boq\/[^/]+\/quotation$)/, requireModule('documents')), require('./routes/quotations'));
 app.use('/api/boq', requireAuth, requireModule('documents'), require('./routes/boq').router);
 // Copilot briefs appear in the Inbox and Contacts as well as in Ask AI.
-app.use('/api/copilot', requireAuth, requireModule('ask_ai', 'whatsapp'), require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
+app.use('/api/copilot', requireAuth, requireModule('ask_ai', 'whatsapp'), paid, require('./middleware/rateLimiterMiddleware').aiQueryLimiter, require('./routes/copilot'));
 // Proforma Invoice Maker: any signed-in user; no mutation limiter (like
 // quotations) because the form previews on every edit (see routes/proforma.js).
 app.use('/api/proforma', requireAuth, requireModule('proforma'), require('./routes/proforma'));

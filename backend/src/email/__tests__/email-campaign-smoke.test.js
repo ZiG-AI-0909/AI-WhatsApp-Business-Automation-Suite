@@ -187,6 +187,27 @@ async function main() {
     await waitFor(async () => ['completed', 'completed_with_errors'].includes((await service.get(third.id, USER)).status));
     assert.deepEqual(sent.slice(before).map(m => m.to), ['c2@x.com']);
 
+    // 9b. Pictures: validated, shown in preview, sent inline (CID), hidden from the list.
+    const png = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64');
+    const images = [{ filename: 'offer.png', contentType: 'image/png', data: `data:image/png;base64,${png}` }];
+    assert.throws(() => service.preview({ subject: 's', body: 'b', images: [{ contentType: 'application/pdf', data: png }] }), /JPG, PNG/);
+    assert.throws(() => service.preview({ subject: 's', body: 'b', images: [1, 2, 3, 4].map(() => images[0]) }), /up to 3/);
+    assert.ok(service.preview({ subject: 's', body: 'b', images })[0].html.includes(`data:image/png;base64,${png}`));
+    const pics = await service.create(USER, { name: 'Pics', subject: 's', body: 'See the offer', recipients: [{ email: 'pic@x.com' }], images });
+    tables.email_campaigns.find(c => c.id === pics.id).settings.delaySeconds = 2;
+    await service.start(pics.id, USER);
+    await waitFor(async () => (await service.get(pics.id, USER)).status === 'completed');
+    const picMail = sent.at(-1);
+    assert.equal(picMail.to, 'pic@x.com');
+    assert.ok(picMail.html.includes('cid:img0@campaign'));
+    assert.equal(picMail.attachments[0].cid, 'img0@campaign');
+    assert.equal(picMail.attachments[0].content.toString('base64'), png);
+    const listed = (await service.list(USER)).find(c => c.id === pics.id);
+    assert.equal(listed.settings.images, undefined);
+    assert.equal(listed.settings.imageCount, 1);
+    await service.sendTest(USER, 'me@x.com', { subject: 's', body: 'b', images });
+    assert.equal(sent.at(-1).attachments.length, 1);
+
     // 10. Ownership + stop + delete.
     assert.equal(await service.get(third.id, OTHER), null);
     await assert.rejects(service.delete(third.id, OTHER), /not found/);

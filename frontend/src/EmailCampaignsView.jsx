@@ -64,6 +64,7 @@ export default function EmailCampaignsView({ onNavigate }) {
   const [dailyLimit, setDailyLimit] = useState('400')
   const [previews, setPreviews] = useState([])
   const [previewIndex, setPreviewIndex] = useState(0)
+  const [images, setImages] = useState([])
   const bodyRef = useRef(null)
 
   const selected = campaigns.find((c) => c.id === selectedId) || null
@@ -117,13 +118,13 @@ export default function EmailCampaignsView({ onNavigate }) {
       try {
         const data = await apiFetch('/email-campaigns/preview', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subject, body, recipients: list?.recipients?.slice(0, 3) || [] }),
+          body: JSON.stringify({ subject, body, images, recipients: list?.recipients?.slice(0, 3) || [] }),
         })
         setPreviews(data.previews || [])
       } catch { /* preview is best effort */ }
     }, 400)
     return () => clearTimeout(timer)
-  }, [subject, body, list])
+  }, [subject, body, list, images])
 
   const fields = useMemo(() => {
     const cols = new Set(['name'])
@@ -140,6 +141,21 @@ export default function EmailCampaignsView({ onNavigate }) {
     const next = body.slice(0, start) + token + body.slice(end)
     setBody(next)
     requestAnimationFrame(() => { el.focus(); el.setSelectionRange(start + token.length, start + token.length) })
+  }
+
+  const addPictures = async (event) => {
+    const files = Array.from(event.target.files || [])
+    event.target.value = ''
+    const room = 3 - images.length
+    if (files.length > room) setNotice({ type: 'error', text: 'You can add up to 3 pictures.' })
+    const added = []
+    for (const file of files.slice(0, Math.max(0, room))) {
+      if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) { setNotice({ type: 'error', text: `${file.name}: pictures must be JPG, PNG, GIF or WEBP.` }); continue }
+      if (file.size > 1024 * 1024) { setNotice({ type: 'error', text: `${file.name} is larger than 1 MB. Please use a smaller picture.` }); continue }
+      const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file) })
+      added.push({ filename: file.name, contentType: file.type, data: String(dataUrl).split(',')[1], preview: dataUrl })
+    }
+    if (added.length) setImages((current) => [...current, ...added].slice(0, 3))
   }
 
   const uploadFile = async (event) => {
@@ -169,7 +185,7 @@ export default function EmailCampaignsView({ onNavigate }) {
     try {
       const result = await apiFetch('/email-campaigns/test', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject, body, recipient: list?.recipients?.[0] }),
+        body: JSON.stringify({ subject, body, images, recipient: list?.recipients?.[0] }),
       })
       setNotice({ type: 'success', text: result.message })
     } catch (error) { handleError(error, 'Sending the test email') } finally { setBusy(false) }
@@ -182,10 +198,10 @@ export default function EmailCampaignsView({ onNavigate }) {
     try {
       const campaign = await apiFetch('/email-campaigns', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, subject, body, recipients: list.recipients, settings: { delaySeconds: Number(delaySeconds), dailyLimit: Number(dailyLimit) }, startNow }),
+        body: JSON.stringify({ name, subject, body, images, recipients: list.recipients, settings: { delaySeconds: Number(delaySeconds), dailyLimit: Number(dailyLimit) }, startNow }),
       })
       setNotice({ type: 'success', text: startNow ? `"${campaign.name}" is sending. You can leave this page — it keeps going.` : `"${campaign.name}" saved as a draft.` })
-      setList(null); setFileName(''); setPasted(''); setName('')
+      setList(null); setFileName(''); setPasted(''); setName(''); setImages([])
       await loadCampaigns()
       setSelectedId(campaign.id)
     } catch (error) { handleError(error, 'Creating the email campaign') } finally { setBusy(false) }
@@ -229,7 +245,7 @@ export default function EmailCampaignsView({ onNavigate }) {
       <button type="button" onClick={() => onNavigate?.('Settings')}>Open Settings</button>
     </div>}
     {sender?.ready && <div className="notice info">
-      Sending from <strong>{sender.provider === 'smtp' ? sender.smtp?.user : sender.resend?.fromEmail}</strong>. Free Gmail accounts can send about 500 emails a day; larger lists continue automatically the next day.
+      Sending from <strong>{sender.smtp?.user}</strong>. Free Gmail accounts can send about 500 emails a day; larger lists continue automatically the next day.
     </div>}
     {notice.text && <div className={`notice ${notice.type}`} role="status">{notice.text}</div>}
 
@@ -268,6 +284,17 @@ export default function EmailCampaignsView({ onNavigate }) {
           <div className="field-panel inline-fields">
             <h3>Personalise with</h3>
             <div className="field-list">{fields.map((field) => <button key={field} type="button" className="field-chip" onClick={() => insertField(field)}>{`{{${field}}}`}</button>)}</div>
+          </div>
+          <div className="field-panel inline-fields">
+            <h3>Pictures (optional)</h3>
+            <div className="upload-row">
+              <label className="secondary-btn upload-btn"><Icon name="image" size={16} />Add pictures<input type="file" accept="image/jpeg,image/png,image/gif,image/webp" multiple onChange={addPictures} disabled={busy || images.length >= 3} /></label>
+              <span className="file-note">Up to 3 pictures, 1 MB each. They appear below your message.</span>
+            </div>
+            {images.length > 0 && <div className="button-row">{images.map((img, i) => <figure key={`${img.filename}-${i}`} style={{ margin: 0, textAlign: 'center' }}>
+              <img src={img.preview} alt={img.filename} style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 8, display: 'block' }} />
+              <button type="button" className="secondary-btn" onClick={() => setImages((current) => current.filter((_, j) => j !== i))}>Remove</button>
+            </figure>)}</div>}
           </div>
           {missing.length > 0 && <div className="missing-warning">Some people have no value for {missing.map((f) => `{{${f}}}`).join(', ')} — that part will be left blank for them.</div>}
         </fieldset>

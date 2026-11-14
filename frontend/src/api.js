@@ -203,6 +203,10 @@ export async function apiFetch(path, options = {}) {
       clearStoredDataOwner(lastAuthUserId)
       window.dispatchEvent(new CustomEvent(WORKSPACE_CHANGED_EVENT, { detail: { ownerUserId: null, revoked: true } }))
     }
+    // Monthly subscription unpaid: let the app swap in the payment screen.
+    if (response.status === 402 && data.code === 'PAYMENT_REQUIRED') {
+      window.dispatchEvent(new CustomEvent('app:payment-required'))
+    }
     if (response.status === 401 && supabase) {
       try { await supabase.auth._removeSession() } catch { /* best effort */ }
       dispatchSessionInvalidated(`API 401 on ${path}`)

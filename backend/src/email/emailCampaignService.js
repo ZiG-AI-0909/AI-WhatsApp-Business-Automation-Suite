@@ -153,6 +153,37 @@ function wrapHtml(innerHtml, unsubscribeUrl) {
     return `<!doctype html><html><body style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:#222;max-width:640px">${innerHtml}${footer}</body></html>`;
 }
 
+// ─── pictures ────────────────────────────────────────────────
+// Up to 3 pictures per campaign, kept in the campaign row and sent as
+// inline (CID) attachments, so they show in the email without any public
+// image hosting.
+const MAX_IMAGES = 3;
+const MAX_IMAGE_BYTES = 1024 * 1024;
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+function normalizeImages(list) {
+    if (list === undefined || list === null) return [];
+    if (!Array.isArray(list)) throw userError('Pictures could not be read. Please add them again.');
+    if (list.length > MAX_IMAGES) throw userError(`You can add up to ${MAX_IMAGES} pictures.`);
+    return list.map((img, i) => {
+        const contentType = String(img?.contentType || '').toLowerCase();
+        if (!IMAGE_TYPES.has(contentType)) throw userError('Pictures must be JPG, PNG, GIF or WEBP.');
+        const data = String(img?.data || '').replace(/^data:[^,]*,/, '');
+        if (!/^[A-Za-z0-9+/=\s]+$/.test(data)) throw userError('A picture could not be read. Please add it again.');
+        if (Buffer.byteLength(data, 'base64') > MAX_IMAGE_BYTES) throw userError('Each picture must be 1 MB or smaller.');
+        const filename = String(img?.filename || `picture-${i + 1}`).replace(/[^\w.-]+/g, '_').slice(0, 80);
+        return { filename, contentType, data };
+    });
+}
+
+function imagesHtml(images, srcFor) {
+    return images.map((img, i) => `<p><img src="${srcFor(img, i)}" alt="" style="max-width:100%;height:auto;border-radius:6px"></p>`).join('\n');
+}
+
+function inlineAttachments(images) {
+    return images.map((img, i) => ({ filename: img.filename, content: Buffer.from(img.data, 'base64'), contentType: img.contentType, cid: `img${i}@campaign` }));
+}
+
 // ─── unsubscribe tokens ───────────────────────────────────────
 
 function tokenSecret() {
@@ -327,29 +358,34 @@ class EmailCampaignService {
     parseFile(buffer, filename) { return parseFile(buffer, filename); }
     parsePasted(text) { return parsePasted(text); }
 
-    preview({ subject, body, recipients = [] }) {
+    preview({ subject, body, recipients = [], images: rawImages }) {
         validateContent({ subject, body });
+        const images = normalizeImages(rawImages);
         const sample = (recipients.length ? recipients : [{ email: 'customer@example.com', name: 'Customer', fields: { name: 'Customer' } }]).slice(0, 3);
         return sample.map(r => {
             const fields = { ...(r.fields || {}), email: r.email, ...(r.name && !r.fields?.name ? { name: r.name } : {}) };
             const rendered = renderEmail(subject, body, fields);
-            return { email: r.email, subject: rendered.subject, html: wrapHtml(rendered.html, '#'), missingFields: [...new Set([...missingFields(subject, fields), ...missingFields(body, fields)])] };
+            const pics = imagesHtml(images, img => `data:${img.contentType};base64,${img.data}`);
+            return { email: r.email, subject: rendered.subject, html: wrapHtml(rendered.html + pics, '#'), missingFields: [...new Set([...missingFields(subject, fields), ...missingFields(body, fields)])] };
         });
     }
 
-    async sendTest(userId, toEmail, { subject, body, recipient }) {
+    async sendTest(userId, toEmail, { subject, body, recipient, images: rawImages }) {
         validateContent({ subject, body });
+        const images = normalizeImages(rawImages);
         if (!toEmail) throw userError('Your account has no email address to send the test to.');
         const fields = recipient ? { ...(recipient.fields || {}), email: recipient.email, name: recipient.name || recipient.fields?.name || '' } : { name: 'Customer', email: toEmail };
         const rendered = renderEmail(subject, body, fields);
-        const html = wrapHtml(rendered.html, null);
-        await emailSender.send(userId, { to: toEmail, subject: `[Test] ${rendered.subject}`, html, text: htmlToText(html) });
+        const html = wrapHtml(rendered.html + imagesHtml(images, (_img, i) => `cid:img${i}@campaign`), null);
+        await emailSender.send(userId, { to: toEmail, subject: `[Test] ${rendered.subject}`, html, text: htmlToText(html), attachments: inlineAttachments(images) });
         return { message: `Test email sent to ${toEmail}. Check your inbox (and spam folder).` };
     }
 
     async list(userId) {
         try {
-            return await db.select(CAMPAIGNS, '*', 'user_id = ?', [userId], 'created_at desc', 100, 0);
+            const rows = await db.select(CAMPAIGNS, '*', 'user_id = ?', [userId], 'created_at desc', 100, 0);
+            // Pictures stay on the server; the list only needs how many.
+            return rows.map(r => ({ ...r, settings: { ...(r.settings || {}), images: undefined, imageCount: (r.settings?.images || []).length } }));
         } catch (error) { throw migrationError(error); }
     }
 
@@ -378,9 +414,10 @@ class EmailCampaignService {
         return { recipients: rows, total, page, limit: safeLimit };
     }
 
-    async create(userId, { name, subject, body, recipients, settings }) {
+    async create(userId, { name, subject, body, recipients, settings, images: rawImages }) {
         if (!String(name || '').trim()) throw userError('Please give the campaign a name.');
         validateContent({ subject, body });
+        const images = normalizeImages(rawImages);
         const clean = sanitizeRecipients(recipients);
 
         let unsubscribed = new Set();
@@ -398,7 +435,7 @@ class EmailCampaignService {
                 body: String(body),
                 status: 'draft',
                 total: clean.length,
-                settings: normalizeSettings(settings),
+                settings: { ...normalizeSettings(settings), images },
             });
         } catch (error) { throw migrationError(error); }
 
@@ -601,11 +638,12 @@ class EmailCampaignService {
 
             await db.update(RECIPIENTS, { status: 'sending', attempts: (recipient.attempts || 0) + 1 }, 'id = ?', [recipient.id]);
             const unsubscribeUrl = baseUrl ? `${baseUrl}/api/public/email/unsubscribe/${unsubscribeToken(userId, recipient.email)}` : null;
-            const html = wrapHtml(recipient.rendered_body, unsubscribeUrl);
+            const images = Array.isArray(campaign.settings?.images) ? campaign.settings.images : [];
+            const html = wrapHtml(recipient.rendered_body + imagesHtml(images, (_img, i) => `cid:img${i}@campaign`), unsubscribeUrl);
             const headers = unsubscribeUrl ? { 'List-Unsubscribe': `<${unsubscribeUrl}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : undefined;
 
             try {
-                const result = await emailSender.send(userId, { to: recipient.email, subject: recipient.rendered_subject, html, text: htmlToText(html), headers });
+                const result = await emailSender.send(userId, { to: recipient.email, subject: recipient.rendered_subject, html, text: htmlToText(html), headers, attachments: inlineAttachments(images) });
                 await db.update(RECIPIENTS, { status: 'sent', sent_at: new Date(), message_id: result.messageId, error: null }, 'id = ?', [recipient.id]);
                 consecutiveFailures = 0;
             } catch (error) {

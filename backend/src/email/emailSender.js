@@ -1,17 +1,15 @@
 // =============================================================
-// Email sender — one interface over two providers.
+// Email sender — sends through the user's own mailbox over SMTP (free).
 //
 //   smtp   (FREE) — any mailbox you already own: Gmail / Google Workspace
 //                   with an App Password, Outlook, Zoho, Brevo's free SMTP…
 //                   Uses nodemailer; nothing to pay for.
-//   resend         — the existing Resend API key setup (resendService).
 //
 // Per-user credentials live in app_settings (SMTP_PASS is encrypted at
 // rest like every other secret). Env vars are a server-wide fallback.
 // =============================================================
 const db = require('../database/db');
 const { decryptSettingIfSecret } = require('../utils/encryption');
-const resendService = require('./resendService');
 
 const KEYS = {
     provider: 'EMAIL_PROVIDER',
@@ -70,18 +68,14 @@ class EmailSender {
     async getConfig(userId, stored = null) {
         stored = stored || await loadStored(userId);
         const smtp = smtpConfigFrom(stored);
-        const resend = await resendService.getConfig(userId);
         const smtpReady = !!(smtp.host && smtp.user && smtp.pass);
-        const providerSetting = pick(stored, KEYS.provider).toLowerCase();
-        let provider = providerSetting;
-        if (!['smtp', 'resend'].includes(provider)) provider = smtpReady ? 'smtp' : (resend.configured ? 'resend' : 'smtp');
-        const ready = provider === 'smtp' ? smtpReady : resend.configured;
+        // Bulk email sends through the user's own mailbox (free SMTP).
+        const provider = 'smtp';
+        const ready = smtpReady;
         return {
             provider,
-            providerSetting: ['smtp', 'resend'].includes(providerSetting) ? providerSetting : 'auto',
             ready,
             smtp: { host: smtp.host, port: smtp.port, user: smtp.user, fromName: smtp.fromName, passwordSet: !!smtp.pass, ready: smtpReady },
-            resend,
         };
     }
 
@@ -116,7 +110,7 @@ class EmailSender {
      * user-readable message, plus `error.permanent` (bad address — do not
      * retry) or `error.fatal` (login/limit problem — stop the whole campaign).
      */
-    async send(userId, { to, subject, html, text, headers }) {
+    async send(userId, { to, subject, html, text, headers, attachments }) {
         const stored = await loadStored(userId);
         const config = await this.getConfig(userId, stored);
         if (!config.ready) {
@@ -125,23 +119,10 @@ class EmailSender {
             throw err;
         }
 
-        if (config.provider === 'resend') {
-            const resendConfig = await resendService._getUserSettings(userId);
-            const resend = resendService._getResend(resendConfig.apiKey);
-            const from = resendService._formatFrom(resendConfig);
-            const result = await resend.emails.send({ from, to, subject, html, text, headers });
-            if (result?.error) {
-                const err = new Error(result.error.message || 'The email service refused this email.');
-                if (/daily|quota|limit|rate/i.test(err.message)) err.fatal = true;
-                throw err;
-            }
-            return { messageId: result?.data?.id || null };
-        }
-
         const smtp = smtpConfigFrom(stored);
         const from = smtp.fromName ? `"${smtp.fromName.replace(/"/g, '')}" <${smtp.user}>` : smtp.user;
         try {
-            const info = await this._transportFor(userId, smtp).sendMail({ from, to, subject, html, text, headers });
+            const info = await this._transportFor(userId, smtp).sendMail({ from, to, subject, html, text, headers, attachments });
             return { messageId: info?.messageId || null };
         } catch (error) {
             throw classifySmtpError(error);

@@ -88,7 +88,7 @@ async function main() {
         const mounts = [...source.matchAll(/^app\.use\('([^']+)',\s*requireAuth,([^\n]*)/gm)].map((match) => ({ path: match[1], rest: match[2] }));
         assert.ok(mounts.length >= 20, `found ${mounts.length} mounts`);
         // Areas checked inside the router, or open to every signed-in account on purpose.
-        const inRouter = new Set(['/api/kyc', '/api/technicians', '/api/storage', '/api/workspaces', '/api/team']);
+        const inRouter = new Set(['/api/kyc', '/api/technicians', '/api/storage', '/api/workspaces', '/api/team', '/api/billing']); // billing: everyone pays; admin routes check super admin
         for (const mount of mounts) {
             if (inRouter.has(mount.path)) continue;
             if (mount.path === '/api' && /^\s*\(req, res\) => \{\s*$/.test(mount.rest)) continue; // the final 404 catch-all

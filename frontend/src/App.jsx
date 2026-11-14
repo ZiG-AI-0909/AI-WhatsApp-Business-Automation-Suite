@@ -10,6 +10,7 @@ import { StorageBanner, StorageCard } from './storage/StorageAlerts.jsx'
 import useStorageStatus from './storage/useStorageStatus.js'
 import AskAiView from './AskAiView.jsx'
 import EmailCampaignsView from './EmailCampaignsView.jsx'
+import { PayScreen, SubscriptionBanner, SubscriptionsView, PAYMENT_REQUIRED_EVENT, payOneMonth } from './billing/BillingViews.jsx'
 import DocumentIntelView from './DocumentIntelView.jsx'
 import KycSubmissionsView from './KycSubmissionsView.jsx'
 import TeamAccessView from './TeamAccessView.jsx'
@@ -33,6 +34,7 @@ import BrandLogo from './components/BrandLogo.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
 import ThemeChoice from './components/ThemeChoice.jsx'
 import Modal from './components/Modal.jsx'
+import HelpGuide from './components/HelpGuide.jsx'
 import SkeletonPanel from './components/Skeleton.jsx'
 import { COUNTRIES } from './countries.js'
 
@@ -54,7 +56,7 @@ const NAV_GROUPS = [
   { title: 'AI tools', items: ['Ask AI'] },
   // Every item is shown only to accounts with its area (team/teamAreas.js);
   // 'Team & access' to super admins only.
-  { title: 'Setup', items: ['Team & access', 'Storage', 'Settings'] },
+  { title: 'Setup', items: ['Team & access', 'Subscriptions', 'Storage', 'Settings'] },
 ]
 const NAV_META = {
   Dashboard: { icon: 'dashboard' },
@@ -74,11 +76,14 @@ const NAV_META = {
   'WhatsApp Connection': { icon: 'phone', label: 'WhatsApp connection' },
   Settings: { icon: 'sliders' },
   'Team & access': { icon: 'shield' },
+  Subscriptions: { icon: 'receipt' },
 }
 // Public forms, open to everyone signed in or not (see readRoute in App).
 // The staff pages have their own Staff ID + PIN sign-in (staff/staffSession.js),
 // separate from this app's login.
 const PUBLIC_FORM_ROUTES = ['/vendor-kyc', '/technician-registration', '/employee-registration', '/staff-login', '/staff/dashboard']
+// Pages paused for an account whose monthly subscription is unpaid.
+const PAID_VIEWS = new Set(['Dashboard', 'WhatsApp Connection', 'Inbox', 'Campaigns', 'Email Campaigns', 'Contacts', 'Templates', 'Knowledge Base', 'Analytics'])
 const navLabel = (view) => NAV_META[view]?.label || view
 const navGroupOf = (view) => NAV_GROUPS.find((group) => group.items.includes(view))?.title || ''
 const CURRENT_YEAR = new Date().getFullYear()
@@ -86,7 +91,7 @@ const SIDEBAR_STORAGE_KEY = 'sp-sidebar'
 const BUILDER_STEPS = [
   { id: 'audience', title: 'Audience', hint: 'Name and contacts' },
   { id: 'message', title: 'Message', hint: 'Text, fields, media' },
-  { id: 'safety', title: 'Safety', hint: 'Timing and limits' },
+  { id: 'safety', title: 'Timing', hint: 'When to send' },
   { id: 'review', title: 'Review', hint: 'Check and send' },
 ]
 
@@ -966,7 +971,7 @@ function CampaignsView({ onNavigate }) {
             {builderSteps.map((step, index) => <li key={step.id} className={`builder-step-link ${step.state}`}><a href={`#builder-${step.id}`} onClick={(event) => { event.preventDefault(); scrollToSection(`builder-${step.id}`) }} aria-current={step.state === 'current' ? 'step' : undefined} aria-label={`Step ${index + 1}: ${step.title}${step.state === 'done' ? ' (done)' : ''}`}><span className="step-index" aria-hidden="true">{step.state === 'done' ? <Icon name="check" size={14} /> : index + 1}</span><span className="step-text"><strong>{step.title}</strong><small>{step.hint}</small></span></a></li>)}
           </ol>
           <form onSubmit={createCampaign}>
-            {whatsappStatus.businessStatus !== 'connected' && <div className="notice warning">WhatsApp Web is an unofficial linked-device connection. WhatsApp can restrict or ban numbers that send bulk messages through it, and it gives no quality or rate-limit warnings. For campaigns, connect the official WhatsApp Business Platform (Cloud API). <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
+            {whatsappStatus.businessStatus !== 'connected' && <div className={`notice ${Number(upload?.valid || 0) > 50 ? 'warning' : 'info'}`}>{Number(upload?.valid || 0) > 50 ? `Your list has ${upload.valid} contacts. With the QR (WhatsApp Web) connection, send up to 50 messages per campaign. For more than 50, connect the WhatsApp Business API.` : 'With the QR (WhatsApp Web) connection you can send up to 50 messages per campaign. For more than 50, connect the WhatsApp Business API.'} <button type="button" onClick={() => onNavigate?.('WhatsApp Connection')}>Open Connection</button></div>}
             <fieldset className="builder-step" id="builder-audience" tabIndex={-1}>
               <legend><span className="step-index" aria-hidden="true">1</span>Audience</legend>
               <p className="builder-step-help">Name the campaign and choose who receives it.</p>
@@ -1021,21 +1026,11 @@ function CampaignsView({ onNavigate }) {
               </div>
             </fieldset>
             <fieldset className="builder-step" id="builder-safety" tabIndex={-1}>
-              <legend><span className="step-index" aria-hidden="true">3</span>Safety</legend>
-              <p className="builder-step-help">When to send, and the limits that protect your WhatsApp number.</p>
+              <legend><span className="step-index" aria-hidden="true">3</span>Timing</legend>
+              <p className="builder-step-help">Send now, add to the queue, or schedule it.</p>
               <label className="form-label">Send timing<select value={scheduleType} onChange={(event) => setScheduleType(event.target.value)}><option value="now">Start now</option><option value="queue">Add to queue</option><option value="once">Schedule once</option><option value="recurring">Recurring</option></select></label>
               {scheduleType === 'once' && <label className="form-label">Run at<input type="datetime-local" value={runAt} min={new Date(Date.now() + 60000).toISOString().slice(0, 16)} onChange={(event) => setRunAt(event.target.value)} required /></label>}
               {scheduleType === 'recurring' && <div className="field-panel inline-fields"><label className="form-label">Recurrence<select value={recurrenceMode} onChange={(event) => setRecurrenceMode(event.target.value)}><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="custom">Custom cron expression</option></select></label>{recurrenceMode !== 'custom' && <label className="form-label">Time<input type="time" value={scheduleTime} onChange={(event) => setScheduleTime(event.target.value)} /></label>}{recurrenceMode === 'weekly' && <label className="form-label">Day<select value={scheduleWeekday} onChange={(event) => setScheduleWeekday(event.target.value)}><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></label>}{recurrenceMode === 'monthly' && <label className="form-label">Day of month<input type="number" min="1" max="28" value={scheduleMonthDay} onChange={(event) => setScheduleMonthDay(event.target.value)} /></label>}{recurrenceMode === 'custom' && <label className="form-label">Cron expression<input value={customCron} onChange={(event) => setCustomCron(event.target.value)} placeholder="*/2 * * * *" required /></label>}<small className="muted-copy">Cron: {recurrenceMode === 'custom' ? customCron || 'Enter a cron expression' : (() => { const [hour, minute] = scheduleTime.split(':'); if (recurrenceMode === 'weekly') return `${minute} ${hour} * * ${scheduleWeekday}`; if (recurrenceMode === 'monthly') return `${minute} ${hour} ${scheduleMonthDay} * *`; return `${minute} ${hour} * * *` })()}</small></div>}
-              <label className="form-label">Pause after identical send errors<input type="number" min="1" step="1" value={circuitBreakerThreshold} onChange={(event) => setCircuitBreakerThreshold(event.target.value)} required /><small>Default: 5. “Number is not registered” remains a contact-level error.</small></label>
-              <div className="field-panel inline-fields sending-safety">
-              <h3>Sending safety</h3>
-              <label className="check-label"><input type="checkbox" checked={respectRecipientHours} onChange={(event) => setRespectRecipientHours(event.target.checked)} /> Send only during business hours in each recipient’s country</label>
-              <label className="form-label">Pause the campaign when recent failures reach<select value={failureRatePause} onChange={(event) => setFailureRatePause(event.target.value)}><option value="0.3">30% of the last 20 messages</option><option value="0.5">50% of the last 20 messages (default)</option><option value="0.7">70% of the last 20 messages</option><option value="0">Never</option></select></label>
-              <label className="form-label">Pause after every … messages<input type="number" min="0" max="1000" step="1" value={cooldownEvery} onChange={(event) => setCooldownEvery(event.target.value)} /><small>0 = no pauses between batches.</small></label>
-              <label className="form-label">Pause length (minutes)<input type="number" min="1" max="240" step="1" value={cooldownMinutes} onChange={(event) => setCooldownMinutes(event.target.value)} disabled={!(Number(cooldownEvery) > 0)} /></label>
-              <small>Messages go out one at a time with your delay and hourly and daily limits. WhatsApp rate limits, restriction warnings and quality drops pause the campaign automatically, and only opted-in contacts are messaged.</small>
-              </div>
-              {whatsappStatus.businessStatus !== 'connected' && Number(upload?.valid || 0) > 200 && <div className="notice warning">This campaign contains more than 200 contacts and carries increased WhatsApp Web ban risk. Consider using the WhatsApp Business API.</div>}
             </fieldset>
             <fieldset className="builder-step" id="builder-review" tabIndex={-1}>
               <legend><span className="step-index" aria-hidden="true">4</span>Review</legend>
@@ -1116,7 +1111,7 @@ function CampaignsView({ onNavigate }) {
               <label className="form-label">Max per day<input type="number" min="1" value={draftEdit.settings.maxPerDay ?? 175} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, maxPerDay: Number(event.target.value) } })} /></label>
             </div>
             <div className="field-panel inline-fields">
-              <h4>Sending safety</h4>
+              <h4>Sending options</h4>
               <label className="check-label"><input type="checkbox" checked={draftEdit.settings.respectRecipientTimezone !== false} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, respectRecipientTimezone: event.target.checked } })} /> Send only during business hours in each recipient’s country</label>
               <label className="form-label">Pause after every … messages<input type="number" min="0" max="1000" value={draftEdit.settings.cooldownEvery ?? 0} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, cooldownEvery: Number(event.target.value) } })} /></label>
               <label className="form-label">Pause length (minutes)<input type="number" min="1" max="240" value={draftEdit.settings.cooldownMinutes ?? 10} onChange={(event) => setDraftEdit({ ...draftEdit, settings: { ...draftEdit.settings, cooldownMinutes: Number(event.target.value) } })} /></label>
@@ -1565,7 +1560,6 @@ function AnalyticsView({ onNavigate }) {
 
 // Prefill the SMTP part of the Settings form (the password is never sent back).
 const smtpFormFrom = (settings) => ({
-  emailProvider: settings.emailSending?.providerSetting || 'auto',
   smtpUser: settings.emailSending?.smtp?.user || '',
   smtpFromName: settings.emailSending?.smtp?.fromName || '',
   smtpHost: settings.emailSending?.smtp?.host || '',
@@ -1574,7 +1568,7 @@ const smtpFormFrom = (settings) => ({
 
 function SettingsView({ userEmail }) {
   const [settings, setSettings] = useState(null)
-  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91', emailProvider: '', smtpUser: '', smtpPass: '', smtpFromName: '', smtpHost: '', smtpPort: '' })
+  const [form, setForm] = useState({ aiApiKey: '', aiBaseURL: '', aiModel: '', businessName: '', businessTagline: '', companyAddress: '', companyState: '', companyGstin: '', companyPhone: '', companyEmail: '', companyLogo: '', companyBankDetails: '', resendApiKey: '', resendFromEmail: '', resendFromName: '', defaultCountryCode: '91', smtpUser: '', smtpPass: '', smtpFromName: '', smtpHost: '', smtpPort: '' })
   const [showKey, setShowKey] = useState(false)
   const [showResendKey, setShowResendKey] = useState(false)
   const [showSmtpPass, setShowSmtpPass] = useState(false)
@@ -1596,23 +1590,10 @@ function SettingsView({ userEmail }) {
       setSmtpNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Email test' }) })
     } finally { setSmtpTesting(false) }
   }
-  const testResend = async () => {
-    setTesting(true); setTestNotice({ type: '', text: '' })
-    try {
-      const result = await apiFetch('/settings/email/test', { method: 'POST' })
-      setTestNotice({ type: 'success', text: result.message || `Test email sent to ${userEmail}. Check your inbox (and spam folder).` })
-    } catch (error) {
-      // Resend setup errors stay actionable/specific — the backend already
-      // phrases them for users ("Resend rejected the test email: …"). The
-      // translator keeps them but strips any embedded technical detail
-      // (stack traces, JSON objects, status-code strings).
-      setTestNotice({ type: 'error', text: friendlyErrorMessage(error, { context: 'Resend test email' }) })
-    } finally { setTesting(false) }
-  }
   if (!settings) return <div className="view-workspace">{notice.text ? <div className="notice error">{notice.text}</div> : <SkeletonPanel label="Loading settings" />}</div>
   const update = (field) => (event) => setForm({ ...form, [field]: event.target.value })
   return <div className="view-workspace">
-    <div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update your AI connection, email sender, business details, quotation company profile, and default country code.</p></div>
+    <div><p className="eyebrow">Server configuration</p><h2>Settings</h2><p className="muted-copy">Update your AI connection, email account, business details, quotation company profile, and default country code.</p></div>
     {notice.text && <div className={`notice ${notice.type}`}>{notice.text}</div>}
     <section className="panel settings-panel appearance-panel">
       <div className="panel-header"><div><h2>Appearance</h2><p className="muted-copy">Choose light or dark. "Match my device" follows your phone or computer setting. This is saved on this device only.</p></div></div>
@@ -1629,12 +1610,15 @@ function SettingsView({ userEmail }) {
       </section>
       <section className="panel settings-panel">
         <div className="panel-header"><h2>Email — free sending (Gmail / Outlook / Zoho)</h2><span className={`campaign-status ${settings.emailSending?.smtp?.ready ? 'running' : 'stopped'}`}>{settings.emailSending?.smtp?.ready ? 'Connected' : 'Not set up'}</span></div>
-        <p className="muted-copy">Bulk email campaigns send from your own mailbox at no cost. For Gmail: turn on 2-Step Verification, then create an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">App Password</a> and paste it below (not your normal password). Free Gmail sends about 500 emails a day.</p>
+        <p className="muted-copy">Bulk email campaigns send from your own mailbox at no cost (free Gmail ≈ 500 emails a day). For Gmail:</p>
+        <ol className="muted-copy">
+          <li><a href="https://myaccount.google.com/signinoptions/twosv" target="_blank" rel="noreferrer">Turn on 2-Step Verification ↗</a></li>
+          <li><a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">Create an App Password ↗</a> and paste it below (not your normal password).</li>
+        </ol>
         <div className="settings-grid">
           <label className="form-label">Your email address<input type="email" value={form.smtpUser} onChange={update('smtpUser')} placeholder="yourname@gmail.com" autoComplete="off" /></label>
           <label className="form-label">App password<div className="input-with-action"><input type={showSmtpPass ? 'text' : 'password'} value={form.smtpPass} onChange={update('smtpPass')} placeholder={settings.emailSending?.smtp?.passwordSet ? 'Leave blank to keep current password' : 'abcd efgh ijkl mnop'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowSmtpPass(!showSmtpPass)}>{showSmtpPass ? 'Hide' : 'Show'}</button></div><small>Saved securely (encrypted).</small></label>
           <label className="form-label">Sender name<input value={form.smtpFromName} onChange={update('smtpFromName')} placeholder="Your Business Name" /><small>What people see in their inbox.</small></label>
-          <label className="form-label">Send campaigns using<select value={form.emailProvider} onChange={update('emailProvider')}><option value="auto">Automatic</option><option value="smtp">This email account (free)</option><option value="resend">Resend (below)</option></select></label>
         </div>
         <details><summary className="muted-copy">Other email providers (advanced)</summary>
           <div className="settings-grid">
@@ -1644,16 +1628,6 @@ function SettingsView({ userEmail }) {
         </details>
         {smtpNotice.text && <div className={`notice ${smtpNotice.type} settings-test-notice`}>{smtpNotice.text}</div>}
         <div className="button-row"><button type="button" className="secondary-btn" onClick={testSmtp} disabled={smtpTesting || busy}>{smtpTesting ? 'Sending test email...' : 'Test email account'}</button><small className="help-note">Save first, then send one test email to {userEmail || 'your account email'}.</small></div>
-      </section>
-      <section className="panel settings-panel">
-        <div className="panel-header"><h2>Email (Resend)</h2><span className={`campaign-status ${settings.email?.configured ? 'running' : 'stopped'}`}>{settings.email?.configured ? 'Configured' : 'Not configured'}</span></div>
-        <div className="settings-grid">
-          <label className="form-label">API key<div className="input-with-action"><input type={showResendKey ? 'text' : 'password'} value={form.resendApiKey} onChange={update('resendApiKey')} placeholder={settings.email?.apiKeySet ? 'Leave blank to keep current key' : 're_...'} autoComplete="new-password" /><button type="button" className="secondary-btn" onClick={() => setShowResendKey(!showResendKey)}>{showResendKey ? 'Hide' : 'Show'}</button></div><small>Leave blank to keep the saved key.</small></label>
-          <label className="form-label">From email<input value={form.resendFromEmail} onChange={update('resendFromEmail')} placeholder="hello@yourdomain.com" /></label>
-          <label className="form-label">From name<input value={form.resendFromName} onChange={update('resendFromName')} placeholder="Your Business Name" /></label>
-        </div>
-        {testNotice.text && <div className={`notice ${testNotice.type} settings-test-notice`}>{testNotice.text}</div>}
-        <div className="button-row"><button type="button" className="secondary-btn" onClick={testResend} disabled={testing || busy}>{testing ? 'Sending test email...' : 'Test Connection'}</button><small className="help-note">Sends one test email to {userEmail || 'your account email'} using the saved credentials.</small></div>
       </section>
       <section className="panel settings-panel">
         <div className="panel-header"><h2>Business information</h2></div>
@@ -1711,6 +1685,7 @@ function App() {
   // Team & access (GET /api/team/me): { enforced, super_admin, permissions,
   // email, company_email }. null until loaded for the signed-in account.
   const [teamAccess, setTeamAccess] = useState(null)
+  const [billing, setBilling] = useState(null)
   const canWhatsapp = Boolean(teamAccess?.permissions?.includes('whatsapp'))
   // Desktop sidebar collapsed to an icon rail (remembered per browser).
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -1904,6 +1879,20 @@ function App() {
       .catch(() => { if (!cancelled) setTeamAccess({ enforced: false, super_admin: false, permissions: ['whatsapp', 'documents', 'proforma', 'ask_ai', 'settings'] }) })
     return () => { cancelled = true }
   }, [session?.user?.id])
+
+  // Monthly subscription status; re-checked whenever the server answers
+  // "payment required" (e.g. the subscription ran out while the app was open).
+  useEffect(() => {
+    if (!session?.user?.id) { setBilling(null); return undefined }
+    let cancelled = false
+    const load = () => apiFetch('/billing/me').then((data) => { if (!cancelled) setBilling(data) }).catch(() => {})
+    load()
+    window.addEventListener(PAYMENT_REQUIRED_EVENT, load)
+    return () => { cancelled = true; window.removeEventListener(PAYMENT_REQUIRED_EVENT, load) }
+  }, [session?.user?.id])
+  const payFromBanner = async () => {
+    try { setBilling({ ...billing, ...(await payOneMonth({})) }) } catch (error) { if (!error.cancelled) window.alert(friendlyErrorMessage(error, { context: 'Payment' })) }
+  }
 
   useEffect(() => {
     // Per-user WhatsApp status: uses the authenticated endpoint, so the
@@ -2119,6 +2108,8 @@ function App() {
 
   const renderView = () => {
     if (!can(activeView)) return null
+    if (billing?.blocked && PAID_VIEWS.has(activeView)) return <PayScreen billing={billing} onPaid={(status) => setBilling({ ...billing, ...status })} />
+    if (activeView === 'Subscriptions') return <SubscriptionsView />
     if (activeView === 'WhatsApp Connection') return <ConnectionView />
     if (activeView === 'Campaigns') return <CampaignsView onNavigate={setActiveView} />
     if (activeView === 'Email Campaigns') return <EmailCampaignsView onNavigate={setActiveView} />
@@ -2157,7 +2148,7 @@ function App() {
 
   // Which pages this account may open (Team & access, GET /api/team/me).
   // The server checks every request; this only shapes the menu.
-  const can = (view) => canOpenView(teamAccess, view)
+  const can = (view) => (view === 'Subscriptions' ? Boolean(billing?.superAdmin) : canOpenView(teamAccess, view))
   const navGroups = NAV_GROUPS
     .map((group) => ({ ...group, items: group.items.filter(can) }))
     .filter((group) => group.items.length)
@@ -2167,7 +2158,7 @@ function App() {
     if (!teamAccess || can(activeView)) return
     const first = NAV_GROUPS.flatMap((group) => group.items).find(can)
     if (first) setActiveView(first)
-  }, [teamAccess, activeView])
+  }, [teamAccess, activeView, billing?.superAdmin])
 
   // Storage status for everyone signed in (dashboard card + warning banner).
   const storage = useStorageStatus(Boolean(session?.user?.id))
@@ -2302,6 +2293,7 @@ function App() {
         </button>
         <span className="mobile-brand"><BrandLogo variant="mark" height={26} decorative /><span className="mobile-brand-title">Sudarshan Pipes AI</span></span>
         {canWhatsapp && <ConnectionChip status={chipStatus} onClick={() => selectView('WhatsApp Connection')} />}
+        <HelpGuide className="secondary-btn" onNavigate={(view) => (can(view) ? selectView(view) : null)} />
         <ThemeToggle />
       </header>
       <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />
@@ -2367,12 +2359,14 @@ function App() {
             <h1>{pageTitle}</h1>
           </div>
           <div className="topbar-actions">
+            <HelpGuide onNavigate={(view) => (can(view) ? selectView(view) : null)} />
             <ThemeChoice />
           </div>
         </header>
 
         <main className="main-panel" id="main-content">
           <div className="page">
+            <SubscriptionBanner billing={billing} onPay={payFromBanner} />
             {activeSharedWorkspace && !teamAccess.enforced && <div className="notice info shared-workspace-notice" role="status">
               You are working in <strong>{activeSharedWorkspace.email || 'a shared'}</strong>'s workspace (shared with you). Records you add or change here belong to that workspace. Settings and the WhatsApp connection can only be changed by its owner.
             </div>}
