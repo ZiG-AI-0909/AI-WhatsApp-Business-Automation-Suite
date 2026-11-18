@@ -10,6 +10,7 @@
     "test:connection-pause": "node src/campaigns/__tests__/message-queue-connection-pause-smoke.test.js",
     "test:campaign-reliability": "node src/campaigns/__tests__/message-queue-connection-pause-smoke.test.js && node src/campaigns/__tests__/rate-limiter-persistence-smoke.test.js && node src/campaigns/__tests__/message-queue-completion-counters-smoke.test.js && node src/campaigns/__tests__/campaign-retry-failed-smoke.test.js && node src/campaigns/__tests__/campaign-scale-restart-smoke.test.js && node src/campaigns/__tests__/campaign-queue-smoke.test.js",
     "pretest": "npm run test:campaign-reliability",
+    "test:campaign-media": "node src/routes/__tests__/campaign-test-media-smoke.test.js",
     "smoke:api": "node scripts/api-smoke.js"
   },
   "dependencies": {

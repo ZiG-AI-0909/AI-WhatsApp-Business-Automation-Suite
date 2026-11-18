@@ -291,7 +291,8 @@ router.post('/:id/test-media', async (req, res) => {
             1,
             0,
         );
-        if (!firstContact?.rendered_message) {
+        const testMessage = firstContact?.rendered_message || campaign.template_message;
+        if (typeof testMessage !== 'string' || !testMessage.trim()) {
             return res.status(400).json({ error: 'This campaign has no message available to test.' });
         }
 
@@ -301,7 +302,7 @@ router.post('/:id/test-media', async (req, res) => {
         } catch (error) {
             return res.status(400).json({ error: error.message });
         }
-        await sessionManager.sendMessage(req.user.id, ownPhone, firstContact.rendered_message, null, {
+        await sessionManager.sendMessage(req.user.id, ownPhone, testMessage, null, {
             buffer: downloaded.buffer,
             type: campaign.media_type || 'image',
             filename: campaign.media_filename || 'attachment',
