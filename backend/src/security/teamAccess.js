@@ -5,11 +5,9 @@
 //   * Areas (MODULES): every API route group requires one (requireModule).
 //   * Super admins: the emails in SUPER_ADMIN_EMAILS (never demotable) plus
 //     accounts promoted on the "Team & access" screen. They have every area.
-//   * One company workspace: team members act on the data of
-//     team_settings.company_owner_id (default: the first SUPER_ADMIN_EMAILS
-//     account), through the same req.user.id the shared-workspace code
-//     uses; req.user.sharedAccess keeps WhatsApp linking and API keys with
-//     that owner (middleware/auth.requireDataOwnerSelf).
+//   * By default, team members act on team_settings.company_owner_id
+//     (default: the first SUPER_ADMIN_EMAILS account). A member may instead
+//     use their own isolated workspace, including their WhatsApp connection.
 //   * An account with no team_members row has no access.
 //
 // ENFORCED only when the migration has run AND SUPER_ADMIN_EMAILS is set.
@@ -82,7 +80,7 @@ async function teamSettings({ now = Date.now } = {}) {
 async function memberRow(authUserId, { now = Date.now } = {}) {
     const cached = memberCache.get(authUserId);
     if (cached && now() - cached.at < CACHE_MS) return cached.row;
-    const { data, error } = await supabase.from('team_members').select('user_id, is_super_admin, permissions').eq('user_id', authUserId).maybeSingle();
+    const { data, error } = await supabase.from('team_members').select('user_id, is_super_admin, permissions, personal_workspace').eq('user_id', authUserId).maybeSingle();
     if (error) throw error;
     memberCache.set(authUserId, { at: now(), row: data || null });
     return data || null;
@@ -91,12 +89,12 @@ async function memberRow(authUserId, { now = Date.now } = {}) {
 /**
  * What this signed-in account may do.
  * @returns {Promise<{ enforced: boolean, superAdmin: boolean, envSuperAdmin: boolean,
- *   permissions: string[], companyOwnerId: string|null }>}
+ *   permissions: string[], companyOwnerId: string|null, personalWorkspace: boolean }>}
  */
 async function loadAccess(authUserId, email) {
     const settings = await teamSettings();
     if (!settings.enforced) {
-        return { enforced: false, superAdmin: false, envSuperAdmin: false, permissions: MODULES.filter((module) => !KYC_STAFF_MODULES.has(module)), companyOwnerId: null };
+        return { enforced: false, superAdmin: false, envSuperAdmin: false, permissions: MODULES.filter((module) => !KYC_STAFF_MODULES.has(module)), companyOwnerId: null, personalWorkspace: false };
     }
     const envSuperAdmin = superAdminEmails().includes(String(email || '').toLowerCase());
     const row = UUID.test(String(authUserId || '')) ? await memberRow(authUserId) : null;
@@ -108,19 +106,20 @@ async function loadAccess(authUserId, email) {
         const customer = await billing.customerStatus(authUserId, { isMember: Boolean(row?.permissions?.length) });
         if (customer.customer) {
             return { enforced: true, superAdmin: false, envSuperAdmin: false, customer: true, paid: !customer.blocked,
-                permissions: customer.blocked ? [] : [...CUSTOMER_MODULES], companyOwnerId: settings.companyOwnerId };
+                permissions: customer.blocked ? [] : [...CUSTOMER_MODULES], companyOwnerId: settings.companyOwnerId, personalWorkspace: false };
         }
     }
     const permissions = superAdmin ? [...MODULES] : MODULES.filter((module) => (row?.permissions || []).includes(module));
-    return { enforced: true, superAdmin, envSuperAdmin, customer: false, permissions, companyOwnerId: settings.companyOwnerId };
+    return { enforced: true, superAdmin, envSuperAdmin, customer: false, permissions, companyOwnerId: settings.companyOwnerId, personalWorkspace: Boolean(row?.personal_workspace) };
 }
 
 /**
  * Whose data a request acts on when team access is on: the company
- * workspace for anyone with access; their own (empty) data otherwise.
+ * workspace by default, or the account's own workspace when isolated.
  */
 function dataOwnerFor(access, authUserId) {
     if (access?.customer) return authUserId; // customers: always their own data
+    if (access?.personalWorkspace) return authUserId;
     if (!access?.enforced || !access.companyOwnerId) return authUserId;
     return access.superAdmin || access.permissions.length ? access.companyOwnerId : authUserId;
 }

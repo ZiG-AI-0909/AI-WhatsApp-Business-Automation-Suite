@@ -127,7 +127,7 @@ async function main() {
 
         await check('on: no row = no access anywhere; own (empty) data', async () => {
             const me = await call('GET', '/team/me', 'nobody');
-            assert.deepEqual(me.data, { enforced: true, super_admin: false, customer: false, permissions: [], email: EMAIL.nobody, company_email: null });
+            assert.deepEqual(me.data, { enforced: true, super_admin: false, customer: false, personal_workspace: false, permissions: [], email: EMAIL.nobody, company_email: null });
             for (const path of ['/contacts', '/proforma', '/quotations', '/technicians', '/kyc/access', '/campaigns']) {
                 const result = await call('GET', path, 'nobody');
                 if (path === '/kyc/access') { assert.deepEqual(result.data, { staff: false }); continue; }
@@ -164,17 +164,27 @@ async function main() {
             assert.equal(unknown.status, 404);
             assert.equal(unknown.data.code, 'TEAM_NO_ACCOUNT');
             assert.equal((await call('POST', '/team/members', 'boss', { body: { email: EMAIL.wa, permissions: ['whatsapp', 'root'] } })).status, 400);
-            for (const [who, permissions] of [['wa', ['whatsapp']], ['docs', ['proforma', 'documents', 'documents']], ['tech', ['technicians']]]) {
+            const isolated = await call('POST', '/team/members', 'boss', {
+                body: { email: ` ${EMAIL.wa.toUpperCase()} `, permissions: ['whatsapp', 'settings'], personal_workspace: true },
+            });
+            assert.equal(isolated.status, 201, JSON.stringify(isolated.data));
+            for (const [who, permissions] of [['docs', ['proforma', 'documents', 'documents']], ['tech', ['technicians']]]) {
                 const added = await call('POST', '/team/members', 'boss', { body: { email: ` ${EMAIL[who].toUpperCase()} `, permissions } });
                 assert.equal(added.status, 201, JSON.stringify(added.data));
             }
             assert.deepEqual(store.team_members.find((row) => row.user_id === ID.docs).permissions, ['documents', 'proforma'], 'cleaned + standard order');
             assert.equal(store.team_members.find((row) => row.user_id === ID.docs).updated_by_email, EMAIL.boss);
+            assert.equal(store.team_members.find((row) => row.user_id === ID.wa).personal_workspace, true);
         });
 
-        await check('members work on the company workspace, only in their areas; header ignored', async () => {
-            assert.deepEqual((await call('GET', '/contacts', 'wa')).data, { owner: ID.boss, shared: true });
-            assert.deepEqual((await call('GET', '/contacts', 'wa', { headers: { 'X-Data-Owner': ID.wa } })).data, { owner: ID.boss, shared: true }, 'cannot ask for other data');
+        await check('personal workspace stays isolated; shared members still use the company workspace', async () => {
+            assert.deepEqual((await call('GET', '/contacts', 'wa')).data, { owner: ID.wa, shared: false });
+            assert.deepEqual((await call('GET', '/contacts', 'wa', { headers: { 'X-Data-Owner': ID.boss } })).data, { owner: ID.wa, shared: false }, 'cannot ask for company data');
+            assert.deepEqual((await call('GET', '/campaigns', 'wa')).data, { owner: ID.wa, shared: false }, 'campaigns use the personal owner');
+            assert.deepEqual((await call('GET', '/settings', 'wa')).data, { owner: ID.wa, shared: false }, 'personal WhatsApp settings use the personal owner');
+            const waMe = await call('GET', '/team/me', 'wa');
+            assert.equal(waMe.data.personal_workspace, true);
+            assert.equal(waMe.data.company_email, null);
             assert.equal((await call('GET', '/proforma', 'wa')).status, 403);
             assert.equal((await call('GET', '/quotations', 'wa')).status, 403);
             assert.equal((await call('GET', '/copilot/brief', 'wa')).status, 200, 'copilot comes with WhatsApp');
@@ -185,8 +195,9 @@ async function main() {
             assert.equal((await call('GET', '/technicians', 'tech')).status, 200);
             assert.deepEqual((await call('GET', '/kyc/access', 'tech')).data, { staff: false }, 'technicians ≠ vendor KYC');
             assert.equal((await call('GET', '/kyc/submissions', 'tech')).status, 403);
-            assert.equal((await call('PUT', '/settings', 'wa', { body: {} })).status, 403, 'changing settings needs the Settings area');
-            assert.deepEqual((await call('GET', '/team/me', 'wa')).data, { enforced: true, super_admin: false, customer: false, permissions: ['whatsapp'], email: EMAIL.wa, company_email: 'boss@sudarshan.in' });
+            assert.equal((await call('PUT', '/settings', 'wa', { body: {} })).status, 200, 'personal settings access lets them configure their own WhatsApp connection');
+            assert.equal((await call('PUT', '/settings', 'docs', { body: {} })).status, 403, 'changing settings needs the Settings area');
+            assert.deepEqual((await call('GET', '/team/me', 'wa')).data, { enforced: true, super_admin: false, customer: false, personal_workspace: true, permissions: ['whatsapp', 'settings'], email: EMAIL.wa, company_email: null });
         });
 
         await check('changes apply at once; removing access → back to nothing', async () => {
@@ -194,6 +205,7 @@ async function main() {
             assert.equal((await call('PUT', `/team/members/${ID.wa}`, 'boss', { body: { permissions: ['whatsapp', 'proforma'] } })).status, 200);
             assert.equal((await call('GET', '/proforma', 'wa')).status, 200);
             assert.deepEqual(wa.permissions, ['whatsapp', 'proforma']);
+            assert.equal(wa.personal_workspace, true, 'editing permissions preserves workspace isolation');
             assert.equal((await call('DELETE', `/team/members/${ID.wa}`, 'boss')).status, 200);
             assert.equal((await call('GET', '/contacts', 'wa')).status, 403);
             assert.deepEqual((await call('GET', '/team/me', 'wa')).data.permissions, []);

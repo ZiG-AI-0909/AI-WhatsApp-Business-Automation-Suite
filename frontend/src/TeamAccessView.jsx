@@ -9,10 +9,9 @@ import { AREAS, AREA_LABELS } from './team/teamAreas.js'
 // ─────────────────────────────────────────────────────────────────────────────
 // "Team & access" — super admins only. Every account registered in the app
 // is listed by email; a super admin switches on the areas each one may open
-// (WhatsApp, Documents, Vendor KYC forms, …) or makes them super admin.
-// Everyone works on one company workspace (shown at the top). The server
-// checks every request (backend/src/security/teamAccess.js); super admins
-// set on the server (SUPER_ADMIN_EMAILS) cannot be changed here.
+// (WhatsApp, Documents, Vendor KYC forms, …), makes them super admin, or
+// gives them a separate personal workspace. The server checks every request
+// (backend/src/security/teamAccess.js); server super admins cannot be changed here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** JSON request; throws an Error with .fields / .code from the server. */
@@ -67,12 +66,22 @@ function SuperAdminToggle({ checked, onChange, disabled, id }) {
   )
 }
 
+function PersonalWorkspaceToggle({ checked, onChange, disabled, id }) {
+  return (
+    <label className="team-super" htmlFor={id}>
+      <input id={id} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} disabled={disabled} />
+      <span><strong>Separate personal workspace</strong><small>Use this account's own WhatsApp connection, contacts, campaigns, and messages instead of company data.</small></span>
+    </label>
+  )
+}
+
 // ── Give access by email ────────────────────────────────────────────────────
 
 function AddMember({ onAdded }) {
   const [email, setEmail] = useState('')
   const [permissions, setPermissions] = useState([])
   const [superAdmin, setSuperAdmin] = useState(false)
+  const [personalWorkspace, setPersonalWorkspace] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -82,10 +91,11 @@ function AddMember({ onAdded }) {
     setBusy(true)
     setError('')
     try {
-      const result = await teamRequest('/members', { method: 'POST', body: { email, permissions, is_super_admin: superAdmin } })
+      const result = await teamRequest('/members', { method: 'POST', body: { email, permissions, is_super_admin: superAdmin, personal_workspace: personalWorkspace } })
       setEmail('')
       setPermissions([])
       setSuperAdmin(false)
+      setPersonalWorkspace(false)
       onAdded(result.account.email)
     } catch (err) {
       setError(err.message)
@@ -102,6 +112,7 @@ function AddMember({ onAdded }) {
         <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="off" required />
       </label>
       <SuperAdminToggle id="team-add-super" checked={superAdmin} onChange={setSuperAdmin} />
+      <PersonalWorkspaceToggle id="team-add-personal" checked={personalWorkspace} onChange={setPersonalWorkspace} />
       <AreaPicker idPrefix="team-add" value={superAdmin ? AREAS.map((area) => area.key) : permissions} onChange={setPermissions} disabled={superAdmin} />
       {error && <div className="notice error" role="alert">{error}</div>}
       <div className="button-row">
@@ -117,6 +128,7 @@ function AccountRow({ account, isSelf, onSaved }) {
   const [editing, setEditing] = useState(false)
   const [permissions, setPermissions] = useState(account.permissions)
   const [superAdmin, setSuperAdmin] = useState(account.super_admin)
+  const [personalWorkspace, setPersonalWorkspace] = useState(account.personal_workspace)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const locked = account.env_super_admin
@@ -124,6 +136,7 @@ function AccountRow({ account, isSelf, onSaved }) {
   const open = () => {
     setPermissions(account.super_admin ? [] : account.permissions)
     setSuperAdmin(account.super_admin)
+    setPersonalWorkspace(account.personal_workspace)
     setError('')
     setEditing(true)
   }
@@ -143,7 +156,7 @@ function AccountRow({ account, isSelf, onSaved }) {
   }
 
   const save = () => run(
-    () => teamRequest(`/members/${account.user_id}`, { method: 'PUT', body: { permissions, is_super_admin: superAdmin } }),
+    () => teamRequest(`/members/${account.user_id}`, { method: 'PUT', body: { permissions, is_super_admin: superAdmin, personal_workspace: personalWorkspace } }),
     `Saved access for ${account.email}.`,
   )
   const removeAll = () => {
@@ -157,7 +170,7 @@ function AccountRow({ account, isSelf, onSaved }) {
         <div className="team-who">
           <strong>{account.email}</strong>
           <small className="muted-copy">
-            {[isSelf && 'You', account.company_owner && 'Company workspace', account.last_sign_in_at ? `Last sign-in ${formatDate(account.last_sign_in_at, { withTime: true })}` : 'Never signed in'].filter(Boolean).join(' · ')}
+            {[isSelf && 'You', account.company_owner && 'Company workspace', account.personal_workspace && 'Separate personal workspace', account.last_sign_in_at ? `Last sign-in ${formatDate(account.last_sign_in_at, { withTime: true })}` : 'Never signed in'].filter(Boolean).join(' · ')}
           </small>
         </div>
         <AccessSummary account={account} />
@@ -167,6 +180,7 @@ function AccountRow({ account, isSelf, onSaved }) {
       {editing && (
         <div className="team-edit">
           <SuperAdminToggle id={`team-super-${account.user_id}`} checked={superAdmin} onChange={setSuperAdmin} disabled={isSelf && account.super_admin} />
+          <PersonalWorkspaceToggle id={`team-personal-${account.user_id}`} checked={personalWorkspace} onChange={setPersonalWorkspace} />
           {isSelf && account.super_admin && <small className="field-help">You cannot remove your own super admin access.</small>}
           <AreaPicker idPrefix={`team-${account.user_id}`} value={superAdmin ? AREAS.map((area) => area.key) : permissions} onChange={setPermissions} disabled={superAdmin} />
           {error && <div className="notice error" role="alert">{error}</div>}

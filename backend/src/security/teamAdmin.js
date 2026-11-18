@@ -38,7 +38,7 @@ async function listAccounts() {
     const settings = await access.teamSettings();
     const [{ data: accounts, error: accountsError }, { data: members, error: membersError }] = await Promise.all([
         supabase.rpc('team_list_accounts'),
-        supabase.from('team_members').select('user_id, is_super_admin, permissions, updated_at, updated_by_email'),
+        supabase.from('team_members').select('user_id, is_super_admin, permissions, personal_workspace, updated_at, updated_by_email'),
     ]);
     if (accountsError) throw dbError(accountsError, 'Could not load the accounts.');
     if (membersError) throw dbError(membersError, 'Could not load team access.');
@@ -56,6 +56,7 @@ async function listAccounts() {
             super_admin: superAdmin,
             env_super_admin: envSuperAdmin,
             permissions: superAdmin ? [...access.MODULES] : access.MODULES.filter((module) => (member?.permissions || []).includes(module)),
+            personal_workspace: Boolean(member?.personal_workspace),
             company_owner: account.user_id === settings.companyOwnerId,
             updated_at: member?.updated_at || null,
             updated_by_email: member?.updated_by_email || null,
@@ -84,8 +85,11 @@ async function accountById(userId) {
  * An env super admin cannot be demoted; nobody can demote themselves (so a
  * super admin can never lock themselves out by accident).
  */
-async function setAccess(account, { permissions, is_super_admin: superAdmin }, actor) {
+async function setAccess(account, { permissions, is_super_admin: superAdmin, personal_workspace: personalWorkspace }, actor) {
     const clean = cleanPermissions(permissions ?? []);
+    if (personalWorkspace !== undefined && typeof personalWorkspace !== 'boolean') {
+        throw new TeamError('Choose whether this person uses a separate personal workspace.', 400, 'TEAM_INVALID', { personal_workspace: 'Choose true or false.' });
+    }
     const envAdmin = access.superAdminEmails().includes(String(account.email || '').toLowerCase());
     const makeSuper = Boolean(superAdmin);
     if (envAdmin && !makeSuper) {
@@ -94,9 +98,15 @@ async function setAccess(account, { permissions, is_super_admin: superAdmin }, a
     if (account.id === actor.authId && !makeSuper) {
         throw new TeamError('You cannot remove your own super admin access. Ask another super admin.', 400, 'TEAM_SELF_DEMOTE');
     }
-    const row = { is_super_admin: makeSuper && !envAdmin, permissions: clean, updated_at: new Date().toISOString(), updated_by_email: actor.email || null };
-    const { data: existing, error: lookupError } = await supabase.from('team_members').select('user_id').eq('user_id', account.id).maybeSingle();
+    const { data: existing, error: lookupError } = await supabase.from('team_members').select('user_id, personal_workspace').eq('user_id', account.id).maybeSingle();
     if (lookupError) throw dbError(lookupError, 'Could not save team access.');
+    const row = {
+        is_super_admin: makeSuper && !envAdmin,
+        permissions: clean,
+        personal_workspace: personalWorkspace ?? Boolean(existing?.personal_workspace),
+        updated_at: new Date().toISOString(),
+        updated_by_email: actor.email || null,
+    };
     const { error } = existing
         ? await supabase.from('team_members').update(row).eq('user_id', account.id)
         : await supabase.from('team_members').insert({ user_id: account.id, ...row });
@@ -106,7 +116,7 @@ async function setAccess(account, { permissions, is_super_admin: superAdmin }, a
 }
 
 /** Give access to the account registered with `email`. */
-async function addByEmail({ email, permissions, is_super_admin: superAdmin }, actor) {
+async function addByEmail({ email, permissions, is_super_admin: superAdmin, personal_workspace: personalWorkspace }, actor) {
     const address = String(email || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw new TeamError('Enter the email this person signed up with.', 400, 'TEAM_INVALID', { email: 'Enter a valid email.' });
     let account;
@@ -118,7 +128,7 @@ async function addByEmail({ email, permissions, is_super_admin: superAdmin }, ac
     if (!account) {
         throw new TeamError('No account is registered with this email yet. Ask them to sign up in the app first, then add them here.', 404, 'TEAM_NO_ACCOUNT', { email: 'No account with this email.' });
     }
-    await setAccess(account, { permissions, is_super_admin: superAdmin }, actor);
+    await setAccess(account, { permissions, is_super_admin: superAdmin, personal_workspace: personalWorkspace }, actor);
     return account;
 }
 

@@ -46,9 +46,10 @@ router.get('/me', async (req, res) => {
             enforced: Boolean(me.enforced),
             super_admin: Boolean(me.superAdmin),
             customer: Boolean(me.customer),
+            personal_workspace: Boolean(me.personalWorkspace),
             permissions,
             email: req.user?.email || '',
-            company_email: member ? await companyEmail(me.companyOwnerId) : null,
+            company_email: member && !me.personalWorkspace ? await companyEmail(me.companyOwnerId) : null,
         });
     } catch (error) {
         fail(res, error, 'Could not load your access.');

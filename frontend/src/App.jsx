@@ -1696,7 +1696,7 @@ function App() {
   // Shared workspaces: { self, active, sharedAccess, shared: [{ id, email }] }
   const [workspaces, setWorkspaces] = useState(null)
   // Team & access (GET /api/team/me): { enforced, super_admin, permissions,
-  // email, company_email }. null until loaded for the signed-in account.
+  // email, company_email, personal_workspace }. null until loaded.
   const [teamAccess, setTeamAccess] = useState(null)
   const [billing, setBilling] = useState(null)
   const canWhatsapp = Boolean(teamAccess?.permissions?.includes('whatsapp'))
@@ -2190,7 +2190,7 @@ function App() {
   // is why the share exists; the switcher can go back to the user's own data.
   useEffect(() => {
     const authUserId = session?.user?.id
-    // With Team & access on, everyone works on the company workspace.
+    // Team-access accounts use their configured workspace, not the share switcher.
     if (!authUserId || !teamAccess || teamAccess.enforced) return
     let cancelled = false
     apiFetch('/workspaces')
@@ -2368,7 +2368,9 @@ function App() {
 
         <div className="sidebar-footer">
           {teamAccess.enforced ? (
-            teamAccess.company_email && <p className="team-company-chip" title="Everyone on the team works on this account's data">Company workspace<strong>{teamAccess.company_email}</strong></p>
+            teamAccess.personal_workspace
+              ? <p className="team-company-chip" title="Your WhatsApp connection and campaign data are separate from the company workspace">Personal workspace<strong>{userEmail}</strong></p>
+              : teamAccess.company_email && <p className="team-company-chip" title="Everyone on the team works on this account's data">Company workspace<strong>{teamAccess.company_email}</strong></p>
           ) : workspaceSwitcher}
           {canWhatsapp && <ConnectionChip status={chipStatus} block onClick={() => selectView('WhatsApp Connection')} />}
           <div className="user-chip" title={userEmail}>
